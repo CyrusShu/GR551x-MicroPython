@@ -1,0 +1,13 @@
+# 构建产物
+firmware/zk42v-epd-app/GCC/out/
+*.bin
+*.hex
+*.elf
+*.map
+
+# 运行日志
+*.log
+!docs/runs/**/*.log
+
+# macOS
+.DS_Store
