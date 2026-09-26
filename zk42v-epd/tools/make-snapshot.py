@@ -32,6 +32,7 @@ FILES = [
     ("outputs/firmware/build.sh",                       "firmware/build.sh"),
     ("outputs/firmware/tools/fwpack.py",                "firmware/tools/fwpack.py"),
     ("outputs/firmware/tools/test_fwpack.py",           "firmware/tools/test_fwpack.py"),
+    ("outputs/firmware/docs/B2A-ble-plan.md",          "firmware/docs/B2A-ble-plan.md"),
     ("outputs/firmware/tools/img2epd.py",               "firmware/tools/img2epd.py"),
     ("outputs/firmware/tools/test_img2epd.py",          "firmware/tools/test_img2epd.py"),
     ("outputs/firmware/zk42v-epd-app/GCC/Makefile",     "firmware/zk42v-epd-app/GCC/Makefile"),
