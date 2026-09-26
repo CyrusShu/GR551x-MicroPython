@@ -4172,6 +4172,13 @@ ZK_AON_MCUREL = ZK_AON_BASE + 0x88
 ZK_AON_TIMERV = ZK_AON_BASE + 0x94
 ZK_WDT_BASE   = 0xA0008000
 
+# 屏的 7 根脚所在 GPIO（GPIO0 = 0xA0010000）
+ZK_GPIO0_BASE = 0xA0010000
+ZK_EPD_PINS = [
+    (2,  'CS  '), (3,  'SCLK'), (4,  'SDI '), (5,  'DC  '),
+    (6,  'BUSY'), (7,  'RST '), (24, 'AUX '),
+]
+
 ZK_UDS_MAGIC  = 0xF175       # SOFTWARE_REG1_ULTRA_DEEP_SLEEP_MAGIC
 # 固件在状态块 +0x38 放的这个数，用来认领 boot_count / uds_seen 两个计数器
 # （跟 firmware 里的 board/zk_dbg.h 必须一致）
@@ -4549,6 +4556,26 @@ def zkstatus():
             say("    MCU_RELEASE = 0x%08X" % last['mcurel'])
 
     # ---- AON 定时器：它跑在低功耗时钟上，不走 = 32k 时钟源没起来 ----
+    # ---- 屏的 7 根脚现在的电平：看我们的驱动到底把脚放在什么状态 ----
+    data_in = rd(ZK_GPIO0_BASE + 0x00)
+    data_out = rd(ZK_GPIO0_BASE + 0x04)
+    outen = rd(ZK_GPIO0_BASE + 0x10)
+    if data_in is not None:
+        say("")
+        say("  屏的 7 根脚（GPIO0，0xA0010000）—— 自研固件空闲时留下的状态：")
+        say("    脚     输出值  实际电平  是输出吗")
+        for bit, name in ZK_EPD_PINS:
+            if bit > 15:
+                say("    %-6s (bit%d 超出 DATA 的 16 位，这块芯片上可能是别的寄存器)"
+                    % (name, bit))
+                continue
+            o = (data_out >> bit) & 1
+            i = (data_in >> bit) & 1
+            oe = (outen >> bit) & 1
+            say("    %-6s   %d       %s        %s"
+                % (name, o, i, '是' if oe else '否（输入）'))
+        say("    （BUSY 是输入脚：空闲时不忙的话应该是 0；一直是 1 可能是脚悬空/接错）")
+
     t1 = rd(ZK_AON_TIMERV)
     time.sleep(0.25)
     t2 = rd(ZK_AON_TIMERV)
@@ -4589,6 +4616,9 @@ def zkstatus():
             say("    boot_count = %d   uds_seen = %d   （boot_count = 进 main_init 的次数；"
                 % (words[12], words[13]))
             say("      这块 RAM 是 NOLOAD、软复位不清，所以它在涨就是芯片在反复复位）")
+            if len(words) > 15 and build >= 4:
+                say("    test_step = %d   （B1.3 上色测试：这一轮做的第几步；"
+                    "按一下 RST 就进下一步）" % words[15])
         else:
             say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
                 % build)

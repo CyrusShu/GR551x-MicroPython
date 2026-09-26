@@ -26,6 +26,15 @@ void epd_write_image(const uint8_t *buf);
 /* 刷新：CMD 0x22=0xC7 -> CMD 0x20 -> 等 BUSY 松开 */
 void epd_refresh(void);
 
+/* 同上，但可以指定 0x22 的更新控制字节，并可选先发温度（0x18/0x1A）
+ *
+ * 为什么要这个：原厂里有两条更新路径 ——
+ *   简单那条：0x22 = 0xC7（不重载温度/LUT）
+ *   另一条  ：0x18=0x80 -> 0x1A=0x55 -> 0x22 = 0xD7（重载温度/LUT）
+ * 而 EPD-nRF5 / Waveshare 那套 SSD16xx 驱动用的是 0x22 = 0xF7（全量）。
+ * 三种都试一遍，看屏认哪一条。 */
+void epd_refresh_ex(uint8_t ctrl, int with_temp);
+
 /* 让屏进深度睡眠（CMD 0x10=0x01）—— 测试阶段用不到 */
 void epd_deep_sleep(void);
 

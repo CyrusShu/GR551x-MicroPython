@@ -22,6 +22,8 @@
 #include "gr55xx.h"
 #include "gr55xx_sys.h"      /* sys_swd_enable() */
 
+#include <string.h>          /* memset */
+
 /* 状态块本体：链接脚本把它钉在 0x3001F000（RAM_DBG，NOLOAD，不清零） */
 volatile zk_dbg_t g_dbg __attribute__((section(".dbg_status"), used));
 
@@ -107,6 +109,24 @@ void main_init(void)
 int main(void)
 {
     uint32_t t_prev;
+    uint32_t step;
+    uint8_t  ctrl = 0xC7;
+    int      with_temp = 0;
+
+    /* 把状态块里那些"计数器"清零 —— 这块 RAM 是 NOLOAD，上电不清零，
+       上一次刷到的那几个数（heart、flags、busy_xxx、ms_xxx）全是随机值，
+       不清的话读出来就是天文数字，没法看。
+       注意：boot_count / uds_seen / boot_magic / test_step 不清 ——
+       它们是跨复位要保留的。 */
+    g_dbg.heart = 0;
+    g_dbg.flags = 0;
+    g_dbg.busy_levels = 0;
+    g_dbg.busy_polls = 0;
+    g_dbg.busy_timeouts = 0;
+    g_dbg.gpio_err = 0;
+    g_dbg.ms_init = 0;
+    g_dbg.ms_write = 0;
+    g_dbg.ms_refresh = 0;
 
     g_dbg.magic    = ZK_DBG_MAGIC;
     g_dbg.build_id = ZK_BUILD_ID;
@@ -127,8 +147,44 @@ int main(void)
     g_dbg.ms_init = tick_ms() - t_prev;
     zk_dbg_stage(ZK_STAGE_INIT_SEQ);
 
-    zk_testimg_build(s_img);
     zk_dbg_stage(ZK_STAGE_IMG_READY);
+
+    /* ------------------------------------------------------------------
+     * B1.3 上色测试：**每按一次 RST 换一步**（步号存在 RAM 里，跨复位保留）。
+     * 墨水屏会一直留着上一次的画面，所以不用掐时间看，按一下看一次就行。
+     *  1  全黑   BW=0x00 RED=0x00   刷新 0xC7
+     *  2  全白   BW=0xFF RED=0x00   刷新 0xC7
+     *  3  全红   BW=0xFF RED=0xFF   刷新 0xC7
+     *  4  四条横带（体检图）        刷新 0xC7
+     *  5  四条横带                  刷新 0xD7（先发 0x18/0x1A 温度）
+     *  6  四条横带                  刷新 0xF7（EPD-nRF5/Waveshare 那条全量）
+     * ------------------------------------------------------------------ */
+    step = (g_dbg.test_step % 6u) + 1u;
+    switch (step)
+    {
+        case 1:
+            memset(s_img, 0x00, ZK42V_EPD_IMG_BYTES);
+            break;
+        case 2:
+            memset(s_img, 0xFF, ZK42V_EPD_PLANE_BYTES);
+            memset(s_img + ZK42V_EPD_PLANE_BYTES, 0x00, ZK42V_EPD_PLANE_BYTES);
+            break;
+        case 3:
+            memset(s_img, 0xFF, ZK42V_EPD_IMG_BYTES);
+            break;
+        case 4:
+            zk_testimg_build(s_img);
+            break;
+        case 5:
+            zk_testimg_build(s_img);
+            ctrl = 0xD7;
+            with_temp = 1;
+            break;
+        default:
+            zk_testimg_build(s_img);
+            ctrl = 0xF7;
+            break;
+    }
 
     t_prev = tick_ms();
     epd_write_image(s_img);
@@ -136,8 +192,9 @@ int main(void)
     zk_dbg_stage(ZK_STAGE_IMG_SENT);
 
     t_prev = tick_ms();
-    epd_refresh();
+    epd_refresh_ex(ctrl, with_temp);
     g_dbg.ms_refresh = tick_ms() - t_prev;
+    g_dbg.test_step = step;
     zk_dbg_stage(ZK_STAGE_REFRESHED);
 
     /* 不睡觉，也不关外设：就停在这儿，心跳一直涨。

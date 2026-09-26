@@ -20,7 +20,7 @@
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
 /* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   3u
+#define ZK_BUILD_ID   4u
 
 /* 用来判断「这个 boot_count 是不是我们写的」——上电时 RAM 是随机的 */
 #define ZK_BOOT_MAGIC 0xB007C0DEu
@@ -67,7 +67,8 @@ typedef struct
                                 软复位不清 —— 所以它一直涨就说明芯片在反复复位 */
     uint32_t uds_seen;       /* 见到 AON SOFTWARE_1 == 0xF175 的次数 */
     uint32_t boot_magic;     /* == ZK_BOOT_MAGIC 才说明上面两个数有效 */
-    uint32_t rsv[ZK_DBG_WORDS - 15];
+    uint32_t test_step;      /* B1.3 上色测试：刚做完的第几步（1..6，按 RST 换下一步） */
+    uint32_t rsv[ZK_DBG_WORDS - 16];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

@@ -276,11 +276,22 @@ void epd_write_image(const uint8_t *buf)
     }
 }
 
-void epd_refresh(void)
+void epd_refresh_ex(uint8_t ctrl, int with_temp)
 {
-    epd_cmd(0x22); epd_data(0xC7);
+    if (with_temp)
+    {
+        /* 原厂 0x0100FE4E 那条路：先使能内部温度传感器、写一个温度值，再更新 */
+        epd_cmd(0x18); epd_data(0x80);
+        epd_cmd(0x1A); epd_data(0x55);
+    }
+    epd_cmd(0x22); epd_data(ctrl);
     epd_cmd(0x20);
     epd_wait_busy(30000);
+}
+
+void epd_refresh(void)
+{
+    epd_refresh_ex(0xC7, 0);
 }
 
 void epd_deep_sleep(void)
