@@ -4723,3 +4723,202 @@ def zkstatus():
             rst.close()
         except Exception:
             pass
+
+
+# =====================================================================
+#  命令 13：pushimg —— B2-B：把一张图通过 SWD 推进价签的共享内存信箱
+#
+#  为什么走 SWD 而不是串口：B2-B 想验证的是「图片管线」——任意图 -> 400x300
+#  三色 -> 上屏。SWD 这条路我们从头到尾验过（写 flash 用的就是它），零硬件未知；
+#  串口的 RX 脚还没挖出来，得先逆一遍引脚复用。等做真基站（BLE）时再上无线。
+#
+#  固件那边（board/zk_dbg.h 里的 zk_mailbox_t）在空闲循环里轮询：
+#     0x30014000 +0x00 magic   '+ZKMB' = 0x5A4B4D42
+#                 +0x04 seq     上位机每推一帧 +1（**最后写**）
+#                 +0x08 len     期望 30000
+#                 +0x0C sum     图像 30000 字节累加和
+#                 +0x10 status  固件回写：1=收到 3=刷完 0xFF=校验失败
+#                 +0x14 ack_seq 固件回写：处理到哪一帧了
+#                 +0x18 ms_refresh
+#                 +0x100 图像数据 30000 字节
+#
+#  写的时候**必须绕开 pyOCD 那条「加速写」的路**：克隆版 ST-Link 的加速读出来的
+#  是假数据（这个坑 9-22 就踩过），加速写同样不敢信。所以直接调
+#  ap._write_memory_block32()（TAR + DRW 的经典路径）。
+# =====================================================================
+ZK_MB_MAGIC   = 0x5A4B4D42
+ZK_MB_ADDR    = 0x30014000
+ZK_MB_IMG_OFF = 0x100
+ZK_MB_EPD_LEN = 30000
+
+
+@command('pushimg', help='B2-B：把 .epd（30000 字节）通过 SWD 推进价签并等它刷完')
+def pushimg():
+    f = _env_str('EPD_FILE', '')
+    if not f or not os.path.exists(f):
+        say("  要推哪张图？用 EPD_FILE=<路径> 指给我（30000 字节的 .epd）。")
+        return
+
+    data = open(f, 'rb').read()
+    if len(data) != ZK_MB_EPD_LEN:
+        say("  这个文件 %d 字节，得正好 %d（先用 img2epd.py 转）。"
+            % (len(data), ZK_MB_EPD_LEN))
+        return
+
+    mb = _env_hex('MB_ADDR', ZK_MB_ADDR)
+    img_addr = mb + ZK_MB_IMG_OFF
+    seq = _env_int('SEQ', 0)
+    if seq == 0:
+        seq = int(time.time()) & 0x7FFFFFFF
+    chunk = max(16, _env_int('CHUNK', 1024))
+    ack_ms = _env_int('ACK_TIMEOUT_MS', 90000)
+    sum_ = sum(data) & 0xFFFFFFFF
+
+    say("")
+    say("  推图  ——  B2-B：SWD -> 共享内存信箱 -> 固件刷屏")
+    say("    文件    : %s" % f)
+    say("    长度    : %d 字节，逐字节和 0x%08X" % (len(data), sum_))
+    say("    信箱    : 0x%08X（图在 +0x%X）" % (mb, ZK_MB_IMG_OFF))
+    say("    帧号    : %d" % seq)
+    say("")
+
+    probe = raw_probe()
+    manual_hold = MANUAL and (_env_str('MANUAL', '').lower() == 'hold')
+    rst = None if MANUAL else reset_driver(probe)
+
+    # 我们的固件不关 SWD，先试直接连（连上要读 CPUID 才算数）
+    hit = None
+    t0 = time.monotonic()
+    say("  先不复位，直接连 SWD ...")
+    while (time.monotonic() - t0) * 1000.0 < _env_int('DIRECT_MS', 1500):
+        try:
+            probe.connect()
+        except Exception:
+            time.sleep(0.05)
+            continue
+        try:
+            t = resolve_target()
+            if t is not None:
+                t.init()
+            ap0 = _ap_of(t) if t is not None else None
+            v = ap0._read_memory(0xE000ED00) & 0xFFFFFFFF if ap0 is not None else None
+            if v == 0x410FC241:
+                hit = 0
+                break
+        except Exception:
+            pass
+        time.sleep(0.05)
+
+    if hit is None:
+        say("  直接连不上，改成抢复位窗口（按住 RST 数到 0 松手）...")
+        hit, _tr = _reset_and_grab(probe, rst, manual_hold,
+                                   _env_int('DUMP_WINDOW_MS', 8000),
+                                   _env_int('HOLD_MS', 200))
+        if hit is None:
+            say("  没抢到窗口。再跑一次。")
+            if rst is not None:
+                try:
+                    rst.close()
+                except Exception:
+                    pass
+            return
+    say("  连上了。")
+
+    target = resolve_target()
+    if target is None:
+        say("  拿不到 target。")
+        return
+    try:
+        target.init()
+    except Exception:
+        pass
+    ap = _ap_of(target)
+    if ap is None:
+        say("  拿不到 AHB-AP。")
+        return
+
+    def rd(a):
+        try:
+            return ap._read_memory(a) & 0xFFFFFFFF
+        except Exception:
+            return None
+
+    def wr_block(a, words):
+        """经典 AP 写（绕开加速写）"""
+        if hasattr(ap, '_write_memory_block32'):
+            ap._write_memory_block32(a, words)
+        else:
+            ap.write_memory_block32(a, words)
+
+    # 1) 先把图写进去
+    say("  写图（%d 字节，每次 %d）..." % (len(data), chunk))
+    off = 0
+    t0 = time.monotonic()
+    while off < len(data):
+        n = min(chunk, len(data) - off)
+        n -= n % 4
+        if n == 0:
+            n = 4
+        words = list(struct.unpack_from('<%dI' % (n // 4), data, off))
+        try:
+            wr_block(img_addr + off, words)
+        except Exception as e:
+            say("    写到 0x%08X 失败：%s" % (img_addr + off, _first_line(e)))
+            say("    （这一半可能没写全，重跑一次这条命令就行。）")
+            if rst is not None:
+                try:
+                    rst.close()
+                except Exception:
+                    pass
+            return
+        off += n
+        if off % (chunk * 8) == 0 or off == len(data):
+            say("    ... %d/%d 字节（%.1f 秒）"
+                % (off, len(data), time.monotonic() - t0))
+
+    # 2) 写控制块：len / sum -> magic -> **seq 最后写**
+    try:
+        wr_block(mb + 0x08, [ZK_MB_EPD_LEN])
+        wr_block(mb + 0x0C, [sum_])
+        wr_block(mb + 0x00, [ZK_MB_MAGIC])
+        wr_block(mb + 0x04, [seq])
+    except Exception as e:
+        say("  写控制块失败：%s" % _first_line(e))
+        return
+    say("  控制块写好了（seq=%d 最后写）。" % seq)
+
+    # 3) 等固件回 ack
+    say("  等固件刷屏（一帧约 20 秒，最多等 %d 秒）..." % (ack_ms // 1000))
+    t0 = time.monotonic()
+    ack = None
+    while (time.monotonic() - t0) * 1000.0 < ack_ms:
+        ack = rd(mb + 0x14)
+        st = rd(mb + 0x10)
+        if ack == seq:
+            ms = rd(mb + 0x18)
+            say("")
+            if st == 3:
+                say("  >>> 刷完了（status=3，用了 %s ms）" % ms)
+                say("      —— 看屏上是不是你想要的那张图。")
+            elif st == 0xFF:
+                say("  >>> 固件说校验不过（status=0xFF）—— 长度或累加和对不上，")
+                say("      八成是图没写全，重跑一次这条命令。")
+            else:
+                say("  >>> 固件 ack 了但 status=%s，把这段发我。" % st)
+            break
+        try:
+            target.resume()      # 固件在跑才能处理信箱；顺便别让它停着
+        except Exception:
+            pass
+        time.sleep(0.3)
+    else:
+        say("")
+        say("  等超时了：ack_seq 读到 %s，期望 %d。" % (ack, seq))
+        say("  可能原因：固件没在跑（先 status.sh 看一眼）、或者刷得太慢。")
+        say("  （这一帧没丢，固件跑起来后会自己拾起来刷。）")
+
+    if rst is not None:
+        try:
+            rst.close()
+        except Exception:
+            pass

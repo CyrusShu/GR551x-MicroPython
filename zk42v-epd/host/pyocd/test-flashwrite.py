@@ -21,6 +21,7 @@ REAL_DUMP = os.path.join(HERE, 'zk42v-live-512k.bin')
 BASE = 0x01000000
 TOTAL = 0x80000
 SECTOR = 0x1000
+MB_ADDR = 0x30014000          # B2-B 共享内存信箱
 
 REAL = open(REAL_DUMP, 'rb').read()
 assert len(REAL) == TOTAL
@@ -199,6 +200,18 @@ class FakeAP:
     def __init__(self, target):
         self.target = target
 
+    # ---- B2-B：共享内存信箱的写入（模拟真实的 AHB-AP 写） ----
+    def _write_memory_block32(self, addr, data):
+        for i, w in enumerate(data):
+            a = addr + 4 * i
+            self.target.writes.append(a)
+            self.target.mem[a & 0xFFFFFFFFFF] = w & 0xFFFFFFFF
+        # 模拟固件：seq（信箱 +0x04）一被写，就表示整帧到位了 -> 立刻回 ack
+        if addr == MB_ADDR + 0x04 and data:
+            self.target.mem[MB_ADDR + 0x14] = data[0]      # ack_seq
+            self.target.mem[MB_ADDR + 0x10] = 3            # status = 刷完
+            self.target.mem[MB_ADDR + 0x18] = 19087        # ms_refresh
+
     def _read_memory(self, addr):
         return self._read_memory_block32(addr, 1)[0]
 
@@ -206,6 +219,9 @@ class FakeAP:
         out = []
         for i in range(n):
             a = addr + 4 * i
+            if a in self.target.mem:
+                out.append(self.target.mem[a])
+                continue
             if CODE_START <= a < CODE_START + 0x100:
                 out.append(self.target.ram.get(a, 0))
             elif 0x3001F000 <= a < 0x3001F040:
@@ -269,6 +285,8 @@ class FakeTarget:
         self.boot_grow = False
         self.aon_sw1 = 0
         self.dhcsr = 0x01030003      # S_HALT=1, S_RETIRE_ST=1, S_RESET_ST=0
+        self.mem = {}                # B2-B：信箱里的字
+        self.writes = []             # B2-B：写过的地址（按顺序）
         self.pc_seq = [0x0100C6A9]
         self.pc_idx = 0
         self.ap = FakeAP(self)
@@ -691,6 +709,55 @@ def main():
 
     # N5: 不许再把「读不到」直接说成「跑的还是原厂固件」（v1 的误判）
     check('N5: 文案里不再有 v1 那句误判', '跑的还是原厂固件' not in out)
+
+    # ---------------------------------------------------------------
+    # P: pushimg —— B2-B：30000 字节图 -> 共享内存信箱 -> 等固件 ack
+    # ---------------------------------------------------------------
+    epd = bytes(((i * 7 + (i >> 8)) & 0xFF) for i in range(30000))
+    ddir = tempfile.mkdtemp(prefix='fwepd-')
+    epd_path = os.path.join(ddir, 'x.epd')
+    open(epd_path, 'wb').write(epd)
+    env_push = dict(env_fast)
+    env_push['EPD_FILE'] = epd_path
+    env_push['DIRECT_MS'] = '200'
+    env_push['ACK_TIMEOUT_MS'] = '3000'
+
+    out, tgt, log = run('pushimg', env_push, fake_root=root)
+    check('P: 报出长度和累加和', ('%d 字节' % len(epd)) in out)
+    check('P: 固件回 ack 且报刷完了', '刷完了（status=3' in out)
+
+    okimg = True
+    for off in range(0, 30000, 4):
+        w = struct.unpack_from('<I', epd, off)[0]
+        if tgt.mem.get(MB_ADDR + 0x100 + off) != w:
+            okimg = False
+            break
+    check('P: 30000 字节图像全写进信箱图像区', okimg)
+    check('P: 控制块 magic 对', tgt.mem.get(MB_ADDR + 0x00) == 0x5A4B4D42)
+    check('P: 控制块 len = 30000', tgt.mem.get(MB_ADDR + 0x08) == 30000)
+    check('P: 控制块 sum 对', tgt.mem.get(MB_ADDR + 0x0C) == (sum(epd) & 0xFFFFFFFF))
+
+    # 写序：magic 先写、seq **最后**写（固件就是靠 seq 变了才知道整帧到齐）
+    wl = tgt.writes
+    check('P: seq 是最后一个写的字',
+          (MB_ADDR + 0x04) in wl and wl.index(MB_ADDR + 0x04) == len(wl) - 1)
+    check('P: magic 在 seq 之前写',
+          (MB_ADDR + 0x00) in wl and wl.index(MB_ADDR + 0x00) < wl.index(MB_ADDR + 0x04))
+
+    # P2: 长度不对 -> 明确拒绝、一个字节都不写
+    bad = os.path.join(ddir, 'bad.epd')
+    open(bad, 'wb').write(b'\x00' * 100)
+    env_bad = dict(env_push)
+    env_bad['EPD_FILE'] = bad
+    out, tgt, log = run('pushimg', env_bad, fake_root=root)
+    check('P2: 长度不对时明确拒绝', '得正好 30000' in out)
+    check('P2: 拒绝时一个字节没写', not tgt.writes)
+
+    # P3: 文件不存在 -> 明确提示
+    env_none = dict(env_push)
+    env_none['EPD_FILE'] = os.path.join(ddir, 'nope.epd')
+    out, tgt, log = run('pushimg', env_none, fake_root=root)
+    check('P3: 文件不存在时明确提示', 'EPD_FILE=' in out)
 
     bad = 0
     for label, ok in CHECKS:

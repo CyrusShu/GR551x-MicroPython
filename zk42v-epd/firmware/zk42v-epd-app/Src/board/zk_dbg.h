@@ -20,7 +20,7 @@
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
 /* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   8u
+#define ZK_BUILD_ID   9u
 
 /* 用来判断「这个 boot_count 是不是我们写的」——上电时 RAM 是随机的 */
 #define ZK_BOOT_MAGIC 0xB007C0DEu
@@ -39,6 +39,29 @@
 #define ZK_STAGE_IMG_SENT    7u   /* 30000 字节都传进屏里了 */
 #define ZK_STAGE_REFRESHED   8u   /* 刷新命令发完、BUSY 松开 —— 这时屏上应该有图 */
 #define ZK_STAGE_IDLE        9u   /* 进空闲循环（心跳在涨） */
+#define ZK_STAGE_PUSHED      10u  /* 由上位机通过共享内存推来的一帧，刷完了 */
+
+/* ---- B2-B：共享内存信箱 ----------------------------------------------------
+ * 位置：0x30010000（.bss 之后、栈之前的空档，见 GCC 的 .map）
+ *   +0x000  控制块 64 字节
+ *   +0x100  图像数据 30000 字节
+ * 上位机（pyOCD 脚本）先用 SWD 把图写进图像区，再写控制块（**seq 最后写**），
+ * 固件在空闲循环里轮询：magic 对、seq 变了 -> 校验 -> 拷贝 -> 刷屏 -> 回 ack。 */
+#define ZK_MB_MAGIC   0x5A4B4D42u   /* 'ZKMB' */
+#define ZK_MB_ADDR    0x30014000u
+#define ZK_MB_IMG     (ZK_MB_ADDR + 0x100u)
+
+typedef struct
+{
+    uint32_t magic;       /* 上位机写 ZK_MB_MAGIC 才算数 */
+    uint32_t seq;         /* 上位机每推一帧 +1（**最后写**） */
+    uint32_t len;         /* 期望 30000 */
+    uint32_t sum;         /* 图像 30000 字节的累加和 */
+    uint32_t status;      /* 固件回写：1=收到 3=刷完 0xFF=校验失败 */
+    uint32_t ack_seq;     /* 固件回写：已经处理到哪个 seq */
+    uint32_t ms_refresh;  /* 固件回写：这一帧刷了多久 */
+    uint32_t rsv[9];
+} zk_mailbox_t;
 
 /* flags */
 #define ZK_FLAG_BUSY_TIMEOUT 0x0001u   /* 等 BUSY 超时过 */

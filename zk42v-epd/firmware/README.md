@@ -337,6 +337,74 @@ python3 test-led-user.py
 
 ---
 
+# 附三：B2-B —— 从电脑推一张图到屏上（SWD + 共享内存信箱）
+
+B1 收尾之后先做的这一步，目标是**验证图片管线**：任意图片 → 400×300 三色 →
+上屏。传输走 SWD（不是串口）：这条路我们从写 flash 到读内存全验过，零硬件未知；
+串口的 RX 脚还没挖出来，等做真基站（BLE）时再上无线。
+
+## 怎么用
+
+```bash
+cd outputs/pyocd
+IMG=~/Desktop/你的图.png bash push-image.sh          # 三色（默认）
+IMG=~/Desktop/照片.jpg MODE=bw bash push-image.sh    # 只要黑白（照片通常更清楚）
+```
+
+它干两件事：
+
+1. `tools/img2epd.py` 把图转成 30000 字节，并写一张**预览 PNG**
+   （`outputs/pyocd/last-push.preview.png`）——先看预览，觉得行再推；
+2. pyOCD 用 SWD 把那 30000 字节塞进固件的**共享内存信箱**，然后等固件刷完。
+
+**判据**：
+
+| 输出 | 意思 |
+|---|---|
+| `像素 : 黑 x%  白 y%  红 z%` | 转换成功；顺手看一眼预览图 |
+| `>>> 刷完了（status=3，用了 xxxxx ms）` | 固件收下并刷完了，看屏 |
+| `>>> 固件说校验不过（status=0xFF）` | 图没写全，重跑一次即可 |
+
+## 图是怎么到屏上的
+
+```
+电脑                                    价签（GR5513）
+────                                    ──────────────
+img2epd.py   图片 -> 30000 字节          空闲循环里每 20ms 轮询信箱：
+             （前 15000 黑白面，          magic 对？seq 变了？
+               后 15000 红面）             -> 校验 len 和累加和
+pushimg      SWD 写 RAM：                  -> memcpy 到画面缓冲
+             1) 图像区 30000 字节         -> epd_write_image + refresh(0xC7)
+             2) len / sum                 -> 回写 ack_seq
+             3) magic
+             4) **seq 最后写** ←关键
+             然后轮询 ack_seq
+```
+
+**`seq` 必须最后写**：固件看到 `seq != ack_seq` 才认为"这一帧到齐了"。
+要不然它可能在图像只写了一半的时候就动手刷屏。
+
+## 内存布局（谁占哪块）
+
+| 地址 | 大小 | 用途 |
+|---|---|---|
+| `0x30004000` | 64KB | 应用 RAM：`.data` / `.bss` / heap / 栈（栈顶 `0x30014000`） |
+| `0x30014000` | 64B | 信箱控制块：magic / seq / len / sum / status / ack_seq / ms_refresh |
+| `0x30014100` | 30000B | 图像数据（到 `0x3001B630`） |
+| `0x3001F000` | 4KB | 调试状态块（`status.sh` 读它） |
+
+信箱这块地址是**写死**的（`board/zk_dbg.h` 的 `ZK_MB_ADDR`），链接脚本把
+应用 RAM 收到 `0x30014000` 为止，保证不会撞上。
+
+## 离线自测
+
+```bash
+cd outputs/firmware && python3 tools/test_img2epd.py    # 图片转换：11 项
+cd ../pyocd && python3 test-flashwrite.py               # 含 pushimg 的信箱写序用例
+```
+
+---
+
 # 附：B1 实测复盘（2026-09-27 凌晨）
 
 ## 日志里确认的事实

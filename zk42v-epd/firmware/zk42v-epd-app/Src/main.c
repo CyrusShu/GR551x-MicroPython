@@ -30,6 +30,9 @@ volatile zk_dbg_t g_dbg __attribute__((section(".dbg_status"), used));
 /* 一帧 30000 字节画在 RAM 里 */
 static uint8_t s_img[ZK42V_EPD_IMG_BYTES];
 
+/* 共享内存信箱（上位机用 SWD 直接写这块 RAM） */
+static volatile zk_mailbox_t *const s_mb = (volatile zk_mailbox_t *)ZK_MB_ADDR;
+
 /* 让固件在 flash 里留下一个能搜到的标记（验收脚本会找它）。
    放在自己的 .zk_tag 段里，链接脚本里 KEEP 住了，不会被 --gc-sections 收走。 */
 const char zk_fw_tag[] __attribute__((section(".zk_tag"), used)) = "ZK42V-EPD-CUSTOM-FW-B1";
@@ -51,6 +54,58 @@ static uint32_t tick_ms(void)
     }
 
     return (uint32_t)(DWT->CYCCNT / (clk / 1000u));
+}
+
+/* ------------------------------------------------------------------
+ * B2-B：看一眼共享内存信箱，有新图就刷上去
+ *
+ * 上位机（outputs/pyocd 里的 pushimg 命令）干这些事：
+ *   1) 用 SWD 把 30000 字节写进 ZK_MB_IMG
+ *   2) 写控制块的 len / sum
+ *   3) **最后**把 seq 写上去（这样固件看到 seq 变了，说明前面的都就位了）
+ * 固件这边：magic 对、seq != ack_seq -> 校验长度和累加和 -> 拷贝 -> 刷屏
+ * -> 回写 ack_seq（上位机就等这个）。
+ * ------------------------------------------------------------------ */
+static void zk_mailbox_poll(void)
+{
+    uint32_t i;
+    uint32_t s = 0;
+    const uint8_t *src = (const uint8_t *)ZK_MB_IMG;
+    uint32_t t0;
+
+    if (s_mb->magic != ZK_MB_MAGIC)
+    {
+        return;
+    }
+    if (s_mb->seq == s_mb->ack_seq)
+    {
+        return;
+    }
+
+    if (s_mb->len == ZK42V_EPD_IMG_BYTES)
+    {
+        for (i = 0; i < ZK42V_EPD_IMG_BYTES; i++)
+        {
+            s += src[i];
+        }
+        if (s == s_mb->sum)
+        {
+            s_mb->status = 1u;
+            memcpy(s_img, (const void *)src, ZK42V_EPD_IMG_BYTES);
+            epd_write_image(s_img);
+            t0 = tick_ms();
+            epd_refresh_ex(0xC7, 0);
+            s_mb->ms_refresh = tick_ms() - t0;
+            s_mb->status = 3u;
+            s_mb->ack_seq = s_mb->seq;
+            zk_dbg_stage(ZK_STAGE_PUSHED);
+            return;
+        }
+    }
+
+    /* 校验不过：回个错误码，同样把 ack 推上去，免得死循环重试同一帧 */
+    s_mb->status = 0xFFu;
+    s_mb->ack_seq = s_mb->seq;
 }
 
 /* 自己接管 main_init()（SDK 那份是 __WEAK，我们这份强符号会顶掉它）
@@ -176,6 +231,7 @@ int main(void)
     for (;;)
     {
         g_dbg.heart++;
-        epd_delay_ms(200);
+        zk_mailbox_poll();      /* B2-B：有新图就刷 */
+        epd_delay_ms(20);
     }
 }
