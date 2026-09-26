@@ -97,6 +97,7 @@ FILES = [
     ("outputs/pyocd/flash-app-20260927-000921.log",     "docs/runs/2026-09-27-b1/flash-app-000921.log"),
     ("outputs/pyocd/status-20260927-001407.log",        "docs/runs/2026-09-27-b1/status-001407.log"),
     ("outputs/pyocd/status-20260927-002440.log",        "docs/runs/2026-09-27-b1/status-002440.log"),
+    ("outputs/pyocd/status-20260927-004040.log",        "docs/runs/2026-09-27-b1/status-004040.log"),
 ]
 
 

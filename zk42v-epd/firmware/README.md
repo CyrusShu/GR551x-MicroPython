@@ -463,6 +463,18 @@ bash status.sh
 
 **刷完必须断电重上电**：卡住的 PSC 状态在 AON 域，按 RST 清不掉。
 
+### 实机物证（2026-09-27 00:40 那次 status.sh，日志在 `docs/runs/2026-09-27-b1/status-004040.log`）
+
+```
+  PSC_CMD     = 0x00000002   MCU_PWR_REQ=0  MCU_PWR_BUSY=1   ← 一直在忙！
+  PSC_CMD_OPC = 0x00000007   opcode=0x07 (RTC_CLK)
+  AON 定时器（跑在低功耗时钟上）：0 -> 0（差 0）→ 没走
+```
+
+三条对上：**卡住的命令就是 RTC_CLK（0x07）**，而且**低功耗时钟确实没在跑** ——
+命令发起后永远得不到时钟去完成，于是死在等待循环里。`RST_ST` 全 0 也再次确认：
+不是复位，是卡住。
+
 ## 顺手修掉的一个工具坑
 
 `zk42v-epd-app/GCC/Makefile` 里虽然有 `-MD`（生成依赖文件），但从来没 `-include` 进来，
