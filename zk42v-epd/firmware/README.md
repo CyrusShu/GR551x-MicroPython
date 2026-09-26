@@ -465,6 +465,24 @@ bash status.sh
 
 ### 实机物证（2026-09-27 00:40 那次 status.sh，日志在 `docs/runs/2026-09-27-b1/status-004040.log`）
 
+## B1.4 / B1.5：辅助脚是 P1_8，不是 P0_24（这是屏不亮的真正原因）
+
+`status.sh` 里出现 `GPIO 错=1` / `flags bit1` 时就要警觉 —— 有一个脚 `app_io_init`
+被拒了。查 SDK `drivers/src/app_io.c` 的 `APP_IO_TYPE_NORMAL` 分支：
+
+> GR551X 的引脚编号是**全局 0~31**：0~15 → GPIO0 的 bit0~15；16~31 → **GPIO1** 的 bit0~15。
+
+原厂引脚表里 `pins[7] = 0x18 = 24` 因此是 **GPIO1 bit8 = P1_8**，不是 P0_24。
+我们一开始用 `APP_IO_TYPE_GPIOA + APP_IO_PIN_24`，被那句
+`if (!(pin & APP_IO_PINS_0_15)) return INVALID_PARAM;` 直接拒掉 ——
+**这根屏的供电/使能脚从头到尾没被驱动过**，于是"命令发得出去、屏也刷了 21 秒，
+但写进 RAM 的东西不生效"。改用 `APP_IO_TYPE_NORMAL + APP_IO_PIN_24`（落到 P1_8）
+并在拉高后多等 50ms，屏立刻开始跟着我们的内容变。
+
+顺带钉死一条：**`0x3001F000` 那块调试 RAM 不能用来跨复位存东西** ——
+每次启动都会被动过（`boot_count` 一直是 1、`test_step` 读出来是随机值），
+所以"按 RST 换一步"的做法作废，B1.5 改成一次启动自动把 5 步走完。
+
 ```
   PSC_CMD     = 0x00000002   MCU_PWR_REQ=0  MCU_PWR_BUSY=1   ← 一直在忙！
   PSC_CMD_OPC = 0x00000007   opcode=0x07 (RTC_CLK)
