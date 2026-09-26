@@ -76,12 +76,15 @@ void zk_testimg_orient(uint8_t *buf)
     memset(bw,  0xFF, ZK42V_EPD_PLANE_BYTES);
     memset(red, 0x00, ZK42V_EPD_PLANE_BYTES);
 
-    /* 上边一条黑横条：整宽 10 行，BW=0 → 黑 */
-    fill_rect(bw, red, 0, 0, ZK42V_EPD_WIDTH, 10, 0, 0);
+    /* B1.7 验证图：四周 4px 黑边框 + 左上角黑方块 + 右下角红方块 + 正中黑方块
+     * 判据（坐标已修正）：黑框四周都在、黑方块在**左上**、红方块在**右下**、
+     * 中间还有一个黑方块居中 —— 那就说明方向和坐标全对了。 */
+    fill_rect(bw, red, 0, 0, ZK42V_EPD_WIDTH, 4, 0, 0);                       /* 上边 */
+    fill_rect(bw, red, 0, ZK42V_EPD_HEIGHT - 4, ZK42V_EPD_WIDTH, 4, 0, 0);    /* 下边 */
+    fill_rect(bw, red, 0, 0, 4, ZK42V_EPD_HEIGHT, 0, 0);                      /* 左边 */
+    fill_rect(bw, red, ZK42V_EPD_WIDTH - 4, 0, 4, ZK42V_EPD_HEIGHT, 0, 0);    /* 右边 */
 
-    /* 左边一条红竖条：整高 10 列，BW=1 且 RED=1 → 红（红盖过黑白面） */
-    fill_rect(bw, red, 0, 0, 10, ZK42V_EPD_HEIGHT, 1, 1);
-
-    /* 正中间一个 60x60 黑方块：BW=0 → 黑 */
-    fill_rect(bw, red, 170, 120, 60, 60, 0, 0);
+    fill_rect(bw, red, 20, 20, 60, 60, 0, 0);        /* 左上角：黑方块 */
+    fill_rect(bw, red, 310, 210, 60, 60, 1, 1);      /* 右下角：红方块（留出边框） */
+    fill_rect(bw, red, 170, 120, 60, 60, 0, 0);      /* 正中：黑方块 */
 }

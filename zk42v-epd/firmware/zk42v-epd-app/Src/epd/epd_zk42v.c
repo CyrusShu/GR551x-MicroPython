@@ -271,19 +271,41 @@ static void epd_set_cursor(void)
 void epd_write_image(const uint8_t *buf)
 {
     uint32_t i;
+    int32_t  row;
+    const uint32_t rows = ZK42V_EPD_HEIGHT;
+    const uint32_t rb   = ZK42V_EPD_ROW_BYTES;
+
+    /* ---- 为什么要按行倒着发 ------------------------------------------
+     * 原厂的初始化把数据进入模式设成 0x11=0x01（X 递增、**Y 递减**），
+     * RAM 的 Y 范围是 299..0，游标先 0x4E/0x4F 设到 (0, 299)。
+     * 于是"第一个发出去的字节"落在 RAM 第 299 行，而实测**物理屏的最下面
+     * 就是 RAM 第 299 行**（B1.6 那张方向图：黑条画在 buffer 第 0 行，
+     * 显示在屏的最下面，红条画在第 0 列，显示在最左边）。
+     * 也就是说：buffer 第 0 行本来该在最上面，却被送到了最下面。
+     * 修法很简单 —— 发的时候把行序倒过来：
+     *     buffer 第 299 行 先发 -> 落 RAM 299 = 物理最下面  ✓
+     *     buffer 第 0 行   后发 -> 落 RAM 0   = 物理最上面  ✓
+     * 列不用动（X 递增，实测左边就是左边）。
+     * ------------------------------------------------------------------ */
 
     epd_set_cursor();
     epd_cmd(0x24);                                   /* 黑白面 */
-    for (i = 0; i < ZK42V_EPD_PLANE_BYTES; i++)
+    for (row = (int32_t)rows - 1; row >= 0; row--)
     {
-        epd_data(buf[i]);
+        for (i = 0; i < rb; i++)
+        {
+            epd_data(buf[(uint32_t)row * rb + i]);
+        }
     }
 
     epd_set_cursor();
     epd_cmd(0x26);                                   /* 红面 */
-    for (i = ZK42V_EPD_PLANE_BYTES; i < ZK42V_EPD_IMG_BYTES; i++)
+    for (row = (int32_t)rows - 1; row >= 0; row--)
     {
-        epd_data(buf[i]);
+        for (i = 0; i < rb; i++)
+        {
+            epd_data(buf[ZK42V_EPD_PLANE_BYTES + (uint32_t)row * rb + i]);
+        }
     }
 }
 
