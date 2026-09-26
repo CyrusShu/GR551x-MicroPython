@@ -20,6 +20,7 @@ MAKE_TARGET_NAME := zk42v_epd
 # ---------------------------------------------------------------- 源码
 PRJ_C_SRC_FILES := \
 $(SDK_ROOT)/platform/soc/common/gr_interrupt.c \
+$(SDK_ROOT)/components/sdk/ble.c \
 $(SDK_ROOT)/platform/soc/common/gr_system.c \
 $(SDK_ROOT)/platform/soc/common/gr_platform.c \
 $(SDK_ROOT)/platform/soc/src/gr_soc.c \
@@ -42,6 +43,7 @@ $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT.c \
 ../Src/main.c \
 ../Src/epd/epd_zk42v.c \
 ../Src/img/testimg.c \
+../Src/ble/zk_ble.c \
 
 PRJ_C_INCLUDE_PATH := \
 ../Src \
@@ -49,6 +51,7 @@ PRJ_C_INCLUDE_PATH := \
 ../Src/config \
 ../Src/epd \
 ../Src/img \
+../Src/ble \
 $(SDK_ROOT)/components/boards \
 $(SDK_ROOT)/components/drivers_ext/gr55xx \
 $(SDK_ROOT)/components/drivers_ext/st7735 \

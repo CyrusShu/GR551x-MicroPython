@@ -20,7 +20,12 @@
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
 /* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   9u
+#define ZK_BUILD_ID   10u
+
+/* B2-A：BLE 状态（写进状态块，status.sh 能读） */
+#define ZK_BLE_ST_OFF        0u
+#define ZK_BLE_ST_ADV        1u   /* 在广播，等连接 */
+#define ZK_BLE_ST_CONNECTED  2u   /* 已连接 */
 
 /* 用来判断「这个 boot_count 是不是我们写的」——上电时 RAM 是随机的 */
 #define ZK_BOOT_MAGIC 0xB007C0DEu
@@ -40,6 +45,7 @@
 #define ZK_STAGE_REFRESHED   8u   /* 刷新命令发完、BUSY 松开 —— 这时屏上应该有图 */
 #define ZK_STAGE_IDLE        9u   /* 进空闲循环（心跳在涨） */
 #define ZK_STAGE_PUSHED      10u  /* 由上位机通过共享内存推来的一帧，刷完了 */
+#define ZK_STAGE_BLE         11u  /* B2-A：BLE 协议栈起来了、开始广播 */
 
 /* ---- B2-B：共享内存信箱 ----------------------------------------------------
  * 位置：0x30010000（.bss 之后、栈之前的空档，见 GCC 的 .map）
@@ -70,7 +76,7 @@ typedef struct
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 
-#define ZK_DBG_WORDS 16
+#define ZK_DBG_WORDS 24
 
 typedef struct
 {
@@ -91,7 +97,10 @@ typedef struct
     uint32_t uds_seen;       /* 见到 AON SOFTWARE_1 == 0xF175 的次数 */
     uint32_t boot_magic;     /* == ZK_BOOT_MAGIC 才说明上面两个数有效 */
     uint32_t test_step;      /* B1.3 上色测试：刚做完的第几步（1..6，按 RST 换下一步） */
-    uint32_t rsv[ZK_DBG_WORDS - 16];
+    uint32_t ble_state;      /* B2-A：ZK_BLE_ST_xxx */
+    uint32_t ble_err;        /* B2-A：协议栈/广播 API 返回的错误码（0 = 没出错） */
+    uint32_t ble_mtu;        /* B2-A：协商出来的 MTU */
+    uint32_t rsv[ZK_DBG_WORDS - 19];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

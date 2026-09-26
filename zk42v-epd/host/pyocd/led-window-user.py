@@ -1324,6 +1324,7 @@ def dumpdiag():
 # =====================================================================
 ZK_DBG_ADDR  = 0x3001F000
 ZK_DBG_MAGIC = 0x5A4B3401
+ZK_DBG_WORDS = 24       # 状态块字数（跟固件 zk_dbg.h 的 ZK_DBG_WORDS 一致）
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4401,7 +4402,7 @@ def zkstatus():
         s['wdt'] = (rd(ZK_WDT_BASE + 0x00), rd(ZK_WDT_BASE + 0x04),
                     rd(ZK_WDT_BASE + 0x08), rd(ZK_WDT_BASE + 0x10))
         words = []
-        for i in range(16):
+        for i in range(ZK_DBG_WORDS):
             v = rd(ZK_DBG_ADDR + 4 * i)
             if v is None:
                 words = None

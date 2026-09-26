@@ -18,6 +18,7 @@
 #include "zk_dbg.h"
 #include "epd_zk42v.h"
 #include "testimg.h"
+#include "zk_ble.h"
 
 #include "gr55xx.h"
 #include "gr55xx_sys.h"      /* sys_swd_enable() */
@@ -224,6 +225,11 @@ int main(void)
     g_dbg.ms_refresh = tick_ms() - t_prev;
     g_dbg.test_step = 1u;
     zk_dbg_stage(ZK_STAGE_REFRESHED);
+
+    /* B2-A：起 BLE（广播 + 之后的服务）。
+       放在刷完第一帧之后：屏先亮，再起无线；协议栈初始化不阻塞主循环。 */
+    zk_ble_start();
+    zk_dbg_stage(ZK_STAGE_BLE);
 
     /* 不睡觉，也不关外设：就停在这儿，心跳一直涨。
        调试器随时进来都能看到「活着」的证据。 */

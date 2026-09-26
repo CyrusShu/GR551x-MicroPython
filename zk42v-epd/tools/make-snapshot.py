@@ -39,6 +39,8 @@ FILES = [
     ("outputs/firmware/zk42v-epd-app/GCC/gcc_linker_zk42v.lds",
                                                         "firmware/zk42v-epd-app/GCC/gcc_linker_zk42v.lds"),
     ("outputs/firmware/zk42v-epd-app/Src/main.c",       "firmware/zk42v-epd-app/Src/main.c"),
+    ("outputs/firmware/zk42v-epd-app/Src/ble/zk_ble.c", "firmware/zk42v-epd-app/Src/ble/zk_ble.c"),
+    ("outputs/firmware/zk42v-epd-app/Src/ble/zk_ble.h", "firmware/zk42v-epd-app/Src/ble/zk_ble.h"),
     ("outputs/firmware/zk42v-epd-app/Src/config/custom_config.h",
                                                         "firmware/zk42v-epd-app/Src/config/custom_config.h"),
     ("outputs/firmware/zk42v-epd-app/Src/board/zk42v_board.h",
