@@ -115,21 +115,23 @@ cd ../pyocd && for t in test-*.py; do python3 "$t"; done
 
 ## 怎么更新这个文件夹（每次改完都这么做）
 
-真正的代码在本机 `outputs/` 下改，改完把快照刷到这边、提交、推送：
+真正的代码在本机 `outputs/` 下改，改完把快照刷到这边、**本地提交**：
 
 ```bash
-cd <本仓库>/zk42v-epd
+cd <本地仓库>/zk42v-epd
 python3 tools/make-snapshot.py          # 从本机 outputs/ 覆盖式同步（--dry-run 可先看）
 git add -A && git commit -m "说明这次改了什么"
-git push
 ```
+
+**推送的节奏**：平时只本地提交攒着，**到一个里程碑再 `git push`**（省得每改一行就往
+GitHub 推一次）。里程碑指的是：B1 点亮、B2 BLE 能推图、B3 基站能跑 这种阶段性的点。
 
 `tools/make-snapshot.py` 里的 `FILES` 表就是「哪些文件算项目文件」的清单 ——
 加新文件时在表里加一行。它**不会**动原厂固件备份和构建产物（见下节）。
 
-当前这个文件夹在 **`zk42v-epd` 分支**上（没有直接写进 `master`，这样 fork 的
-`master` 还能干净地跟上游 `goodix-ble/GR551x-MicroPython` 同步）。
-想把合并进 `master`：
+当前这个文件夹在 **`zk42v-epd` 分支**上，远端是 `CyrusShu/GR551x-MicroPython`
+（没有直接写进 `master`，这样 fork 的 `master` 还能干净地跟上游
+`goodix-ble/GR551x-MicroPython` 同步）。想把合并进 `master`：
 
 ```bash
 git checkout master && git merge zk42v-epd && git push
