@@ -220,6 +220,8 @@ class FakeAP:
                     out.append(self.target.dbg.get(a, 0))
             elif a == 0xA000C560:
                 out.append(self.target.aon_sw1)      # AON SOFTWARE_1
+            elif a == 0xE000EDF0:
+                out.append(self.target.dhcsr)        # DHCSR（复位/退休 粘滞位）
             elif BASE <= a < BASE + TOTAL:
                 if self.target.xip_on:
                     out.append(struct.unpack_from('<I', bytes(self.target.flash),
@@ -266,6 +268,7 @@ class FakeTarget:
         self.boot = 0
         self.boot_grow = False
         self.aon_sw1 = 0
+        self.dhcsr = 0x01030003      # S_HALT=1, S_RETIRE_ST=1, S_RESET_ST=0
         self.pc_seq = [0x0100C6A9]
         self.pc_idx = 0
         self.ap = FakeAP(self)
@@ -322,7 +325,8 @@ def real_copy():
 
 def run(cmd, env, flash=None, ram=None, fail_init=False, fail_erase_at=None,
         fail_program_at=None, fake_root=None, xip_stuck=False,
-        dbg=None, heart_live=True, aon_sw1=0, pc_seq=None, boot_grow=False):
+        dbg=None, heart_live=True, aon_sw1=0, pc_seq=None, boot_grow=False,
+        dhcsr=None):
     from pyocd.flash.flash import Flash
     Flash.LOG = []
     tgt = FakeTarget(bytearray(REAL if flash is None else flash),
@@ -336,6 +340,8 @@ def run(cmd, env, flash=None, ram=None, fail_init=False, fail_erase_at=None,
     tgt.heart_live = heart_live
     tgt.aon_sw1 = aon_sw1
     tgt.boot_grow = boot_grow
+    if dhcsr is not None:
+        tgt.dhcsr = dhcsr
     if pc_seq:
         tgt.pc_seq = list(pc_seq)
     os.environ.update({
@@ -629,7 +635,7 @@ def main():
             0x3001F020: 120,             # ms_init
             0x3001F024: 700,             # ms_write
             0x3001F028: 2100,            # ms_refresh
-            0x3001F02C: 0x00000001,      # build_id
+            0x3001F02C: 2,               # build_id（B1.1 才有那两个计数器）
             0x3001F030: 1,               # boot_count
             0x3001F034: 0,               # uds_seen
             0x3001F038: 0xB007C0DE,      # boot_magic
@@ -657,11 +663,25 @@ def main():
     check('N3: 说明会无限重启', '无限重启循环' in out)
     check('N3: 报出 AON 寄存器', 'SOFTWARE_1 = 0x0000F175' in out)
 
-    # N4: PC 在 ROM 和 APP 之间跳 —— 判成芯片在反复复位
+    # N4: PC 在 ROM 和 APP 之间跳 —— 但 DHCSR 说没复位，就不许再喊"反复复位"
+    #     （v2 之前就是栽在这个误判上：PC 跳一次不等于复位）
     out, tgt, log = run('status', env_fast, fake_root=root, dbg=dbg_block(stage=64),
                         pc_seq=[0x00001234, 0x0100C6A9])
-    check('N4: 判成芯片在反复复位', '芯片在反复复位' in out)
+    check('N4: 没复位就明说没复位', '没看到复位' in out)
+    check('N4: 不再拿「PC 在 ROM/APP 之间跳」当复位判据', '之间来回跳' not in out)
     check('N4: 报出 main_init 只走到 64', 'stage = 64' in out)
+
+    # N4c: DHCSR 的 S_RESET_ST=1 时，必须判成真的在复位
+    out, tgt, log = run('status', env_fast, fake_root=root, dbg=dbg_block(),
+                        dhcsr=0x02030003)     # bit25 = S_RESET_ST
+    check('N4c: DHCSR 说有复位就判成复位', '芯片确实在复位' in out)
+
+    # N4d: PC 全挤在一小段里 -> 判成「卡在某个循环」
+    out, tgt, log = run('status', env_fast, fake_root=root, dbg=dbg_block(stage=64),
+                        pc_seq=[0x0100CEAE, 0x0100CEB0, 0x0100CEAE])
+    check('N4d: 判成卡在某个循环里', '卡在' in out and '这个循环里' in out)
+    check('N4d: 用 map 反查出了函数名', 'platform_set_rtc_crystal_delay' in out
+          or 'platform_disable_sleep_timer' in out or '0x0100CEA' in out)
 
     # N4b: boot_count 在采样期间往上涨 —— 也要判成反复复位
     out, tgt, log = run('status', env_fast, fake_root=root, dbg=dbg_block(),

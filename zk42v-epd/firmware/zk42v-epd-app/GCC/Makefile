@@ -163,6 +163,11 @@ $(BUILD_LST)/$(MAKE_TARGET_NAME).elf: $(OBJ_ADJUST)
 mk_path :
 	@mkdir -p $(BUILD) $(BUILD_OBJ) $(BUILD_LST)
 
+# 把 gcc -MD 生成的依赖文件读进来 —— 否则改一个头文件（比如 custom_config.h）
+# 不会触发任何重编，二进制看起来"改了没反应"。（2026-09-27 踩到过：
+# CFG_LPCLK_INTERNAL_EN 从 0 改成 1，重编出来 SHA 一模一样。）
+-include $(wildcard $(BUILD_OBJ)/*.d)
+
 clean:
 	rm -rf $(BUILD)
 

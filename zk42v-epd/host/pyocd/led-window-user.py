@@ -4163,11 +4163,90 @@ ZK_BFAR_ADDR  = 0xE000ED38
 
 ZK_AON_BASE   = 0xA000C500
 ZK_AON_SW0    = ZK_AON_BASE + 0x00
+ZK_AON_PADCTL0= ZK_AON_BASE + 0x50
 ZK_AON_SW1    = ZK_AON_BASE + 0x60
 ZK_AON_SW2    = ZK_AON_BASE + 0x78
+ZK_AON_PSC_CMD= ZK_AON_BASE + 0x80
+ZK_AON_PSC_OPC= ZK_AON_BASE + 0x84
+ZK_AON_MCUREL = ZK_AON_BASE + 0x88
+ZK_AON_TIMERV = ZK_AON_BASE + 0x94
 ZK_WDT_BASE   = 0xA0008000
 
 ZK_UDS_MAGIC  = 0xF175       # SOFTWARE_REG1_ULTRA_DEEP_SLEEP_MAGIC
+# 固件在状态块 +0x38 放的这个数，用来认领 boot_count / uds_seen 两个计数器
+# （跟 firmware 里的 board/zk_dbg.h 必须一致）
+ZK_BOOT_MAGIC = 0xB007C0DE
+
+# AON PSC 命令表（AON_PSC_CMD_OPC_OPCODE_xxx）
+ZK_PSC_OPC = {
+    0x00: 'LOOPBACK', 0x01: 'EF_DIR_ON', 0x02: '32_TIMER_LD', 0x03: 'DEEP_SLEEP',
+    0x04: 'EF_DIR_OFF', 0x05: 'EXT_CLK', 0x06: 'RNG_CLK', 0x07: 'RTC_CLK',
+    0x08: 'RNG2_CLK', 0x09: 'LD_MEM_SLP_CFG', 0x0A: 'LD_MEM_WKUP_CFG',
+    0x0B: 'DPAD_LE_HI', 0x0C: 'DPAD_LE_LO', 0x10: 'SLP_TIMER_MODE_0',
+    0x11: 'SLP_TIMER_MODE_1', 0x12: 'SLP_TIMER_MODE_2', 0x13: 'SLP_TIMER_MODE_3',
+}
+
+# ---- PC 反查：按本机编译出来的 .map，把 PC 翻译成「哪个函数 + 偏移」----------
+# 注意：这份 .map 是**本机这份固件**编出来的。如果你刷进去的不是它编出来的那份，
+# 函数名会整体偏移（B1 和 B1.1 之间差 0x54 就是这个原因）。
+ZK_MAP_DEFAULT = ("/Users/mac/Documents/Codex/2026-09-15/a/outputs/firmware/"
+                  "zk42v-epd-app/GCC/out/lst/zk42v_epd.map")
+_ZK_MAP = {}
+
+
+def _zk_map_load():
+    if _ZK_MAP:
+        return _ZK_MAP
+    _ZK_MAP['path'] = None
+    _ZK_MAP['text'] = []
+    _ZK_MAP['data'] = []
+
+    path = _env_str('MAP_FILE', '') or ZK_MAP_DEFAULT
+    if not os.path.exists(path):
+        return _ZK_MAP
+    _ZK_MAP['path'] = path
+
+    import re as _re
+    pat = _re.compile(r'^\s*\.([\w.$]+)\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s*(\S*)\s*$')
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = pat.match(line)
+                if not m:
+                    continue
+                name, addr, size, obj = m.groups()
+                a = int(addr, 16)
+                n = int(size, 16)
+                # 只要「输入段」那些行（它们最后一列是 .o 文件名）；
+                # 输出段（比如整块 .text）没有对象名，跳过，否则它会盖住所有查询。
+                if a == 0 or n == 0 or not obj:
+                    continue
+                if name.startswith('text'):
+                    _ZK_MAP['text'].append((a, a + n, name, obj))
+                elif name in ('data', 'bss', 'my_section', 'ramfunc', 'RAM_CODE',
+                              'TINY_RAM_SPACE'):
+                    _ZK_MAP['data'].append((a, a + n, name, obj))
+    except Exception:
+        pass
+    _ZK_MAP['text'].sort()
+    _ZK_MAP['data'].sort()
+    return _ZK_MAP
+
+
+def _zk_sym(pc):
+    """PC -> '函数名+0x偏移'（查不到就返回空串）"""
+    if pc is None:
+        return ''
+    m = _zk_map_load()
+    for a, b, name, obj in m['text']:
+        if a <= pc < b:
+            fn = name[5:] if name.startswith('text.') else name
+            return '%s+0x%X' % (fn, pc - a)
+    for a, b, name, obj in m['data']:
+        if a <= pc < b:
+            base = os.path.basename(obj) if obj else '?'
+            return '(%s 段里的代码，来自 %s)' % (name, base)
+    return ''
 
 
 def _zk_pc_where(pc):
@@ -4200,7 +4279,7 @@ def zkstatus():
 
     say("")
     say("  自研固件体检 0x%08X" % ZK_DBG_ADDR)
-    say("  规矩：每次都先 halt 再读；隔一小会儿采几个点，看芯片是不是在反复复位")
+    say("  规矩：每次都先 halt 再读；隔一小会儿采几个点，判断它是在跑、在复位、还是卡住了")
     say("")
 
     hit = None
@@ -4308,6 +4387,10 @@ def zkstatus():
         s['sw0'] = rd(ZK_AON_SW0)
         s['sw1'] = rd(ZK_AON_SW1)
         s['sw2'] = rd(ZK_AON_SW2)
+        s['padctl0'] = rd(ZK_AON_PADCTL0)
+        s['psc'] = rd(ZK_AON_PSC_CMD)
+        s['psc_opc'] = rd(ZK_AON_PSC_OPC)
+        s['mcurel'] = rd(ZK_AON_MCUREL)
         s['wdt'] = (rd(ZK_WDT_BASE + 0x00), rd(ZK_WDT_BASE + 0x04),
                     rd(ZK_WDT_BASE + 0x08), rd(ZK_WDT_BASE + 0x10))
         words = []
@@ -4325,6 +4408,10 @@ def zkstatus():
     gap = max(0, _env_int('SAMPLE_GAP_MS', 600))
     samples = []
 
+    say("  （每行：PC 落在哪 · 符号 · stage · DHCSR 的粘滞位。"
+        "RST_ST=1 表示「上次读 DHCSR 之后芯片复位过」）")
+    say("")
+
     for i in range(n):
         if i:
             do_resume()
@@ -4335,16 +4422,28 @@ def zkstatus():
             w = s['words']
             magic = _zk_magic_of(w)
             stage = w[2] if w else None
-            boot = w[12] if (w and len(w) > 12) else None
-            uds = w[13] if (w and len(w) > 13) else None
-            say("  #%d  PC=%-10s %-38s magic=%-10s stage=%-4s boot=%-4s uds=%s"
+            build = w[11] if (w and len(w) > 11) else None
+            bmagic = w[14] if (w and len(w) > 14) else None
+            counters_ok = (build is not None and build >= 2
+                           and bmagic == ZK_BOOT_MAGIC)
+            dh = s['dhcsr']
+            # DHCSR 的粘滞位：bit25 S_RESET_ST（上次读 DHCSR 之后复位过）、
+            #                 bit24 S_RETIRE_ST（期间执行过指令）
+            rst_st = ((dh >> 25) & 1) if dh is not None else None
+            ret_st = ((dh >> 24) & 1) if dh is not None else None
+            sym = _zk_sym(s['pc']) or '-'
+            extra = ''
+            if counters_ok:
+                extra = '  boot=%s uds=%s' % (w[12], w[13])
+            say("  #%d  PC=0x%-9s %-30s %-24s %-8s RST_ST=%s RETIRE=%s%s"
                 % (i + 1,
-                   ('0x%08X' % s['pc']) if s['pc'] is not None else '读不到',
+                   ('%08X' % s['pc']) if s['pc'] is not None else '读不到   ',
                    '[%s]' % _zk_pc_where(s['pc']),
-                   ('0x%08X' % magic) if magic is not None else '读不到',
-                   stage if stage is not None else '-',
-                   boot if boot is not None else '-',
-                   uds if uds is not None else '-'))
+                   sym[:24],
+                   ('stage=%s' % stage) if stage is not None else 'stage=-',
+                   rst_st if rst_st is not None else '?',
+                   ret_st if ret_st is not None else '?',
+                   extra))
             continue
 
         say("  #%d  读不到 —— 调试口这会儿不在了" % (i + 1))
@@ -4392,6 +4491,9 @@ def zkstatus():
     say("  PC        : %s  ← %s"
         % (('0x%08X' % last['pc']) if last['pc'] is not None else '读不到',
            _zk_pc_where(last['pc'])))
+    if _zk_sym(last['pc']):
+        say("              按本机这份 .map 查：%s" % _zk_sym(last['pc']))
+        say("              （刷进芯片的那份要是跟这份 .elf 不是同一次编译的，名字会偏）")
     say("  LR / SP   : %s / %s"
         % (('0x%08X' % last['lr']) if last['lr'] is not None else '读不到',
            ('0x%08X' % last['sp']) if last['sp'] is not None else '读不到'))
@@ -4413,9 +4515,54 @@ def zkstatus():
         % (sw1 if sw1 is not None else 0,
            (sw1 & 0xFFFF) if sw1 is not None else 0,
            '  ← 这是"超深睡唤醒"标志！' if (sw1 is not None and (sw1 & 0xFFFF) == ZK_UDS_MAGIC) else ''))
+    if sw1 is not None and (sw1 & 0xFFFF) != ZK_UDS_MAGIC:
+        say("      → 里面没有 0x%04X 这个标志，平台那条「超深睡唤醒就复位整个系统」"
+            "的路径**不成立**。" % ZK_UDS_MAGIC)
     say("    SOFTWARE_2 = 0x%08X" % (last['sw2'] if last['sw2'] is not None else 0))
     say("    WDT LOAD/VALUE/CTRL/RIS = %s"
         % ' '.join(('0x%08X' % v) if v is not None else 'n/a' for v in last['wdt']))
+
+    # ---- PSC（电源状态控制器）：自研固件卡就卡在这上面 ----
+    psc = last.get('psc')
+    opc = last.get('psc_opc')
+    if psc is not None:
+        busy = (psc >> 1) & 1
+        req = psc & 1
+        say("")
+        say("  PSC（电源状态控制器，就在 AON 里）—— 自研固件就是卡在这里：")
+        say("    PSC_CMD     = 0x%08X   MCU_PWR_REQ=%d  MCU_PWR_BUSY=%d %s"
+            % (psc, req, busy, '  ← 一直在忙！' if busy else ''))
+        if opc is not None:
+            code = opc & 0xFF
+            say("    PSC_CMD_OPC = 0x%08X   opcode=0x%02X (%s)"
+                % (opc, code, ZK_PSC_OPC.get(code, '未知')))
+            if busy:
+                say("    → 卡住的那条命令是 0x%02X (%s)，它一直没完成。"
+                    % (code, ZK_PSC_OPC.get(code, '未知')))
+                if code == 0x07:
+                    say("      0x07 = RTC_CLK（把 PSC 的时基切到 RTC / 32.768kHz）。")
+                    say("      这条命令完不成，通常就是这个 32.768kHz 时钟源没在跑/不存在。")
+                elif code == 0x03:
+                    say("      0x03 = DEEP_SLEEP —— 这不是我们固件发的（我们没让它睡），")
+                    say("      更像上一轮原厂固件睡下去时卡住的残留（AON 域软复位不清）。")
+        if last.get('mcurel') is not None:
+            say("    MCU_RELEASE = 0x%08X" % last['mcurel'])
+
+    # ---- AON 定时器：它跑在低功耗时钟上，不走 = 32k 时钟源没起来 ----
+    t1 = rd(ZK_AON_TIMERV)
+    time.sleep(0.25)
+    t2 = rd(ZK_AON_TIMERV)
+    lpclk_dead = False
+    if t1 is not None and t2 is not None:
+        say("")
+        say("  AON 定时器（跑在低功耗时钟上）：读两次（隔 250ms）")
+        say("    %d  ->  %d    （差 %d）" % (t1, t2, (t2 - t1) & 0xFFFFFFFF))
+        if (t2 - t1) & 0xFFFFFFFF == 0:
+            lpclk_dead = True
+            say("    → **没走**：低功耗时钟（32.768kHz 那一路）没有在跑。")
+            say("      这也解释了 PSC 为什么完不成 RTC_CLK 命令。")
+        else:
+            say("    → 在走，低功耗时钟是活的（那 PSC 卡住就是别的原因）。")
 
     words = last['words']
     say("")
@@ -4436,10 +4583,17 @@ def zkstatus():
                words[5], words[6], words[7]))
         say("    耗时(ms)：复位+初始化 %d / 传图 %d / 刷新 %d"
             % (words[8], words[9], words[10]))
-        if len(words) > 13:
+        build = words[11] if len(words) > 11 else 0
+        bmagic = words[14] if len(words) > 14 else 0
+        if build >= 2 and bmagic == ZK_BOOT_MAGIC:
             say("    boot_count = %d   uds_seen = %d   （boot_count = 进 main_init 的次数；"
                 % (words[12], words[13]))
             say("      这块 RAM 是 NOLOAD、软复位不清，所以它在涨就是芯片在反复复位）")
+        else:
+            say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
+                % build)
+            say("      状态块里 +0x30 往后那两个数是没被写过的 RAM 垃圾值，别当真；")
+            say("      要看这两个数，刷 B1.1 及以后的固件。）")
 
     say("")
     say("  ---------------- 结论 ----------------")
@@ -4448,27 +4602,51 @@ def zkstatus():
     app_hits = sum(1 for p in pcs if p is not None and 0x0100A000 <= p < 0x0107F000)
     magic_ok = bool(words) and words[0] == ZK_DBG_MAGIC
 
-    if len(samples) >= 2 and rom_hits and app_hits:
-        say("  ▶ PC 在 ROM 和 APP 之间来回跳 ⇒ **芯片在反复复位**。")
-        say("    我们的固件每次都能进 main_init（magic 写上了），但活不长。")
-    elif magic_ok and app_hits:
-        say("  ▶ 我们的固件在跑（PC 落在 APP 里，magic 也在）。")
+    # 复位判据：DHCSR 的 S_RESET_ST 粘滞位（每次 halt 后读一次，读即清零）
+    rst_hits = sum(1 for s in samples
+                   if s['dhcsr'] is not None and (s['dhcsr'] >> 25) & 1)
+    ret_hits = sum(1 for s in samples
+                   if s['dhcsr'] is not None and (s['dhcsr'] >> 24) & 1)
+
+    if rst_hits:
+        say("  ▶ **芯片确实在复位**：%d/%d 次采样里 DHCSR 的 S_RESET_ST=1"
+            % (rst_hits, len(samples)))
+        say("    （这个位是粘滞的：只要上次读 DHCSR 之后芯片复位过就会置 1。）")
+    else:
+        say("  ▶ **没看到复位**：%d 次采样里 S_RESET_ST 全是 0。" % len(samples))
+        if ret_hits:
+            say("    而且 RETIRE_ST=1 —— CPU 在退休指令，也就是说它**在跑**，只是在某个地方打转。")
+
+    if magic_ok and app_hits:
+        say("  ▶ 我们的固件在跑（magic 在、PC 也落在 APP / SDK 的 RAM 代码里）。")
     elif magic_ok:
         say("  ▶ 我们的固件至少跑到了 main_init（magic 在），但 PC 不在 APP 里。")
     else:
         say("  ▶ 状态块里没有我们的印记 —— 固件没跑到 main_init，或者根本没被执行。")
 
+    # PC 聚集分析：都挤在一小段里 = 卡在某个循环，不是到处乱跳
+    if len(samples) >= 2:
+        code_pcs = sorted(p for p in pcs if p is not None and p >= 0x01000000)
+        if len(code_pcs) >= 2 and (code_pcs[-1] - code_pcs[0]) <= 0x40:
+            say("  ▶ 采样到的 PC 全挤在 0x%08X~0x%08X 这 %d 字节里 ⇒"
+                % (code_pcs[0], code_pcs[-1], code_pcs[-1] - code_pcs[0]))
+            syms = [s for s in (_zk_sym(p) for p in code_pcs) if s]
+            say("    **卡在%s这个循环里**（不是在到处跑）。"
+                % ('「%s」' % syms[-1] if syms else '某个'))
+
     boots = [s['words'][12] for s in samples
-             if s['words'] and len(s['words']) > 12]
+             if s['words'] and len(s['words']) > 14
+             and s['words'][11] >= 2 and s['words'][14] == ZK_BOOT_MAGIC]
     if len(boots) >= 2 and boots[-1] > boots[0]:
         say("  ▶ boot_count 从 %d 涨到 %d ⇒ 采样这段时间里芯片重启了 %d 次。"
             % (boots[0], boots[-1], boots[-1] - boots[0]))
         say("    （这块 RAM 是 NOLOAD、软复位不清，所以这个数是可信的。）")
-    if words and len(words) > 13 and words[13]:
+    if (words and len(words) > 14 and words[11] >= 2
+            and words[14] == ZK_BOOT_MAGIC and words[13]):
         say("  ▶ uds_seen = %d ⇒ 固件清掉过 %d 次「超深睡唤醒」标志。"
             % (words[13], words[13]))
         if words[3] & 0x0010:
-            say("    这一版固件已经带上了清除逻辑（flags bit4），说明之前那个死循环就是它。")
+            say("    这一版固件已经带上了清除逻辑（flags bit4），说明那个死循环确实犯过。")
 
     if sw1 is not None and (sw1 & 0xFFFF) == ZK_UDS_MAGIC:
         say("")
@@ -4478,6 +4656,21 @@ def zkstatus():
         say("     ultra_deep_sleep_wakeup_handle() 都会调 hal_nvic_system_reset()")
         say("     把整个系统复位一遍 -> 无限重启循环。")
         say("     修法：固件在 main_init() 里把它清掉（一行），或者换个不查这个标志的启动路径。")
+
+    if psc is not None and ((psc >> 1) & 1):
+        code = (opc & 0xFF) if opc is not None else None
+        say("")
+        say("  ▶▶ 找到卡死点了：AON 的 PSC 一直 BUSY，卡住的命令是 %s。"
+            % (('0x%02X (%s)' % (code, ZK_PSC_OPC.get(code, '未知'))) if code is not None else '（opcode 读不到）'))
+        if lpclk_dead:
+            say("     而且 AON 定时器不走 ⇒ 低功耗时钟没在跑。")
+            say("     合起来看：SDK 在 clock init 里要求把 PSC 时基切到 RTC(32.768kHz)，")
+            say("     但这条命令等不到完成的时钟，于是死在 platform_disable_sleep_timer() 的等待循环里。")
+            say("     下一步方向：要么让 32k 时钟跑起来（板上有/能起振），")
+            say("     要么改 SDK 那条时钟路径（把 LP 时钟换成内部 RC）。")
+        else:
+            say("     低功耗时钟是在跑的 ⇒ 更像上一轮睡眠被中途打断留下的残留状态，")
+            say("     断电重上电（AON 域彻底清零）应该就能过这一步。")
 
     if last['cfsr'] or last['hfsr']:
         say("")

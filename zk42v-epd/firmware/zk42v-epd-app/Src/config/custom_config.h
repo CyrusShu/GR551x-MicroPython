@@ -130,8 +130,25 @@
 #define CFG_LF_ACCURACY_PPM     500
 #endif
 
+// <<< 跟样例不一样 ④>>> 低功耗时钟用内部 RC，不用外部 32.768kHz 晶振
+//
+// 为什么必须改（2026-09-27 实机定位）：
+//   platform/soc/src/gr_soc.c 的 platform_init() 里是这么选的：
+//       #if CFG_LPCLK_INTERNAL_EN
+//           platform_clock_init_rng(SYSTEM_CLOCK, RNG_OSC_CLK2, 500, 0);   // 内部 RC
+//       #else
+//           platform_set_rtc_crystal_delay(CFG_CRYSTAL_DELAY);
+//           platform_clock_init(SYSTEM_CLOCK, RTC_OSC_CLK, ...);           // RTC/32.768k
+//       #endif
+//   默认（0）走 RTC：PSC 要先执行一条 RTC_CLK(opcode 7) 命令把时基切到 32.768kHz，
+//   而这颗价签**没有**那个晶振 -> 命令永远完不成 -> MCU_PWR_BUSY 一直置位 ->
+//   死在 platform_disable_sleep_timer() 的等待循环里（屏不亮、PC 卡在 0x0100CEAE）。
+//
+//   反过来看原厂固件（outputs/analysis/app.asm，VA 0x0101F0F4）它在同一处是
+//       movs r3,#0 ; mov.w r2,#500 ; movs r1,#2 ; movs r0,#4 ; bl ...
+//   r1=2 = RNG_OSC_CLK2，也就是原厂用的就是内部 RC。所以这才是对得上的配置。
 #ifndef CFG_LPCLK_INTERNAL_EN
-#define CFG_LPCLK_INTERNAL_EN   0
+#define CFG_LPCLK_INTERNAL_EN   1
 #endif
 
 #ifndef CFG_CRYSTAL_DELAY

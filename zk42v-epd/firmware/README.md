@@ -1,23 +1,24 @@
 # ZK42V 自研固件（方向 B）第一版：把屏点亮
 
-> **2026-09-27 B1 实测结果 → B1.1 修复**
+> **2026-09-27 B1 实测结果 → B1.1 → B1.2（真凶找到了）**
 >
 > 写入和验收都过了（两次 `MODE=app` 各写 19+1 颗扇区、约 11 秒；
 > `MODE=appverify` 报 `APP_VERIFY_OK`），但**屏没亮，而且 3 秒后调试口就没了**。
 >
-> 分析（详见文末「B1 实测复盘」）：直接连上那一刻调试口是好的、CPUID 读得出来，
-> CPU 是 `S_HALT=1` 停着的（上一轮 appverify 留下的状态）；让它跑 3 秒之后就什么都
-> 读不到 —— 而"CPU 跑着读内存"这条路 2026-09-22 的 flash-lab4 已经验证过是通的，
-> 所以不是读法问题，是**调试口在这 3 秒里被重置/关掉了**。
+> **真凶（B1.2 修的）**：芯片卡在 SDK 的
+> `platform_clock_init() → platform_disable_sleep_timer()` 等待 **AON PSC** 空闲的
+> 死循环里（PC 精确落在 `0x0100CEAE/0x0100CEB0`，还有一次落在被它轮询的那段 RAM 代码
+> `0x30004E18`）。原因是：SDK 默认要求**低功耗时钟走 RTC / 外部 32.768kHz 晶振**
+> （PSC 要执行 `RTC_CLK` 命令才切得过去），而这颗价签**没有那个晶振**，命令永远完不成，
+> `MCU_PWR_BUSY` 一直置位。原厂固件在同一处传的是 `r1=2`（`RNG_OSC_CLK2`，内部 RC）
+> —— 见 `outputs/analysis/app.asm` VA `0x0101F0F4`。
 >
-> 最可疑的病根：平台 `soc_init()` 里的 `ultra_deep_sleep_wakeup_handle()` —— 它查
-> `AON->SOFTWARE_1` 低 16 位，等于 `0xF175` 就调 `hal_nvic_system_reset()` 复位整个系统；
-> 而这个标志在 AON 域、**软复位不会清**，于是变成无限重启循环。
+> **B1.2 的改法**：`custom_config.h` 里 `CFG_LPCLK_INTERNAL_EN` 从 0 改成 **1**
+> （内部 RC 当低功耗时钟），编译产物里 `platform_init` 已经改成调
+> `platform_clock_init_rng(..., RNG_OSC_CLK2, ...)`、不再调 `platform_set_rtc_crystal_delay`。
 >
-> **B1.1 就是照这个改的**：`main_init()` 里把这个标志清掉（我们从 bootloader 直接
-> 跳进来，永远该按冷启动走），同时加了两个计数器：
-> `boot_count`（进 main_init 的次数，这块 RAM 软复位不清，一直涨就是反复复位）
-> 和 `uds_seen`（清掉过几次这个标志 —— 大于 0 就证明刚才那个死循环就是它）。
+> ⚠️ **刷完 B1.2 必须断电重上电**（不是按 RST）：卡住的 PSC 状态在 AON 域，
+> 系统复位清不掉，只有彻底断电能清。断电 10 秒再上电，屏上就该出现那四条横带。
 
 > 2026-09-26 · 前置状态：原厂固件已备份验真，写入路径已验通（`restore`/`verify` OK），
 > 屏的参数已全部逆向出来（见 `../analysis/PANEL-zk42v.md`）。
@@ -68,8 +69,8 @@ cd outputs/firmware && bash build.sh
 [OK  ] 可以刷了。
 ```
 
-以及 `zk42v-custom-512k.bin` 的 SHA-256。（B1.1 这一版是
-`bf06f9aae4921c2567cbcce20f7face9cedccefd87c14fccec2da54908970964`，
+以及 `zk42v-custom-512k.bin` 的 SHA-256。（B1.2 这一版是
+`1ab3aeea9c5fd88b1655dcc875a4cde24b69b036443f61a2b38e2a0c8fd5d2c6`，
 你重编出来的应该一样；不一样也不要紧，只要"可以刷了"这句在。）
 
 ### 第 1 步 刷进去（只写 APP 那一段）
@@ -89,8 +90,8 @@ MODE=app bash flash-app.sh
 **判据**：看到这两行就算成功
 
 ```
->>> 写完了：APP 19 颗 + 信息 1 颗，一共 20 颗扇区。
-  芯片里那段 APP 的逐字节和 = 0x0072D094（跟声明的对上了）
+>>> 写完了：APP 21 颗 + 信息 1 颗，一共 22 颗扇区。
+  芯片里那段 APP 的逐字节和 = 0x008084C8（跟声明的对上了）
 ```
 
 > 中途掉线/失败也是安全的：这时 `0x01002000` 那条镜像信息还是旧的，原厂 bootloader
@@ -405,3 +406,74 @@ bash status.sh
 * **PC** 落在哪 —— 一直在「我们的 APP」里 = 活得好；在 ROM/APP 之间跳 = 还在复位；
 * **AON SOFTWARE_1** —— 低 16 位还是 `0xF175` 就说明标志没清掉（或者又被写回去了）；
 * **boot_count / uds_seen** —— 前者一直涨 = 还在重启；后者 > 0 = 病根就是那个标志。
+
+---
+
+# 附二：B1.2 —— 真凶是「低功耗时钟选错了源」
+
+## 证据链（每一步都能复现）
+
+1. **`status.sh` 采样**：PC 五次里三次落在 `0x0100CEAE / 0x0100CEB0`，一次落在
+   `0x30004E18`。都在很小的范围内 → 不是乱跳，是**卡在某个循环**。
+2. **按 `.map` 反查**（我在临时目录里把 B1 原样重建了一份，复位向量 `0x0100C6A9`、
+   74428 字节，跟芯片里跑的那份一致）：
+   `0x0100CEAE → platform_disable_sleep_timer+0x6`，`0x30004E18 → ramfunc+0x1C`
+   （`libble_sdk.a(platform_clock.o)`）。
+3. **反汇编**：
+   ```
+   0100cea8 <platform_disable_sleep_timer>:
+    100ceaa: ldr r4,[pc]   @ r4 = 0x30004E19 → 调 RAM 里那个函数
+    100ceac: blx r4
+    100ceae: cmp r0,#1     ← 采样停在这
+    100ceb0: beq 100ceac   ← 采样也停在这：返回 1 就再调一次
+   ```
+   而 `0x30004E18` 那个 RAM 函数是：`ldr r3,[pc] (=0xA000C500 AON 基址); ldr r0,[r3,#0x80]; ubfx r0,r0,#1,#1`
+   —— 读 **`AON_PSC_CMD` 的 bit1**。查头文件：`AON_PSC_CMD_MCU_PWR_BUSY` 就是 bit1。
+4. **谁把它逼到这一步**：`platform_clock_init()` 的分支里先 `platform_set_psc_clk(1)`
+   （内部：等 PSC 空闲 → 发 **opcode 7 = `RTC_CLK`**）→ 紧接着
+   `platform_disable_sleep_timer()` 又要等 PSC 空闲，**这时候 busy 已经是 1**。
+   也就是说：**那条 RTC_CLK 命令发出去以后一直没完成。**
+5. **为什么完不成**：`platform/soc/src/gr_soc.c` 的 `platform_init()`：
+   ```c
+   #if CFG_LPCLK_INTERNAL_EN
+       platform_clock_init_rng(SYSTEM_CLOCK, RNG_OSC_CLK2, 500, 0);   // 内部 RC
+   #else
+       platform_set_rtc_crystal_delay(CFG_CRYSTAL_DELAY);
+       platform_clock_init(SYSTEM_CLOCK, RTC_OSC_CLK, ...);           // 要 32.768k 晶振
+   #endif
+   ```
+   我们的 `CFG_LPCLK_INTERNAL_EN` 是 **0** → 走 RTC → 而这块板子没有那个晶振。
+6. **原厂怎么做的**：`outputs/analysis/app.asm` VA `0x0101F0F4`：
+   ```
+   movs r3,#0 ; mov.w r2,#500 ; movs r1,#2 ; movs r0,#4 ; bl ...
+   ```
+   `r1=2` = `RNG_OSC_CLK2` = **原厂用的就是内部 RC**（`r0=4` 是 16MHz 系统时钟）。
+   跟我们的结论完全一致。
+
+## 修法
+
+`Src/config/custom_config.h`：
+
+```c
+#define CFG_LPCLK_INTERNAL_EN   1      // 原来是 0
+```
+
+改完编译产物里 `platform_init` 变成调 `platform_clock_init_rng(..., RNG_OSC_CLK2, ...)`，
+`platform_set_rtc_crystal_delay` 也不再被调用 —— 和原厂一致。
+
+**刷完必须断电重上电**：卡住的 PSC 状态在 AON 域，按 RST 清不掉。
+
+## 顺手修掉的一个工具坑
+
+`zk42v-epd-app/GCC/Makefile` 里虽然有 `-MD`（生成依赖文件），但从来没 `-include` 进来，
+所以**只改头文件不会触发重编**——我第一次改 `CFG_LPCLK_INTERNAL_EN` 时，
+重编出来的 SHA 跟上一版一模一样，就是这个原因。现在加了
+`-include $(wildcard $(BUILD_OBJ)/*.d)`。
+
+## 这一轮学到的两条（写进工具里了）
+
+* 「读不到」**不能**当结论。v1 的 `status.sh` 把「读不到」直接说成「跑的还是原厂固件」，
+  是误判；现在的规矩是：先重连，再看 PC 落在哪。
+* PC 在 ROM 和 APP 之间跳**不等于**芯片在复位 —— 那次采样里的 ROM 值其实是上一轮
+  `appverify` 把 CPU 停在启动阶段留下的。真正的复位判据是 **DHCSR 的 `S_RESET_ST`**
+  （`0x01030003` 里它是 0 → 没复位）。现在每次采样都会打印这个位。
