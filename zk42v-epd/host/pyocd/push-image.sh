@@ -44,7 +44,10 @@ else echo "找不到 pyocd"; exit 1; fi
 SPD="${SPD:-240k}"
 export GR551X_OUTDIR="${OUTDIR:-$PWD/../}"
 export BEEP="${BEEP:-1}"
-export MANUAL="${MANUAL:-0}"          # 我们固件不关 SWD，默认不复位直接连
+# 复位源：我们固件不关 SWD，正常情况下**根本不用复位**，直接连就行。
+# 所以默认 MANUAL=1（万一真连不上，也只是让你拿线碰一下 RST），
+# 这样脚本不会去开 /dev/cu.usbserial-xxx —— 那个口没插的时候会直接报错打断。
+export MANUAL="${MANUAL:-1}"
 export HOLD_WAIT_SECS="${HOLD_WAIT_SECS:-3}"
 export DUMP_WINDOW_MS="${WINDOW_MS:-8000}"
 export RST_VIA="${RST_VIA:-ttl}"

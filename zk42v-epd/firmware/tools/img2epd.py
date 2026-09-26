@@ -25,6 +25,7 @@ import os
 import struct
 import subprocess
 import sys
+import tempfile
 import zlib
 
 W, H = 400, 300
@@ -150,7 +151,9 @@ def load_image(path):
     """PNG 直接读；别的格式先让 sips 转成 PNG 再读"""
     if path.lower().endswith('.png'):
         return load_png(path)
-    tmp = os.path.join(os.path.dirname(os.path.abspath(path)) or '.', '_img2epd_tmp.png')
+    # 临时文件放系统 temp 里 —— 之前图省事写在输入图旁边，结果在桌面上留了
+    # 一个 _img2epd_tmp.png，不好看。
+    tmp = os.path.join(tempfile.mkdtemp(prefix='img2epd-'), 'converted.png')
     print('  非 PNG，先用 sips 转一下：%s -> %s' % (os.path.basename(path), os.path.basename(tmp)))
     r = subprocess.run(['sips', '-s', 'format', 'png', path, '--out', tmp],
                        capture_output=True)

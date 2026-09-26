@@ -4556,6 +4556,27 @@ def zkstatus():
             say("    MCU_RELEASE = 0x%08X" % last['mcurel'])
 
     # ---- AON 定时器：它跑在低功耗时钟上，不走 = 32k 时钟源没起来 ----
+    # ---- B2-B 共享内存信箱：看看上位机写的到底落在哪了 ----
+    mb_addr = _env_hex('MB_ADDR', ZK_MB_ADDR)
+    mbw = [rd(mb_addr + 4 * i) for i in range(8)]
+    if mbw[0] is not None:
+        say("")
+        say("  B2-B 共享内存信箱 0x%08X：" % mb_addr)
+        say("    magic     = 0x%08X %s"
+            % (mbw[0], '✅ 我们的标记（上位机写过）' if mbw[0] == ZK_MB_MAGIC
+               else '✗ 不是 0x%08X —— 要么没人写过，要么写的地址不对' % ZK_MB_MAGIC))
+        say("    seq       = %u" % mbw[1])
+        say("    len / sum = %u / 0x%08X" % (mbw[2], mbw[3]))
+        say("    status    = %u    ack_seq = %u    ms_refresh = %u"
+            % (mbw[4], mbw[5], mbw[6]))
+        if mbw[0] == ZK_MB_MAGIC:
+            if mbw[5] == mbw[1] and mbw[4] == 3:
+                say("    → 这一帧固件已经收下并刷完了 ✅")
+            elif mbw[5] == mbw[1] and mbw[4] == 0xFF:
+                say("    → 固件说这一帧校验不过（len 或 sum 对不上）")
+            else:
+                say("    → 这一帧还没被处理（固件没在跑这个信箱轮询？先看上面的 build）")
+
     # ---- 屏的 7 根脚现在的电平：看我们的驱动到底把脚放在什么状态 ----
     data_in = rd(ZK_GPIO0_BASE + 0x00)
     data_out = rd(ZK_GPIO0_BASE + 0x04)
@@ -4784,7 +4805,21 @@ def pushimg():
 
     probe = raw_probe()
     manual_hold = MANUAL and (_env_str('MANUAL', '').lower() == 'hold')
-    rst = None if MANUAL else reset_driver(probe)
+    # 注意：**不要**一上来就 reset_driver() —— 它要去开 /dev/cu.usbserial-xxx，
+    # 那个串口不在（没插 USB-TTL）时会直接抛异常把整条命令打断。
+    # 我们的固件不关 SWD，正常情况下直接连就行，复位源只在实在连不上时才需要。
+    rst = None
+
+    def get_rst():
+        nonlocal rst
+        if rst is None and not MANUAL:
+            try:
+                rst = reset_driver(probe)
+            except Exception as e:
+                say("  （复位源打不开：%s" % _first_line(e))
+                say("    没关系 —— 我们的固件不关 SWD，直接连就行；连不上再拿线碰一下 RST。）")
+                rst = None
+        return rst
 
     # 我们的固件不关 SWD，先试直接连（连上要读 CPUID 才算数）
     hit = None
@@ -4811,7 +4846,7 @@ def pushimg():
 
     if hit is None:
         say("  直接连不上，改成抢复位窗口（按住 RST 数到 0 松手）...")
-        hit, _tr = _reset_and_grab(probe, rst, manual_hold,
+        hit, _tr = _reset_and_grab(probe, get_rst(), manual_hold,
                                    _env_int('DUMP_WINDOW_MS', 8000),
                                    _env_int('HOLD_MS', 200))
         if hit is None:
