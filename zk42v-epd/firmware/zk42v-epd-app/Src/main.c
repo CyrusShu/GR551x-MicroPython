@@ -147,57 +147,28 @@ int main(void)
     zk_dbg_stage(ZK_STAGE_IMG_READY);
 
     /* ------------------------------------------------------------------
-     * B1.5 自动上色序列：**一次启动把 5 步全做完**，每步之间停 8 秒。
+     * B1.6 方向体检图（一帧，刷完就停）
      *
-     * 为什么不再"按 RST 换一步"：步号原本存在 0x3001F000 的调试块里想跨复位保留，
-     * 但实测这块 RAM 每次启动都会被 ROM/bootloader 的栈踩掉 —— 证据是
-     * boot_count 一直是 1、test_step 读出来是随机值（2810513150），
-     * 所以每次 RST 都从第 1 步重来（现象就是"每次都一样、最后变黑"）。
-     * 现在改成一次做完，不再依赖跨复位保存。
-     *
-     *  第1步  全黑   BW=0x00 RED=0x00   刷新 0xC7
-     *  第2步  全白   BW=0xFF RED=0x00   刷新 0xC7
-     *  第3步  全红   BW=0xFF RED=0xFF   刷新 0xC7
-     *  第4步  四条横带（体检图）        刷新 0xC7   ← 原厂那条
-     *  第5步  四条横带                  刷新 0xF7   ← EPD-nRF5/Waveshare 那条全量
-     *  最后停在**第5步**的画面（横带）。
+     * 极性和数据通路已经由 B1.5 的上色序列实测确认：
+     *   黑白面 0=黑 1=白；红面 1=红，且红盖过黑白面。
+     * 这一版就画一张自解释的图，把**方向**钉死：
+     *   白底 + 上边一条黑横条 + 左边一条红竖条 + 正中间一个黑方块。
+     * 两条条子互相垂直、颜色不同，所以不管屏上是旋转还是镜像，
+     * 看它们落在哪一边就能反推出对应关系。
      * ------------------------------------------------------------------ */
-    {
-        static const uint8_t seq_bw[5]   = {0x00, 0xFF, 0xFF, 0x00, 0x00};
-        static const uint8_t seq_red[5]  = {0x00, 0x00, 0xFF, 0x00, 0x00};
-        static const uint8_t seq_ctrl[5] = {0xC7, 0xC7, 0xC7, 0xC7, 0xF7};
-        uint32_t k;
+    zk_testimg_orient(s_img);
+    zk_dbg_stage(ZK_STAGE_IMG_READY);
 
-        for (k = 0; k < 5u; k++)
-        {
-            g_dbg.test_step = k + 1u;         /* 记录"正在做第几步" */
+    t_prev = tick_ms();
+    epd_write_image(s_img);
+    g_dbg.ms_write = tick_ms() - t_prev;
+    zk_dbg_stage(ZK_STAGE_IMG_SENT);
 
-            if (k >= 3u)
-            {
-                zk_testimg_build(s_img);      /* 第 4、5 步画体检图 */
-            }
-            else
-            {
-                memset(s_img, seq_bw[k], ZK42V_EPD_PLANE_BYTES);
-                memset(s_img + ZK42V_EPD_PLANE_BYTES, seq_red[k], ZK42V_EPD_PLANE_BYTES);
-            }
-            zk_dbg_stage(ZK_STAGE_IMG_READY);
-
-            t_prev = tick_ms();
-            epd_write_image(s_img);
-            g_dbg.ms_write = tick_ms() - t_prev;
-            zk_dbg_stage(ZK_STAGE_IMG_SENT);
-
-            t_prev = tick_ms();
-            epd_refresh_ex(seq_ctrl[k], 0);
-            g_dbg.ms_refresh = tick_ms() - t_prev;
-            zk_dbg_stage(ZK_STAGE_REFRESHED);
-
-            /* 停 8 秒再进下一步，方便盯着屏看这一步留下的是什么 */
-            epd_delay_ms(8000);
-        }
-        g_dbg.test_step = 5u;
-    }
+    t_prev = tick_ms();
+    epd_refresh_ex(0xC7, 0);
+    g_dbg.ms_refresh = tick_ms() - t_prev;
+    g_dbg.test_step = 1u;
+    zk_dbg_stage(ZK_STAGE_REFRESHED);
 
     /* 不睡觉，也不关外设：就停在这儿，心跳一直涨。
        调试器随时进来都能看到「活着」的证据。 */

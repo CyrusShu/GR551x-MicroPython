@@ -20,7 +20,7 @@
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
 /* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   6u
+#define ZK_BUILD_ID   7u
 
 /* 用来判断「这个 boot_count 是不是我们写的」——上电时 RAM 是随机的 */
 #define ZK_BOOT_MAGIC 0xB007C0DEu

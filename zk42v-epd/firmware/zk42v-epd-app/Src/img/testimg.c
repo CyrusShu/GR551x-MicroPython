@@ -66,3 +66,22 @@ void zk_testimg_build(uint8_t *buf)
 
     /* 行 8..107 与行 0..7 右半、整幅底色一样，都是 BW=0 RED=0，不用额外画 */
 }
+
+void zk_testimg_orient(uint8_t *buf)
+{
+    uint8_t *bw  = buf;
+    uint8_t *red = buf + ZK42V_EPD_PLANE_BYTES;
+
+    /* 底色：白（BW=1，红面 0） */
+    memset(bw,  0xFF, ZK42V_EPD_PLANE_BYTES);
+    memset(red, 0x00, ZK42V_EPD_PLANE_BYTES);
+
+    /* 上边一条黑横条：整宽 10 行，BW=0 → 黑 */
+    fill_rect(bw, red, 0, 0, ZK42V_EPD_WIDTH, 10, 0, 0);
+
+    /* 左边一条红竖条：整高 10 列，BW=1 且 RED=1 → 红（红盖过黑白面） */
+    fill_rect(bw, red, 0, 0, 10, ZK42V_EPD_HEIGHT, 1, 1);
+
+    /* 正中间一个 60x60 黑方块：BW=0 → 黑 */
+    fill_rect(bw, red, 170, 120, 60, 60, 0, 0);
+}
