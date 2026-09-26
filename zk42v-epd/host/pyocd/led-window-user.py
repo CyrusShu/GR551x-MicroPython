@@ -4878,15 +4878,72 @@ def pushimg():
         except Exception:
             return None
 
-    def wr_block(a, words):
-        """经典 AP 写（绕开加速写）"""
+    def rd_bytes(a, n):
+        """按经典 AP 块读读回 n 字节（这条读路在本机是验过的）"""
+        out = b''
+        while len(out) < n:
+            k = min(256, (n - len(out)) // 4)
+            if k <= 0:
+                break
+            try:
+                w = list(ap._read_memory_block32(a + len(out), k))
+            except Exception:
+                return None
+            out += b''.join(struct.pack('<I', x & 0xFFFFFFFF) for x in w)
+        return out
+
+    def wr_classic(a, words):
+        """经典 AP 写：TAR + DRW（ap._write_memory_block32）"""
         if hasattr(ap, '_write_memory_block32'):
             ap._write_memory_block32(a, words)
         else:
             ap.write_memory_block32(a, words)
 
+    def wr_accel(a, words):
+        """ST-Link 加速写（probe 自己的 WRITEMEM 命令）"""
+        ap.write_memory_block32(a, words)
+
+    # ---- 先探：这两条写路哪条真能写进去 ------------------------------------
+    # 为什么要探：这颗克隆版 ST-Link 的"加速读"是出假数据的（9-22 踩过），
+    # 加速写同样不敢信；而经典 AP 写在某些克隆固件上也可能被吞掉 ——
+    # 关键区别是**写操作不会报错**，只会静静地什么都没发生。所以必须写一小块
+    # 再读回来核对，才知道该用哪条。
+    scratch = mb + 0x20            # 控制块的 rsv 区，随便用
+    pat = 0xA5C3F00D
+    chosen = None
+    for name, fn in (('经典 AP 写', wr_classic), ('ST-Link 加速写', wr_accel)):
+        try:
+            fn(scratch, [pat])
+        except Exception as e:
+            say("  %s 报错：%s" % (name, _first_line(e)))
+            continue
+        got = rd(scratch)
+        if got == pat:
+            chosen = name
+            say("  写路自检：%s ✅（写 0x%08X 到 0x%08X，读回来对）" % (name, pat, scratch))
+            break
+        say("  写路自检：%s ✗（写完读回 0x%08X，不是 0x%08X —— 被吞了）"
+            % (name, got if got is not None else 0, pat))
+    if chosen is None:
+        say("")
+        say("  ✗ 两条写路都写不进去。这时候别急着改固件 —— 更像是调试器/会话的问题：")
+        say("    1) 把 ST-Link 拔了重插，再跑一次；")
+        say("    2) 或者 bash status.sh 看固件是不是还在跑（build/stage）。")
+        if rst is not None:
+            try:
+                rst.close()
+            except Exception:
+                pass
+        return
+
+    def wr_block(a, words):
+        if chosen == '经典 AP 写':
+            wr_classic(a, words)
+        else:
+            wr_accel(a, words)
+
     # 1) 先把图写进去
-    say("  写图（%d 字节，每次 %d）..." % (len(data), chunk))
+    say("  写图（%d 字节，每次 %d，写完读回核对）..." % (len(data), chunk))
     off = 0
     t0 = time.monotonic()
     while off < len(data):
@@ -4900,6 +4957,17 @@ def pushimg():
         except Exception as e:
             say("    写到 0x%08X 失败：%s" % (img_addr + off, _first_line(e)))
             say("    （这一半可能没写全，重跑一次这条命令就行。）")
+            if rst is not None:
+                try:
+                    rst.close()
+                except Exception:
+                    pass
+            return
+        # 读回核对：写操作不报错 ≠ 写进去了
+        got = rd_bytes(img_addr + off, n)
+        if got != data[off:off + n]:
+            say("    ！0x%08X 这块写完读回对不上（写路：%s）" % (img_addr + off, chosen))
+            say("      —— 这一帧别指望了，重跑一次这条命令；还这样把这段发我。")
             if rst is not None:
                 try:
                     rst.close()
