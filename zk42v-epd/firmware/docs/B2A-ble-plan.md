@@ -86,3 +86,48 @@ B2-B 的 SWD 共享内存信箱**留着当后路**：BLE 万一哪天不灵，�
 1. 设备名用 `ZK42V-EPD` 行不行（网页列表里显示的就是它）？
 2. 网页端你要用哪一份：官方托管的 `tsl0922.github.io/EPD-nRF5`，还是本地双击它仓库里的
    `html/index.html`？（后者能自己改，也不涉及分发）
+
+（已确认：设备名用 `ZK42V-EPD`。）
+
+---
+
+## SDK API 侦察结果（写代码前先对准，免得写出来编译不过）
+
+GR551x 这份 SDK 的 GATT 服务和常见的 `ble_gatts_service_add` + `characteristic_add`
+不一样，是**一次性建库**的写法：
+
+```c
+#include "gr_includes.h"
+
+STACK_HEAP_INIT(heaps_table);                 /* main 里放一份堆表 */
+ble_stack_init(ble_evt_handler, &heaps_table); /* 启动协议栈，回调由我们提供 */
+
+/* 建服务（128 位 UUID）：结构体是 ble_gatts_create_db_t */
+gatts_create_db_t db;
+memset(&db, 0, sizeof(db));
+db.uuid          = epd_svc_uuid_lsb_first;      /* 16 字节 LSB first */
+db.srvc_perm     = SRVC_UUID_TYPE_SET(UUID_TYPE_128);
+db.shdl          = &s_start_hdl;
+db.attr_tab_cfg  = NULL;                        /* NULL = 全表都加 */
+db.max_nb_attr   = N;
+db.attr_tab_type = SERVICE_TABLE_TYPE_128;
+db.attr_tab.attr_tab_128 = s_epd_attr_tab;      /* ble_gatts_attm_desc_128_t[] */
+db.inc_srvc_num  = 0;
+ble_gatts_srvc_db_create(&db);
+```
+
+属性表每项是 `ble_gatts_attm_desc_128_t { uuid[16]; perm; ext_perm; max_size; }`，
+标准属性（主服务 0x2800、特征声明 0x2803、CCCD 0x2902）也在同一张表里按顺序排。
+
+通知：`ble_gatts_noti_ind(conn_idx, &ble_gatts_noti_ind_t{...})`
+写确认：`ble_gatts_write_cfm(conn_idx, &ble_gatts_write_cfm_t{...})`
+
+**可以直接抄的模板**（SDK 自带，把建库、属性表、事件处理都示范了一遍）：
+
+```
+components/libraries/ble/ble_gatt_service/ble_gatt_service.c
+projects/ble/ble_peripheral/ble_app_uart/Src/user/user_app.c   ← 广播/GAP 的写法
+```
+
+广播侧（已确认）：`ble_gap_device_name_set` / `ble_gap_adv_param_set` /
+`ble_gap_adv_data_set`（带服务 UUID）/ `ble_gap_adv_start`，连上停广播、断开重开。
