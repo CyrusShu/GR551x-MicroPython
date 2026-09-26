@@ -53,6 +53,20 @@
 #define ZK42V_PIN_SDI            APP_IO_PIN_4
 #define ZK42V_PIN_DC             APP_IO_PIN_5
 #define ZK42V_PIN_BUSY           APP_IO_PIN_6
-#define ZK42V_PIN_AUX            APP_IO_PIN_24
+
+/* ---- 辅助脚：原厂编号 0x18 = 24，注意它是「全局编号」不是 P0_24 --------------
+ *
+ * SDK 的 drivers/src/app_io.c 里，GR551X 专用的 APP_IO_TYPE_NORMAL 是这么分的：
+ *     编号 0..15  -> GPIO0 的 bit 0..15
+ *     编号 16..31 -> GPIO1 的 bit 0..15
+ * 所以 24 = GPIO1 的 bit 8 = **P1_8**，不是 P0_24。
+ *
+ * 之前我们按 P0_24 走 APP_IO_TYPE_GPIOA，被 app_io_init() 直接拒绝
+ * （GPIOA 分支里有一句 `if (!(pin & APP_IO_PINS_0_15)) return INVALID_PARAM;`），
+ * 所以这根脚**从来没被驱动过** —— status.sh 里看到的 `GPIO 错=1` / `flags bit1`
+ * 就是它。原厂 pins_init 是把这根脚拉高的（面板供电/使能），少了它屏不工作。
+ */
+#define ZK42V_PIN_AUX_TYPE       APP_IO_TYPE_NORMAL
+#define ZK42V_PIN_AUX            APP_IO_PIN_24   /* 经 APP_IO_TYPE_NORMAL 落到 GPIO1 bit8 = P1_8 */
 
 #endif /* __ZK42V_BOARD_H__ */

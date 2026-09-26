@@ -159,7 +159,13 @@ int main(void)
      *  5  四条横带                  刷新 0xD7（先发 0x18/0x1A 温度）
      *  6  四条横带                  刷新 0xF7（EPD-nRF5/Waveshare 那条全量）
      * ------------------------------------------------------------------ */
-    step = (g_dbg.test_step % 6u) + 1u;
+    /* test_step 这块 RAM 上电是随机的：第一次跑出来可能是个天文数字，
+       先夹到合法范围（1..6 之外就当 0，从第 1 步开始）。 */
+    if (g_dbg.test_step > 6u)
+    {
+        g_dbg.test_step = 0;
+    }
+    step = g_dbg.test_step + 1u;
     switch (step)
     {
         case 1:

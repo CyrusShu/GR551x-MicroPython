@@ -179,10 +179,10 @@ int epd_wait_busy(uint32_t timeout_ms)
 
 void epd_gpio_init(void)
 {
-    static const uint32_t out_pins[6] =
+    static const uint32_t out_pins[5] =
     {
         ZK42V_PIN_CS, ZK42V_PIN_RST, ZK42V_PIN_SCLK,
-        ZK42V_PIN_SDI, ZK42V_PIN_DC, ZK42V_PIN_AUX,
+        ZK42V_PIN_SDI, ZK42V_PIN_DC,
     };
     app_io_init_t io;
     int i;
@@ -193,7 +193,7 @@ void epd_gpio_init(void)
     io.pull = APP_IO_NOPULL;
     io.mux  = APP_IO_MUX;
 
-    for (i = 0; i < 6; i++)
+    for (i = 0; i < 5; i++)
     {
         io.pin = out_pins[i];
         if (app_io_init(ZK42V_PORT, &io) != APP_DRV_SUCCESS)
@@ -205,6 +205,15 @@ void epd_gpio_init(void)
         app_io_write_pin(ZK42V_PORT, out_pins[i], APP_IO_PIN_SET);
     }
 
+    /* 辅助脚（原厂编号 24 = P1_8）单独走 APP_IO_TYPE_NORMAL —— 见 board 头文件 */
+    io.pin = ZK42V_PIN_AUX;
+    if (app_io_init(ZK42V_PIN_AUX_TYPE, &io) != APP_DRV_SUCCESS)
+    {
+        g_dbg.gpio_err++;
+        g_dbg.flags |= ZK_FLAG_GPIO_FAIL;
+    }
+    app_io_write_pin(ZK42V_PIN_AUX_TYPE, ZK42V_PIN_AUX, APP_IO_PIN_SET);
+
     io.pin  = ZK42V_PIN_BUSY;
     io.mode = APP_IO_MODE_INPUT;
     io.pull = APP_IO_PULLUP;
@@ -214,7 +223,9 @@ void epd_gpio_init(void)
         g_dbg.flags |= ZK_FLAG_GPIO_FAIL;
     }
 
-    epd_delay_ms(10);
+    /* 原厂 pins_init 也是把这根脚拉高后就开始复位屏；这里多等 50ms，
+       让屏的供电/使能稳定下来（对墨水屏没有坏处）。 */
+    epd_delay_ms(50);
 }
 
 void epd_reset(void)

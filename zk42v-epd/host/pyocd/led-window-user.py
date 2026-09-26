@@ -4566,14 +4566,21 @@ def zkstatus():
         say("    脚     输出值  实际电平  是输出吗")
         for bit, name in ZK_EPD_PINS:
             if bit > 15:
-                say("    %-6s (bit%d 超出 DATA 的 16 位，这块芯片上可能是别的寄存器)"
-                    % (name, bit))
                 continue
             o = (data_out >> bit) & 1
             i = (data_in >> bit) & 1
             oe = (outen >> bit) & 1
             say("    %-6s   %d       %s        %s"
                 % (name, o, i, '是' if oe else '否（输入）'))
+        # 辅助脚（原厂编号 24）在 GPIO1 上：16..31 -> GPIO1 的 0..15，所以 24 = P1_8
+        g1_in = rd(ZK_GPIO0_BASE + 0x1000)
+        g1_out = rd(ZK_GPIO0_BASE + 0x1004)
+        g1_oe = rd(ZK_GPIO0_BASE + 0x1010)
+        if g1_in is not None:
+            bit = 24 - 16
+            say("    %-6s   %d       %d        %s   （在 GPIO1 上：编号 24 = P1_8）"
+                % ('AUX', (g1_out >> bit) & 1, (g1_in >> bit) & 1,
+                   '是' if (g1_oe >> bit) & 1 else '否（输入）'))
         say("    （BUSY 是输入脚：空闲时不忙的话应该是 0；一直是 1 可能是脚悬空/接错）")
 
     t1 = rd(ZK_AON_TIMERV)
