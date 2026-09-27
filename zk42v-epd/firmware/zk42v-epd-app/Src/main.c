@@ -34,6 +34,11 @@ static volatile zk_mailbox_t *const s_mb = (volatile zk_mailbox_t *)ZK_MB_ADDR;
 /* 画面缓冲：直接用信箱里那块 30000 字节（见 zk_dbg.h 的 ZK_IMG_BUF 说明） */
 #define s_img  ZK_IMG_BUF
 
+/* build 17 实验：只起 BLE，完全不碰屏（连初始化都不做）。
+ * 目的：把"我们的代码干扰协议栈"和"SDK/BLE 配置本身有问题"分开。
+ * 屏是墨水屏，会一直留着上一次的画面，所以这一版不会把屏刷坏。 */
+#define ZK_BLE_ONLY_TEST  1
+
 /* 让固件在 flash 里留下一个能搜到的标记（验收脚本会找它）。
    放在自己的 .zk_tag 段里，链接脚本里 KEEP 住了，不会被 --gc-sections 收走。 */
 const char zk_fw_tag[] __attribute__((section(".zk_tag"), used)) = "ZK42V-EPD-CUSTOM-FW-B1";
@@ -196,6 +201,7 @@ int main(void)
     g_dbg.flags |= ZK_FLAG_SWD_ON;
     zk_dbg_stage(ZK_STAGE_SWD);
 
+#if !ZK_BLE_ONLY_TEST
     epd_gpio_init();
     zk_dbg_stage(ZK_STAGE_GPIO);
 
@@ -231,6 +237,7 @@ int main(void)
     g_dbg.test_step = 1u;
     zk_dbg_stage(ZK_STAGE_REFRESHED);
     epd_pins_release();       /* 刷完松开屏的脚（尤其 P1_8），别影响 BLE */
+#endif
 
     /* B2-A：起 BLE（广播 + 之后的服务）。
        放在刷完第一帧之后：屏先亮，再起无线；协议栈初始化不阻塞主循环。 */
