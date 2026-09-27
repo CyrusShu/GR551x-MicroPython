@@ -4648,6 +4648,12 @@ def zkstatus():
             if len(words) > 15 and build >= 4:
                 say("    test_step = %d   （B1.3 上色测试：这一轮做的第几步；"
                     "按一下 RST 就进下一步）" % words[15])
+            if build >= 10 and len(words) > 18:
+                sttxt = {0: '没起来', 1: '在广播，等连接', 2: '已连接'}.get(words[16], '?')
+                say("    BLE: state=%d（%s）  ble_err=%d  mtu=%d"
+                    % (words[16], sttxt, words[17], words[18]))
+                if words[17]:
+                    say("         ^ ble_err 非 0 = 协议栈/广播 API 报的错码，把这个数发我")
         else:
             say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
                 % build)

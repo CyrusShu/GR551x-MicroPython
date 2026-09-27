@@ -236,6 +236,10 @@ int main(void)
     for (;;)
     {
         g_dbg.heart++;
+        /* 协议栈的事件靠这个泵出来（SDK 例程主循环里都有它）。
+           少了它，BLE 的 BLE_COMMON_EVT_STACK_INIT 之类的事件永远递不上来，
+           表现就是"固件在跑，但一直不广播"。 */
+        pwr_mgmt_schedule();
         zk_mailbox_poll();      /* B2-B：有新图就刷 */
         epd_delay_ms(20);
     }
