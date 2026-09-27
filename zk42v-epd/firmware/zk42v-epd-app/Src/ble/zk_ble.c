@@ -24,6 +24,11 @@ STACK_HEAP_INIT(heaps_table);
 static const uint8_t s_adv_data[] =
 {
     0x02, 0x01, 0x06,
+    /* 厂商自定义数据（AD type 0xFF）—— 扫描器一定会把它原样显示出来，
+       所以即使名字没被解析，也能一眼认出我们：
+       nRF Connect 里会显示 "Manufacturer Data: FF FF 5A 4B 34 32 56"。
+       （0xFFFF 是保留给测试用的 company id） */
+    0x09, 0xFF, 0xFF, 0xFF, 'Z', 'K', '4', '2', 'V',
     0x0A, 0x09, 'Z', 'K', '4', '2', 'V', '-', 'E', 'P', 'D',
 };
 
