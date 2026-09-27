@@ -57,6 +57,14 @@
 #define ZK_MB_ADDR    0x30014000u
 #define ZK_MB_IMG     (ZK_MB_ADDR + 0x100u)
 
+/* 图像缓冲就用信箱里那块 —— 不再另开一个 30000 字节的 s_img。
+ * 理由：加了 BLE 协议栈之后 RAM 紧（它要自己的堆），而这块 30KB 本来就
+ * 白白多拷一次。现在：
+ *   B2-B（SWD）：上位机直接把图写进来，固件读的就是它；
+ *   B2-A（BLE） ：协议收下来的数据也往这里写。
+ * 于是少一份 30KB 的 .bss，正好把 BLE 的堆腾出来。 */
+#define ZK_IMG_BUF    ((uint8_t *)ZK_MB_IMG)
+
 typedef struct
 {
     uint32_t magic;       /* 上位机写 ZK_MB_MAGIC 才算数 */

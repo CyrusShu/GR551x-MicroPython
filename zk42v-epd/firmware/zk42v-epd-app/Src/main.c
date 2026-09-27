@@ -28,11 +28,11 @@
 /* 状态块本体：链接脚本把它钉在 0x3001F000（RAM_DBG，NOLOAD，不清零） */
 volatile zk_dbg_t g_dbg __attribute__((section(".dbg_status"), used));
 
-/* 一帧 30000 字节画在 RAM 里 */
-static uint8_t s_img[ZK42V_EPD_IMG_BYTES];
-
 /* 共享内存信箱（上位机用 SWD 直接写这块 RAM） */
 static volatile zk_mailbox_t *const s_mb = (volatile zk_mailbox_t *)ZK_MB_ADDR;
+
+/* 画面缓冲：直接用信箱里那块 30000 字节（见 zk_dbg.h 的 ZK_IMG_BUF 说明） */
+#define s_img  ZK_IMG_BUF
 
 /* 让固件在 flash 里留下一个能搜到的标记（验收脚本会找它）。
    放在自己的 .zk_tag 段里，链接脚本里 KEEP 住了，不会被 --gc-sections 收走。 */
@@ -92,7 +92,6 @@ static void zk_mailbox_poll(void)
         if (s == s_mb->sum)
         {
             s_mb->status = 1u;
-            memcpy(s_img, (const void *)src, ZK42V_EPD_IMG_BYTES);
             epd_write_image(s_img);
             t0 = tick_ms();
             epd_refresh_ex(0xC7, 0);
