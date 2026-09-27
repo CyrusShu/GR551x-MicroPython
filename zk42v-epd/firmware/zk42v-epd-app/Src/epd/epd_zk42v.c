@@ -24,6 +24,14 @@
 static uint32_t s_cyc_per_us = 0;    /* 非 0 = DWT 可用 */
 static uint32_t s_loop_per_us = 8;   /* DWT 不可用时的循环次数（粗糙但够用） */
 
+/* 把 DWT 的周期计数器打开，并标定「1 微秒 = 多少周期」。
+ *
+ * ⚠ 这里**故意不清零** CYCCNT（build 25 改的）：它是个自由计数器，
+ *   一旦被清零，所有"记录起始值、事后相减"的计时就全废了。
+ *   之前 epd_gpio_init() 每次都会调到这儿，而 epd_refresh_ex() 内部也会调
+ *   epd_gpio_init() —— 于是"写图 + 刷新"的耗时被算成两个无关计数器相减，
+ *   报出过一个可笑的 5537ms（真实是 16 秒多，看 BUSY 轮询次数就知道）。
+ *   自由计数器 32 位、16MHz 时 268 秒绕一圈，差值用无符号减法算就没事。 */
 static void delay_init(void)
 {
     uint32_t clk = SystemCoreClock;
@@ -39,7 +47,6 @@ static void delay_init(void)
     }
 
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
     {
@@ -54,6 +61,16 @@ static void delay_init(void)
             g_dbg.flags |= ZK_FLAG_DWT_OK;
         }
     }
+}
+
+/* 单独把「延时/计时基准」初始化拿出来做成公开函数。
+   为什么要它：delay_init() 原来只挂在 epd_gpio_init() 里，而 BLE 实验版
+   故意不碰屏的引脚（怕影响射频），于是 DWT 从来没开过 —— 状态块里
+   flags 的 bit2 一直没置位，主循环里 tick_ms() 恒为 0，没法用「真毫秒」
+   做超时。build 19 起在 main() 里单独调一次，两条路都能拿到准确时间。 */
+void epd_timer_init(void)
+{
+    delay_init();
 }
 
 void epd_delay_us(uint32_t us)
@@ -128,6 +145,21 @@ static void epd_cmd(uint8_t c)
 static void epd_data(uint8_t d)
 {
     spi_send_byte(d, 1);
+}
+
+/* 给 BLE 协议用的裸接口（网页的 SEND_CMD / SEND_DATA 那两个调试命令要直接
+   往屏上发字节）。注意：调用前得先把脚配好（epd_gpio_init）。 */
+void epd_cmd_raw(uint8_t c)
+{
+    epd_cmd(c);
+}
+
+void epd_data_raw(const uint8_t *d, uint32_t n)
+{
+    while (n--)
+    {
+        epd_data(*d++);
+    }
 }
 
 /* ---------------------------------------------------------------- BUSY */

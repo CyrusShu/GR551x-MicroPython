@@ -19,6 +19,7 @@
 #include "epd_zk42v.h"
 #include "testimg.h"
 #include "zk_ble.h"
+#include "zk_epd_svc.h"      /* B2-A.2：GATT 服务 / 推图协议 */
 
 #include "gr55xx.h"
 #include "gr55xx_sys.h"      /* sys_swd_enable() */
@@ -34,10 +35,16 @@ static volatile zk_mailbox_t *const s_mb = (volatile zk_mailbox_t *)ZK_MB_ADDR;
 /* 画面缓冲：直接用信箱里那块 30000 字节（见 zk_dbg.h 的 ZK_IMG_BUF 说明） */
 #define s_img  ZK_IMG_BUF
 
-/* build 17 实验：只起 BLE，完全不碰屏（连初始化都不做）。
- * 目的：把"我们的代码干扰协议栈"和"SDK/BLE 配置本身有问题"分开。
- * 屏是墨水屏，会一直留着上一次的画面，所以这一版不会把屏刷坏。 */
-#define ZK_BLE_ONLY_TEST  1
+/* 开机要不要先画那张「方向体检图」。
+ *
+ * 0（build 21 起）：**开机不碰屏**。屏的初始化改成由 BLE 命令触发
+ *   （网页连上来的 INIT 0x01，或者 B2-B 那条 push-image 自己叫），
+ *   好处有两个：开机到能广播只要几十毫秒；没人用屏的时候那 7 根脚
+ *   一直是松开的（P1_8 夹着射频前端那条嫌疑也就顺手躲开了）。
+ * 1：回到 B1.6 那样，开机先画一张体检图（调屏/极性/方向时用）。
+ *
+ * 墨水屏会一直留着上一次的画面，所以 0 不会把屏刷坏。 */
+#define ZK_BOOT_PANEL_TEST  0
 
 /* 让固件在 flash 里留下一个能搜到的标记（验收脚本会找它）。
    放在自己的 .zk_tag 段里，链接脚本里 KEEP 住了，不会被 --gc-sections 收走。 */
@@ -60,6 +67,13 @@ static uint32_t tick_ms(void)
     }
 
     return (uint32_t)(DWT->CYCCNT / (clk / 1000u));
+}
+
+/* 给别的模块用（B2-A.2 的推图状态机要量「写图+刷新花了多久」——
+   那个过程整个跑在 zk_epd_svc_poll() 里面，外面传进去的 now_ms 是不动的） */
+uint32_t zk_tick_ms(void)
+{
+    return tick_ms();
 }
 
 /* ------------------------------------------------------------------
@@ -97,6 +111,10 @@ static void zk_mailbox_poll(void)
         if (s == s_mb->sum)
         {
             s_mb->status = 1u;
+            /* build 21 起开机不再初始化屏（改成谁用谁负责），所以这条
+               SWD 推图的路子得自己保证屏已经初始化、脚已经配好。 */
+            (void)zk_panel_ensure_init();
+            epd_gpio_init();
             epd_write_image(s_img);
             t0 = tick_ms();
             epd_refresh_ex(0xC7, 0);
@@ -191,6 +209,82 @@ int main(void)
     g_dbg.ble_err = 0;
     g_dbg.ble_mtu = 0;
 
+    /* B2-A.2：这些全是"本轮新写的值"，同样必须显式清零。
+       上一版就是漏清了 ble_evt_count（NOLOAD 的 RAM 上电是随机值），
+       build 18 的状态块里读出来是个天文数字，把"事件有没有回来"这个
+       最关键的判断给带偏了。注意这条：**用到的字段一个都不能漏清**。 */
+    g_dbg.ble_addr0 = 0;
+    g_dbg.ble_addr1 = 0;
+    g_dbg.ble_evt_id = 0;
+    g_dbg.ble_evt_status = 0;
+    g_dbg.ble_evt_count = 0;
+
+    g_dbg.ble_scan_state = ZK_SCAN_ST_OFF;
+    g_dbg.ble_scan_param_err = 0;
+    g_dbg.ble_scan_start_err = 0;
+    g_dbg.ble_scan_start_st = ZK_NONE_U32;
+    g_dbg.ble_scan_stop_rsn = ZK_NONE_U32;
+    g_dbg.ble_scan_rpts = 0;
+    g_dbg.ble_scan_devs = 0;
+    g_dbg.ble_scan_ovf = 0;
+    g_dbg.ble_scan_rssi_last = 0;
+    g_dbg.ble_scan_rssi_best = 0;
+    g_dbg.ble_scan_addr0 = 0;
+    g_dbg.ble_scan_addr1 = 0;
+    g_dbg.ble_scan_last_len = 0;
+    g_dbg.ble_scan_data0 = 0;
+    g_dbg.ble_scan_data1 = 0;
+    g_dbg.ble_scan_data2 = 0;
+    g_dbg.ble_scan_data3 = 0;
+
+    g_dbg.ble_adv_try = 0;
+    g_dbg.ble_adv_try_status = ZK_NONE_U32;
+    g_dbg.ble_adv_ok_variant = ZK_NONE_U32;
+    g_dbg.ble_adv_ds_err = 0;
+    g_dbg.ble_adv_ds2_err = 0;
+    g_dbg.ble_adv_start_err = 0;
+    /* build 20：广播停了几次 / 我们重开了几次 */
+    g_dbg.ble_adv_stop_cnt = 0;
+    g_dbg.ble_adv_stop_rsn = ZK_NONE_U32;
+    g_dbg.ble_adv_restart_cnt = 0;
+
+    /* build 21：B2-A.2 的 GATT 服务 / 推图那条线的账 */
+    g_dbg.ble_svc_err = 0;
+    g_dbg.ble_svc_hdl = 0;
+    g_dbg.ble_conn_cnt = 0;
+    g_dbg.ble_conn_idx = ZK_NONE_U32;
+    g_dbg.ble_cccd = 0;
+    g_dbg.ble_cmd_cnt = 0;
+    g_dbg.ble_last_cmd = ZK_NONE_U32;
+    g_dbg.ble_img_chunks = 0;
+    g_dbg.ble_last_flags = ZK_NONE_U32;
+    g_dbg.ble_img_bw = 0;
+    g_dbg.ble_img_red = 0;
+    g_dbg.ble_rle_out = 0;
+    g_dbg.ble_legacy = 0;
+    g_dbg.ble_panel_state = 0;
+    g_dbg.ble_panel_ms = 0;
+    g_dbg.ble_init_ms = 0;
+    g_dbg.ble_noti_cnt = 0;
+    g_dbg.ble_noti_err = 0;
+    g_dbg.ble_want_init = 0;
+    g_dbg.ble_want_refresh = 0;
+    g_dbg.ble_mtu_rpt = 0;
+    g_dbg.ble_svc_end_hdl = 0;
+    g_dbg.ble_svc_db_err = 0;
+    g_dbg.ble_busy_delta = 0;
+    g_dbg.ble_gui_mode = 0;
+    g_dbg.ble_gui_ts = 0;
+    g_dbg.ble_gui_draws = 0;
+    {
+        volatile uint32_t *st = &g_dbg.ble_adv_st0;
+        uint32_t           i;
+        for (i = 0; i < 6u; i++)
+        {
+            st[i] = ZK_NONE_U32;
+        }
+    }
+
     g_dbg.magic    = ZK_DBG_MAGIC;
     g_dbg.build_id = ZK_BUILD_ID;
     zk_dbg_stage(ZK_STAGE_MAIN);
@@ -201,7 +295,12 @@ int main(void)
     g_dbg.flags |= ZK_FLAG_SWD_ON;
     zk_dbg_stage(ZK_STAGE_SWD);
 
-#if !ZK_BLE_ONLY_TEST
+    /* 单独把 DWT 时基打开（不碰屏的引脚）。
+       BLE 实验这条路上原来没人调 delay_init，于是 flags 的 bit2 一直没置位、
+       tick_ms() 恒为 0，空闲循环里的超时只能用"数圈数"。现在有真毫秒了。 */
+    epd_timer_init();
+
+#if ZK_BOOT_PANEL_TEST
     epd_gpio_init();
     zk_dbg_stage(ZK_STAGE_GPIO);
 
@@ -254,7 +353,16 @@ int main(void)
            少了它，BLE 的 BLE_COMMON_EVT_STACK_INIT 之类的事件永远递不上来，
            表现就是"固件在跑，但一直不广播"。 */
         pwr_mgmt_schedule();
+
+        /* B2-A.2：扫描/广播实验的状态机节拍 + 兜底超时。
+           传进去的是 DWT 算的毫秒数（拿不到时基就是 0，函数里会退回数圈数）。 */
+        zk_ble_poll(tick_ms());
+
+        /* B2-A.2：网页推图这条线。命令在事件回调里只做记账，屏的重活
+           （初始化、写图、刷新十几秒）在这个 poll 里做，别堵住协议栈。 */
+        zk_epd_svc_poll(tick_ms());
+
         zk_mailbox_poll();      /* B2-B：有新图就刷 */
-        epd_delay_ms(20);
+        epd_delay_ms(5);        /* 5ms 一圈 ≈ 200Hz：协议栈的活干得快一点 */
     }
 }

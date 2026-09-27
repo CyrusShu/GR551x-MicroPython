@@ -50,4 +50,13 @@ int  epd_wait_busy(uint32_t timeout_ms);
 void epd_delay_ms(uint32_t ms);
 void epd_delay_us(uint32_t us);
 
+/* 把延时/计时基准（DWT）单独初始化一次。
+   不碰屏的引脚，所以 BLE-only 的固件也能有准的毫秒时基。 */
+void epd_timer_init(void);
+
+/* 裸命令/数据（网页的 SEND_CMD 0x03 / SEND_DATA 0x04 用的）。
+   调用前先 epd_gpio_init()。 */
+void epd_cmd_raw(uint8_t c);
+void epd_data_raw(const uint8_t *d, uint32_t n);
+
 #endif /* __EPD_ZK42V_H__ */
