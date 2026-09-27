@@ -224,7 +224,7 @@ class FakeAP:
                 continue
             if CODE_START <= a < CODE_START + 0x100:
                 out.append(self.target.ram.get(a, 0))
-            elif 0x3001F000 <= a < 0x3001F040:
+            elif 0x3001F000 <= a < 0x3001F300:
                 # 自研固件的调试状态块（status 命令读它）
                 if a == 0x3001F004 and self.target.heart_live:
                     self.target.heart += 1
@@ -236,6 +236,10 @@ class FakeAP:
                     out.append(self.target.dbg.get(a, 0))
             elif a == 0xA000C560:
                 out.append(self.target.aon_sw1)      # AON SOFTWARE_1
+            elif a == 0xA000C504:
+                out.append(self.target.aon_pwrr01)   # AON PWR_RET01（BLE 子系统电源/复位）
+            elif a == 0xE000E100:
+                out.append(self.target.nvic_iser0)   # NVIC ISER0（协议栈调度中断）
             elif a == 0xE000EDF0:
                 out.append(self.target.dhcsr)        # DHCSR（复位/退休 粘滞位）
             elif BASE <= a < BASE + TOTAL:
@@ -284,6 +288,8 @@ class FakeTarget:
         self.boot = 0
         self.boot_grow = False
         self.aon_sw1 = 0
+        self.aon_pwrr01 = 0x000018C0   # comm core/timer 上电 + 已放开复位
+        self.nvic_iser0 = 0x00000006   # IRQ1(BLE_SDK) + IRQ2(BLE) 都使能
         self.dhcsr = 0x01030003      # S_HALT=1, S_RETIRE_ST=1, S_RESET_ST=0
         self.mem = {}                # B2-B：信箱里的字
         self.writes = []             # B2-B：写过的地址（按顺序）
@@ -344,7 +350,7 @@ def real_copy():
 def run(cmd, env, flash=None, ram=None, fail_init=False, fail_erase_at=None,
         fail_program_at=None, fake_root=None, xip_stuck=False,
         dbg=None, heart_live=True, aon_sw1=0, pc_seq=None, boot_grow=False,
-        dhcsr=None):
+        dhcsr=None, nvic_iser0=None, aon_pwrr01=None):
     from pyocd.flash.flash import Flash
     Flash.LOG = []
     tgt = FakeTarget(bytearray(REAL if flash is None else flash),
@@ -358,6 +364,10 @@ def run(cmd, env, flash=None, ram=None, fail_init=False, fail_erase_at=None,
     tgt.heart_live = heart_live
     tgt.aon_sw1 = aon_sw1
     tgt.boot_grow = boot_grow
+    if nvic_iser0 is not None:
+        tgt.nvic_iser0 = nvic_iser0
+    if aon_pwrr01 is not None:
+        tgt.aon_pwrr01 = aon_pwrr01
     if dhcsr is not None:
         tgt.dhcsr = dhcsr
     if pc_seq:
@@ -661,6 +671,100 @@ def main():
 
     env_fast = {'SAMPLES': '2', 'SAMPLE_GAP_MS': '0'}
 
+    def dbg_block19(scan_state=4, scan_start_st=0, rpts=42, devs=7, ovf=0,
+                    rssi_last=0xFFFFFFD3, rssi_best=0xFFFFFFD0,
+                    adv_st=None, adv_try=5, adv_ok=0):
+        """build 19（B2-A.2 扫描/广播实验）那一版的状态块。"""
+        d = dict(dbg_block())
+        d[0x3001F02C] = 19                 # build_id
+        d[0x3001F040] = 3                  # ble_state = 扫描
+        d[0x3001F044] = 0                  # ble_err
+        d[0x3001F054] = 0x20D              # 最后事件 = ADV_REPORT
+        d[0x3001F058] = 0
+        d[0x3001F05C] = 5                  # 事件条数（清过了，不再是垃圾）
+        d[0x3001F060] = scan_state
+        d[0x3001F064] = 0                  # scan_param_set 返回
+        d[0x3001F068] = 0                  # scan_start 返回
+        d[0x3001F06C] = scan_start_st
+        d[0x3001F070] = 0                  # stop reason = 超时
+        d[0x3001F074] = rpts
+        d[0x3001F078] = devs
+        d[0x3001F07C] = ovf
+        d[0x3001F080] = rssi_last
+        d[0x3001F084] = rssi_best
+        d[0x3001F088] = 0x12345678
+        d[0x3001F08C] = 0xAABB
+        d[0x3001F090] = 24
+        d[0x3001F094] = 0x00060102      # 小端展开 = 02 01 06 00（Flags AD 结构）
+        d[0x3001F0A4] = adv_try
+        d[0x3001F0A8] = 0 if adv_ok != 0xFFFFFFFF else 0xFFFFFFFF
+        d[0x3001F0AC] = adv_ok
+        d[0x3001F0B0] = 0                  # adv_data_set 返回
+        d[0x3001F0B4] = 0
+        d[0x3001F0B8] = 0                  # adv_start 返回
+        st = adv_st if adv_st is not None else [0, 0x4A, 0x4A, 0x4A, 0x4A, 0x4A]
+        for i, v in enumerate(st):
+            d[0x3001F0BC + 4 * i] = v
+        return d
+
+    def dbg_block20(adv_st=None, adv_ok=0, stop_cnt=0, stop_rsn=0xFFFFFFFF,
+                    restart_cnt=0, ble_state=1):
+        """build 20：关掉扫描实验（开机直接广播）+ 记录 ADV_STOP。"""
+        d = dbg_block19(scan_state=0, scan_start_st=0xFFFFFFFF, rpts=0, devs=0,
+                        ovf=0, adv_st=adv_st, adv_try=0, adv_ok=adv_ok)
+        d[0x3001F02C] = 20                 # build_id
+        d[0x3001F040] = ble_state
+        d[0x3001F060] = 0                  # 扫描没跑过
+        d[0x3001F064] = 0
+        d[0x3001F068] = 0
+        d[0x3001F06C] = 0xFFFFFFFF         # 没等到 SCAN_START（因为压根没扫）
+        d[0x3001F074] = 0
+        d[0x3001F078] = 0
+        d[0x3001F0D4] = stop_cnt           # 53: 广播停了几次
+        d[0x3001F0D8] = stop_rsn           # 54: 最后一次的原因
+        d[0x3001F0DC] = restart_cnt        # 55: 我们重开几次
+        return d
+
+    def dbg_block21(svc_err=0, svc_hdl=0x0009, conn_cnt=1, conn_idx=0, cccd=1,
+                    cmd_cnt=140, last_cmd=0x30, chunks=130, last_flags=0x06,
+                    img_bw=15000, img_red=15000, rle_out=29000, legacy=0,
+                    panel_st=2, panel_ms=21000, init_ms=1300, noti_cnt=3,
+                    noti_err=0, want_init=1, want_refresh=1, mtu_rpt=244,
+                    svc_end=None, svc_db_err=0, busy_delta=93684):
+        """build 21+：GATT 服务 / 推图（B2-A.2）。"""
+        d = dbg_block20(adv_st=[0] + [0xFFFFFFFF] * 5, ble_state=2)
+        d[0x3001F02C] = 24                 # build_id
+        d[0x3001F0E0] = svc_err            # 56
+        d[0x3001F0E4] = svc_hdl            # 57
+        d[0x3001F0E8] = conn_cnt           # 58
+        d[0x3001F0EC] = conn_idx           # 59
+        d[0x3001F0F0] = cccd               # 60
+        d[0x3001F0F4] = cmd_cnt            # 61
+        d[0x3001F0F8] = last_cmd           # 62
+        d[0x3001F0FC] = chunks             # 63
+        d[0x3001F100] = last_flags         # 64
+        d[0x3001F104] = img_bw             # 65
+        d[0x3001F108] = img_red            # 66
+        d[0x3001F10C] = rle_out            # 67
+        d[0x3001F110] = legacy             # 68
+        d[0x3001F114] = panel_st           # 69
+        d[0x3001F118] = panel_ms           # 70
+        d[0x3001F11C] = init_ms            # 71
+        d[0x3001F120] = noti_cnt           # 72
+        d[0x3001F124] = noti_err           # 73
+        d[0x3001F128] = want_init          # 74
+        d[0x3001F12C] = want_refresh       # 75
+        d[0x3001F130] = mtu_rpt            # 76
+        # 77: SDK 框架报的"结束句柄"是**开区间**（start + 属性个数 = 0x000F），
+        #     跟真实日志一致（真实值 0x000C~0x0012 = 6 个属性）
+        d[0x3001F134] = (svc_hdl + 6) if (svc_end is None and svc_hdl) else (
+            svc_end or 0)
+        d[0x3001F138] = svc_db_err         # 78
+        d[0x3001F13C] = busy_delta         # 79
+        return d
+
+
+
     # N: 从来没跑过（状态块里没有我们的 magic）
     out, tgt, log = run('status', env_fast, fake_root=root)
     check('N: 没印记时明说', '我们的固件没写过这里' in out)
@@ -709,6 +813,168 @@ def main():
 
     # N5: 不许再把「读不到」直接说成「跑的还是原厂固件」（v1 的误判）
     check('N5: 文案里不再有 v1 那句误判', '跑的还是原厂固件' not in out)
+
+    # N6: build 19 —— 扫描听得到设备 + 变体 0 的广播数据被接受
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block19(adv_st=[0, 0x4A, 0x4A, 0x4A, 0x4A, 0x4A],
+                                        adv_try=0, adv_ok=0))
+    check('N6: 报出扫描到的设备数', '7 个设备' in out)
+    check('N6: 报出 RSSI（还要还原成负数）', '-45 dBm' in out and '-48 dBm' in out)
+    check('N6: 报出第一条广播数据的原始字节', '02 01 06' in out)
+    check('N6: 判定射频是活的', '射频是活的' in out)
+    check('N6: 指出哪个变体的广播数据被接受', '变体 #0 这套广播数据控制器认了' in out)
+    check('N6: 报出 BLE 子系统已上电', 'BLE 子系统是上电' in out)
+    check('N6: 报出调度中断已使能', 'IRQ1 BLE_SDK（协议栈调度）= 使能' in out)
+    check('N6: status 不写芯片', not wrote(log))
+
+    # N6b: 调度中断没使能 -> 必须点名怀疑
+    out, tgt, log = run('status', env_fast, fake_root=root, dbg=dbg_block19(),
+                        nvic_iser0=0x0, aon_pwrr01=0x0)
+    check('N6b: 中断没使能时点名', '调度中断没使能' in out)
+    check('N6b: comm core 没上电时点名', 'BLE 子系统压根没上电' in out)
+
+    # N7: 一条广播都没听到、SCAN_START 事件也没回来 -> 指向「射频没启动」
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block19(scan_state=1, scan_start_st=0xFFFFFFFF,
+                                        rpts=0, devs=0,
+                                        adv_st=[0xFFFFFFFF] * 6,
+                                        adv_try=0, adv_ok=0xFFFFFFFF))
+    check('N7: 明说一条都没听到', '一条广播都没听到' in out)
+    check('N7: 指出 SCAN_START 事件也没回来', 'SCAN_START 事件也没回来' in out)
+    check('N7: 指向反汇编原厂 BLE 使能路径', '原厂固件的 BLE 使能路径' in out)
+    check('N7: 6 种变体都没等到时给出解释',
+          '6 种都没成功' in out and '没等到' in out)
+
+    # N8: 全部变体都被拒（0x4A = 广播数据重复/非法）-> 要把错误码翻译出来
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block19(adv_try=5, adv_ok=0xFFFFFFFF))
+    check('N8: 把 0x4A 翻成 GAP_ERR_ADV_DATA_INVALID',
+          'GAP_ERR_ADV_DATA_INVALID' in out)
+    check('N8: 明说这个变体是被 0x4A 拒的', '0x4A' in out)
+
+    # N9: 2026-09-27 17:34 那次真实结果的复刻 —— 扫描听到一堆设备、
+    #     变体 #0（不带 Flags）一次就被接受，后面几个压根没试（一成功就停）
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block19(scan_state=4, rpts=395, devs=16, ovf=48,
+                                        rssi_last=0xFFFFFFAD, rssi_best=0xFFFFFFD9,
+                                        adv_st=[0] + [0xFFFFFFFF] * 5,
+                                        adv_try=0, adv_ok=0))
+    check('N9: 报出真实那次的设备数与溢出次数',
+          '16 个设备' in out and '溢出 48 次' in out)
+    check('N9: RSSI 还原成有符号（-83 / -39）', '-83 dBm' in out and '-39 dBm' in out)
+    check('N9: 指出变体 #0 被接受', '变体 #0 这套广播数据控制器认了' in out)
+    check('N9: 说明后面几个变体是「一成功就停、没试过」',
+          '一成功我们就停了' in out)
+    check('N9: 没把后面几个变体说成失败', '6 种都没成功' not in out)
+
+    # N10: PC 落在空闲循环的延时函数里 -> 必须说成「正常打转」，不许吓唬人
+    #      （2026-09-27 17:34 那次真实日志就是这种：PC 落在 epd_delay_us 里）
+    #      用一份自己造的 map，免得被固件重编后的地址漂移影响。
+    fake_map = os.path.join(tempfile.mkdtemp(prefix='fwmap-'), 'fake.map')
+    open(fake_map, 'w').write(
+        ' .text.zk_mailbox_poll\n'
+        '                0x0100c000       0x50 out/obj/fake.o\n'
+        ' .text.epd_delay_us\n'
+        '                0x0100c6a8       0x6c out/obj/fake.o\n'
+        ' .text.some_other_fn  0x0100d000       0x40 out/obj/fake.o\n')
+    env_map = dict(env_fast)
+    env_map['MAP_FILE'] = fake_map
+    out, tgt, log = run('status', env_map, fake_root=root, dbg=dbg_block(),
+                        pc_seq=[0x0100C6D6, 0x0100C6D8, 0x0100C6D2])
+    check('N10: 认得长名字的 map 行（epd_delay_us+偏移）', 'epd_delay_us+0x' in out)
+    check('N10: 落在延时函数里就说「空闲循环里正常打转」', '正常打转' in out)
+    check('N10: 不再把它说成「卡住」', '卡在「' not in out)
+
+    # N10b: 落在别的函数里（那才叫卡住）
+    out, tgt, log = run('status', env_map, fake_root=root, dbg=dbg_block(),
+                        pc_seq=[0x0100D010, 0x0100D014])
+    check('N10b: 落在别的函数里还是判「卡在循环里」',
+          '卡在' in out and '这个循环里' in out)
+
+    # N11: build 20 —— 关掉扫描实验、开机直接广播；不许把「没跑扫描」报成扫描失败
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block20(adv_st=[0] + [0xFFFFFFFF] * 5))
+    check('N11: 明说这一版没跑扫描实验', '没跑扫描实验' in out)
+    check('N11: 不把它说成「一条广播都没听到」', '一条广播都没听到' not in out)
+    check('N11: 仍然报出变体 #0 被接受', '变体 #0 这套广播数据控制器认了' in out)
+    check('N11: 报出「广播一直没停过」', '从开机到现在广播一直没停过' in out)
+
+    # N12: 广播被连上打断（reason=2）是正常的，别喊"空中没包了"
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block20(adv_st=[0] + [0xFFFFFFFF] * 5,
+                                        stop_cnt=1, stop_rsn=2, restart_cnt=0,
+                                        ble_state=2))
+    check('N12: 说明「被连接打断」是正常的', '被连接打断（正常' in out)
+    check('N12: 这种情况不喊空中没包', '空中可能已经没有我们的包了' not in out)
+
+    # N12b: 非连接原因停了而且没重开 —— 这才该报警
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block20(adv_st=[0] + [0xFFFFFFFF] * 5,
+                                        stop_cnt=3, stop_rsn=0, restart_cnt=0))
+    check('N12b: 停了又没重开就报警', '空中可能已经没有我们的包了' in out)
+
+    # ---------------------------------------------------------------
+    # N13~N16: build 21 —— GATT 服务 / 推图（B2-A.2）
+    # ---------------------------------------------------------------
+    # N13: 一切正常：服务建起来了、网页连上、图收全、屏刷完
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block21())
+    check('N13: 报出服务句柄范围（按开区间换算回 6 个属性）',
+          '句柄 = 0x0009~0x000E（6 个属性）' in out)
+    check('N13: 报出注册/建库两步都成功',
+          '注册返回 = 0（SDK_SUCCESS）  建库返回 = 0（SDK_SUCCESS）' in out)
+    check('N13: 报出 CCCD 已开通知', '客户端开了通知' in out)
+    check('N13: 报出命令条数与最后一条命令名',
+          '0x30（WRITE_IMAGE）' in out)
+    check('N13: 报出两个面各收了多少', '黑白面 15000/15000' in out
+          and '红面 15000/15000' in out)
+    check('N13: 认出走了 RLE', 'RLE 解出 29000 字节' in out)
+    check('N13: 报出屏刷完了和耗时', '刷完一帧了' in out and '21000 ms' in out)
+    check('N13: 报出这轮 BUSY 轮询次数（刷成功的量级）',
+          'BUSY 被轮询了 93684 次' in out)
+    check('N13: 判整条链路通了', '整条链路通了' in out)
+    check('N13: status 不写芯片', not wrote(log))
+
+    # N14: profile 登记上了但栈没回来建库（build 21 那个症状）—— 得说清楚
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block21(svc_err=0, svc_hdl=0, svc_db_err=0))
+    check('N14: 明说协议栈没回来建库', '协议栈还没回来建库' in out)
+    check('N14: 说手机会看不到服务', '看不到 62750001' in out)
+
+    # N14b: 建库那一步失败了（堆不够）—— 点名 0x10 = NO_RESOURCES
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block21(svc_err=0, svc_hdl=0, svc_db_err=0x10))
+    check('N14b: 报出建库失败的原因', 'NO_RESOURCES' in out)
+
+    # N14c: 连 profile 登记都没成
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block21(svc_err=0x10, svc_hdl=0, svc_db_err=0))
+    check('N14c: 明说注册就没成', '服务**注册**就没成' in out)
+
+    # N15: 连上了但一条命令都没收到 -> 指向"写事件没进来"
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block21(cmd_cnt=0, last_cmd=0xFFFFFFFF,
+                                        chunks=0, img_bw=0, img_red=0,
+                                        rle_out=0, panel_st=0, want_init=0,
+                                        want_refresh=0, noti_cnt=0))
+    check('N15: 明说一条命令都没收到', '一条命令都没收到' in out)
+    check('N15: 指向写事件没进来', '写事件没进来' in out)
+
+    # N16: 收到图块但没凑满 -> 提醒无响应的写可能没递上来
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block21(cmd_cnt=20, chunks=12, img_bw=2904,
+                                        img_red=0, rle_out=0, panel_st=1,
+                                        want_refresh=0))
+    check('N16: 报出没凑满的两个数', '黑白面 2904/15000' in out)
+    check('N16: 提醒无响应写可能丢', '无响应的写（Write Command）没被递上来' in out)
+
+    # N17: 图收全了、panel_state 也说"刷完"，但 BUSY 只轮询了几百次
+    #      -> 必须点破"屏压根没做全刷"（build 22 那次就是 2277 次）
+    out, tgt, log = run('status', env_fast, fake_root=root,
+                        dbg=dbg_block21(busy_delta=2277))
+    check('N17: 数据齐了但它能看出屏没真刷', '屏压根没做全刷' in out)
+    check('N17: 给出历史对照的量级', '82953' in out and '469030' in out)
+    check('N17: 指向 build 24 修的那个原因', '等刷新时屏已经掉电' in out)
 
     # ---------------------------------------------------------------
     # P: pushimg —— B2-B：30000 字节图 -> 共享内存信箱 -> 等固件 ack

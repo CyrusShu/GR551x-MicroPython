@@ -1324,7 +1324,13 @@ def dumpdiag():
 # =====================================================================
 ZK_DBG_ADDR  = 0x3001F000
 ZK_DBG_MAGIC = 0x5A4B3401
-ZK_DBG_WORDS = 24       # 状态块字数（跟固件 zk_dbg.h 的 ZK_DBG_WORDS 一致）
+# 状态块字数（跟固件 zk_dbg.h 的 ZK_DBG_WORDS 一致）。
+# build 19（B2-A.2 扫描/广播实验）把它从 24 加到 56 —— 多出来的是
+# 扫描设备数/RSSI 和 6 个广播数据变体的 ADV_START 状态码；
+# build 20 又加到 60 —— 补上「广播停了几次 / 我们重开几次」；
+# build 21 加到 80 —— B2-A.2 的 GATT 服务与推图（收到的命令/图块/屏的状态）；
+# build 24 加到 84 —— 多一个「这轮刷新时屏到底忙了多久」（busy_polls 增量）。
+ZK_DBG_WORDS = 84
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -1422,6 +1428,15 @@ def _zkstatus_v1_disabled():
         say("  target.init 失败：%s" % _first_line(e))
 
     ap = _ap_of(target)
+
+    # B2-A.2（build 19 起）：固件上电后会先扫描 4 秒、再挨个试广播数据变体。
+    # 刚复位/刚上电就跑 status，看到的会是"实验进行到一半"。所以这里给个
+    # 可选的等待（status.sh 默认 15 秒，测试里默认 0 —— 不然一套测试要等几分钟）。
+    settle_ms = _env_int('STATUS_SETTLE_MS', 0)
+    if settle_ms > 0:
+        say("  等 %d ms 让固件把 B2-A.2 的实验跑完（扫描 4 秒 + 广播数据变体）..."
+            % settle_ms)
+        time.sleep(settle_ms / 1000.0)
 
     def rd(a):
         if ap is not None:
@@ -4164,6 +4179,7 @@ ZK_BFAR_ADDR  = 0xE000ED38
 
 ZK_AON_BASE   = 0xA000C500
 ZK_AON_SW0    = ZK_AON_BASE + 0x00
+ZK_AON_PWRR01 = ZK_AON_BASE + 0x04   # PWR_RET01：BLE comm core 的上电/复位状态
 ZK_AON_PADCTL0= ZK_AON_BASE + 0x50
 ZK_AON_SW1    = ZK_AON_BASE + 0x60
 ZK_AON_SW2    = ZK_AON_BASE + 0x78
@@ -4171,6 +4187,29 @@ ZK_AON_PSC_CMD= ZK_AON_BASE + 0x80
 ZK_AON_PSC_OPC= ZK_AON_BASE + 0x84
 ZK_AON_MCUREL = ZK_AON_BASE + 0x88
 ZK_AON_TIMERV = ZK_AON_BASE + 0x94
+
+# BLE 协议栈自己的调度中断就挂在 NVIC 的 IRQ1/IRQ2 上（GR551xx.h：
+# BLE_SDK_IRQn=1 "BLE_SDK_SCHEDULE"、BLE_IRQn=2 "BLE Interrupt"）。
+# 如果这里没使能，协议栈的命令会被收下、却永远没人去处理 —— 症状正是
+# 「命令全接受、事件全不回」。所以这两个位值得单独看一眼。
+ZK_NVIC_ISER0 = 0xE000E100
+ZK_IRQ_BLE_SDK = 1
+ZK_IRQ_BLE     = 2
+ZK_IRQ_BLESSLP = 25
+
+# ---- 时基自检（为什么值得看）：固件里所有 "ms" 都是拿 SystemCoreClock 算的，
+#      而 SystemCoreClock 是 SDK 里的一个 RAM 变量 —— 它跟真实主频对不上的话，
+#      所有时间都会按倍数偏（刷屏耗时、BUSY 超时都会跟着偏）。
+#      这里直接读 DWT 的周期计数器，跟宿主机的 250ms 睡眠卡一下，就知道真主频。
+ZK_DWT_CYCCNT  = 0xE0001004
+ZK_SYSCLK_VAR  = 0x300042C8   # SystemCoreClock（本机这份 .map 里的地址）
+ZK_CYC_PER_US  = 0x3000B2A8   # epd_zk42v.c 里那个 s_cyc_per_us（DWT 可用时非 0）
+
+# 「采样到的 PC 落在这几个函数里 = 它在空闲循环里正常打转，不是卡死」。
+# 空闲循环里绝大部分时间就花在那个 5ms 延时上，所以采样十有八九落在 epd_delay_us。
+ZK_IDLE_FUNCS = ('epd_delay_us', 'epd_delay_ms', 'zk_mailbox_poll', 'zk_ble_poll',
+                 'pwr_mgmt_schedule', 'tick_ms', 'main', 'zk_pins_release',
+                 'memcmp', 'memcpy')
 ZK_WDT_BASE   = 0xA0008000
 
 # 屏的 7 根脚所在 GPIO（GPIO0 = 0xA0010000）
@@ -4215,14 +4254,34 @@ def _zk_map_load():
     _ZK_MAP['path'] = path
 
     import re as _re
-    pat = _re.compile(r'^\s*\.([\w.$]+)\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s*(\S*)\s*$')
+    # 链接器打印输入段有两种排版：
+    #   · 名字短： ` .text.tick_ms  0x0100c264  0x68 out/obj/main.o`（一行）
+    #   · 名字长： ` .text.epd_delay_us` 换行后再 ` 0x0100c6a8  0x6c out/obj/main.o`
+    # 以前只认第一种，于是长名字的函数（恰恰是我们的驱动/主循环那几个）
+    # 在 status 里永远显示成 "-"。现在两种都认。
+    pat_one = _re.compile(
+        r'^\s*\.([\w.$]+)\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s+(\S+)\s*$')
+    pat_sec = _re.compile(r'^\s*\.([\w.$]+)\s*$')
+    pat_sec_addr = _re.compile(
+        r'^\s*0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s+(\S+)\s*$')
+    pending = None
     try:
         with open(path, encoding='utf-8', errors='replace') as f:
             for line in f:
-                m = pat.match(line)
-                if not m:
-                    continue
-                name, addr, size, obj = m.groups()
+                m = pat_one.match(line)
+                if m:
+                    name, addr, size, obj = m.groups()
+                else:
+                    ms = pat_sec.match(line)
+                    if ms:
+                        pending = ms.group(1)
+                        continue
+                    ma = pat_sec_addr.match(line)
+                    if ma and pending:
+                        addr, size, obj = ma.groups()
+                        name = pending
+                    else:
+                        continue
                 a = int(addr, 16)
                 n = int(size, 16)
                 # 只要「输入段」那些行（它们最后一列是 .o 文件名）；
@@ -4277,6 +4336,346 @@ def _zk_magic_of(words):
     if not words:
         return None
     return words[0]
+
+
+# =====================================================================
+#  B2-A.2：BLE 扫描/广播实验（固件 build 19 起）
+#
+#  这一组数是用来回答两个问题的：
+#    1) 射频活着吗？    -> ble_scan_start_st / ble_scan_rpts / ble_scan_devs
+#    2) 广播被什么拒了？-> ble_adv_stN（每个广播数据变体的 ADV_START 状态码）
+#  背景见 firmware/docs/B2A-ble-plan.md 和 ble/zk_ble.c 顶上的注释。
+# =====================================================================
+ZK_BLE_EVT_NAME = {
+    0x100: 'BLE_COMMON_EVT_STACK_INIT',
+    0x207: 'BLE_GAPM_EVT_ADV_START',
+    0x209: 'BLE_GAPM_EVT_ADV_STOP',
+    0x20B: 'BLE_GAPM_EVT_SCAN_START',
+    0x20C: 'BLE_GAPM_EVT_SCAN_STOP',
+    0x20D: 'BLE_GAPM_EVT_ADV_REPORT',
+    0x301: 'BLE_GAPC_EVT_CONNECTED',
+    0x302: 'BLE_GAPC_EVT_DISCONNECTED',
+    0x306: 'BLE_GAPC_EVT_CONN_PARAM_UPDATE_REQ',
+    0x600: 'BLE_GATT_COMMON_EVT_MTU_EXCHANGE',
+}
+
+# 0x4A 是这一轮的主角：协议栈在 adv_start 那一刻把广播数据判成「重复/非法」，
+# 于是链路层压根没开始广播 —— 空中一个包都没有，但命令却全是「接受」的。
+ZK_BLE_ERR_NAME = {
+    0x00: '成功',
+    0x40: 'BLE_GAP_ERR_INVALID_PARAM（参数非法）',
+    0x41: 'BLE_GAP_ERR_PROTOCOL_PROBLEM',
+    0x42: 'BLE_GAP_ERR_NOT_SUPPORTED（这套配置不支持）',
+    0x43: 'BLE_GAP_ERR_COMMAND_DISALLOWED（当前状态不允许）',
+    0x44: 'BLE_GAP_ERR_CANCELED',
+    0x45: 'BLE_GAP_ERR_TIMEOUT',
+    0x46: 'BLE_GAP_ERR_DISCONNECTED',
+    0x47: 'BLE_GAP_ERR_NOT_FOUND',
+    0x48: 'BLE_GAP_ERR_REJECTED',
+    0x49: 'BLE_GAP_ERR_PRIVACY_CFG_PB',
+    0x4A: 'BLE_GAP_ERR_ADV_DATA_INVALID（广播数据重复/非法 ★）',
+    0x4B: 'BLE_GAP_ERR_INSUFF_RESOURCES',
+    0x4C: 'BLE_GAP_ERR_UNEXPECTED',
+    0x4D: 'BLE_GAP_ERR_MISMATCH',
+}
+
+# ble_gap_adv_data_set / scan_param_set 这些 API 返回的是 SDK_ERR_xxx（16 位）
+ZK_SDK_ERR_NAME = {
+    0x0000: 'SDK_SUCCESS',
+    0x0001: 'SDK_ERR_INVALID_PARAM',
+    0x0002: 'SDK_ERR_POINTER_NULL',
+    0x0006: 'SDK_ERR_BUSY',
+    0x0008: 'SDK_ERR_NVDS_NOT_INIT',
+    0x000F: 'SDK_ERR_DISALLOWED',
+    0x0010: 'SDK_ERR_NO_RESOURCES',
+    0x0015: 'SDK_ERR_INVALID_ADV_IDX',
+    0x001F: 'SDK_ERR_INVALID_ADV_INTERVAL',
+    0x0021: 'SDK_ERR_INVALID_ADV_PARAM',
+    0x0023: 'SDK_ERR_ADV_DATA_NOT_SET',
+    0x0026: 'SDK_ERR_INVALID_DURATION_PARAM',
+    0x0080: 'SDK_ERR_APP_ERROR',
+}
+
+# 跟上位机固件 zk_ble.c 里 s_variants[] 的顺序一字不差
+ZK_ADV_VARIANT_DESC = [
+    '广播=厂商数据+名字（**不带 Flags**）  scan rsp=128 位服务 UUID',
+    '广播=Flags+厂商数据+名字（旧版那一套，对照组）  scan rsp=UUID',
+    '广播=只有名字  scan rsp=UUID',
+    '广播=128 位 UUID+厂商数据（照抄 SDK 例程的形状）  scan rsp=名字',
+    '广播=只有 Flags  scan rsp=UUID',
+    '广播=厂商数据+名字  scan rsp=空',
+]
+
+ZK_SCAN_ST_NAME = {
+    0: '没发起',
+    1: 'scan_param_set/scan_start 叫过了，还没等到事件',
+    2: '收到 SCAN_START 事件（status=0）',
+    3: '已经在收广播上报了',
+    4: '扫描结束',
+}
+
+ZK_SCAN_STOP_NAME = {
+    0: '超时（协议栈自己停的）',
+    1: '被主机停掉',
+    2: '连上了所以停',
+}
+
+# ---- build 21：EPD 服务 / 推图（对齐 tsl0922/EPD-nRF5）-------------------
+ZK_EPD_CMD_NAME = {
+    0x00: 'SET_PINS', 0x01: 'INIT', 0x02: 'CLEAR', 0x03: 'SEND_CMD',
+    0x04: 'SEND_DATA', 0x05: 'REFRESH', 0x06: 'SLEEP',
+    0x20: 'SET_TIME', 0x21: 'SET_WEEK_START',
+    0x30: 'WRITE_IMAGE', 0x90: 'SET_CONFIG', 0x91: 'SYS_RESET',
+    0x92: 'SYS_SLEEP', 0x99: 'CFG_ERASE',
+}
+
+ZK_PANEL_STATE_NAME = {
+    0: '没动过（还没有人用屏）',
+    1: '屏初始化完了',
+    2: '刷完一帧了',
+    3: '出错（初始化失败）',
+}
+
+
+def _zk_i8(v):
+    """状态块里 RSSI 存的是「符号扩展过的 32 位」，还原成有符号数"""
+    v &= 0xFFFFFFFF
+    return v - 0x100000000 if v >= 0x80000000 else v
+
+
+def _zk_err_text(v):
+    if v == 0xFFFFFFFF:
+        return '没收到事件'
+    return ZK_BLE_ERR_NAME.get(v, '未知错误码 0x%02X' % v)
+
+
+def _zk_say_ble_experiment(words):
+    """把状态块里 B2-A.2 那一组（word 24..52）翻译成人话"""
+    (scan_state, scan_par_err, scan_start_err, scan_start_st, scan_stop_rsn,
+     rpts, devs, ovf, rssi_last, rssi_best, addr0, addr1,
+     dlen, d0, d1, d2, d3,
+     adv_try, adv_status, adv_ok, ds_err, ds2_err, start_err) = (words[24:47])
+
+    say("")
+    say("  ---- B2-A.2 实验一：扫描（看射频活没活）----")
+    # build 20 起，产品路径上不再每次开机先听 4 秒（ZK_BLE_SCAN_TEST=0），
+    # 那时扫描那几格全是「没跑过」——别当成"扫描失败"来报。
+    scan_skipped = (scan_state == 0 and rpts == 0 and scan_start_st == 0xFFFFFFFF)
+    if scan_skipped:
+        say("    这一版**没跑扫描实验**（开机直接广播）——")
+        say("    扫描是 build 19 用来回答「射频活没活」的；那个问题已经有答案了")
+        say("    （395 条上报 / 16 个设备 / -39 dBm），所以产品路径上不再每次开机先听 4 秒。")
+        say("    要再跑一遍：把 zk_ble.c 里 ZK_BLE_SCAN_TEST 改回 1 再重编。")
+    else:
+        say("    ble_scan_state = %d（%s）"
+            % (scan_state, ZK_SCAN_ST_NAME.get(scan_state, '?')))
+        say("    scan_param_set 返回 = %d（%s）   scan_start 返回 = %d（%s）"
+            % (scan_par_err, ZK_SDK_ERR_NAME.get(scan_par_err, '?'),
+               scan_start_err, ZK_SDK_ERR_NAME.get(scan_start_err, '?')))
+        if scan_start_st == 0xFFFFFFFF:
+            say("    SCAN_START 事件 = **没收到**")
+        else:
+            say("    SCAN_START 事件 status = %d（%s）"
+                % (scan_start_st, ZK_BLE_ERR_NAME.get(scan_start_st, '?')))
+        if scan_stop_rsn == 0xFFFFFFFF:
+            say("    SCAN_STOP  事件 = 还没收到")
+        elif scan_stop_rsn == 0xFFFFFFFE:
+            say("    SCAN_STOP  事件 = 我们的兜底超时强停（协议栈一直没回 SCAN_STOP）")
+        else:
+            say("    SCAN_STOP  事件 reason = %d（%s）"
+                % (scan_stop_rsn, ZK_SCAN_STOP_NAME.get(scan_stop_rsn, '?')))
+
+        if rpts == 0:
+            say("    → **一条广播都没听到**（原始条数 0）")
+            if scan_start_st == 0xFFFFFFFF:
+                say("      而且 SCAN_START 事件也没回来 —— 链路层/控制器看起来没在干活，")
+                say("      下一步该去反汇编原厂固件的 BLE 使能路径（射频压根没启动）。")
+            else:
+                say("      但 SCAN_START 事件是好的（控制器认了这个命令）——")
+                say("      说明命令通路是通的、收信通路没出东西。附近真有 BLE 设备吗？")
+                say("      （手机/耳机/手环都在广播；在家/办公室一般几十条起步）")
+        else:
+            say("    → 听到 原始 %d 条广播，去重后 **%d 个设备**（去重表上限 16）"
+                % (rpts, devs))
+            if ovf:
+                say("      去重表溢出 %d 次 —— 周围设备比 16 个还多，真实数量更多。"
+                    % ovf)
+            say("      RSSI：最后 %d dBm，最强 %d dBm"
+                % (_zk_i8(rssi_last), _zk_i8(rssi_best)))
+            a = addr0 | (addr1 << 32)
+            say("      最后一条上报的地址：%s"
+                % ':'.join('%02X' % ((a >> (8 * i)) & 0xFF) for i in range(5, -1, -1)))
+            if dlen:
+                raw = b''.join(struct.pack('<I', w)
+                               for w in (d0, d1, d2, d3))[:min(dlen, 16)]
+                say("      第一条广播数据（共 %d 字节，这是前 %d 字节）："
+                    % (dlen, len(raw)))
+                say("        %s" % ' '.join('%02X' % b for b in raw))
+            say("      ▶ **射频是活的、收通路也是好的** —— 问题在发送侧（看下面实验二）")
+
+    say("")
+    say("  ---- B2-A.2 实验二：广播数据变体（看广播被什么拒了）----")
+    say("    ble_adv_try = %s（试到第几个变体）   成功的是 = %s"
+        % (adv_try, '都失败/还没试' if adv_ok == 0xFFFFFFFF else str(adv_ok)))
+    say("    adv_data_set(DATA) 返回 = %d（%s）"
+        % (ds_err, ZK_SDK_ERR_NAME.get(ds_err, '?')))
+    say("    adv_data_set(SCAN_RSP) 返回 = %d（%s）"
+        % (ds2_err, ZK_SDK_ERR_NAME.get(ds2_err, '?')))
+    say("    adv_start 返回 = %d（%s）  （0 只代表「命令收下了」，不代表真在广播）"
+        % (start_err, ZK_SDK_ERR_NAME.get(start_err, '?')))
+    say("    %-4s %-16s %s" % ('变体', 'ADV_START 事件', '这套数据'))
+    for i in range(6):
+        v = words[47 + i]
+        if v == 0xFFFFFFFF:
+            verdict = '没等到事件'
+        elif v == 0:
+            verdict = '0 ✅ 被接受了'
+        else:
+            verdict = '0x%02X %s' % (v, ZK_BLE_ERR_NAME.get(v, '未知错误码'))
+        say("    #%-3d %-16s %s"
+            % (i, verdict, ZK_ADV_VARIANT_DESC[i] if i < len(ZK_ADV_VARIANT_DESC) else ''))
+
+    if adv_ok != 0xFFFFFFFF:
+        say("    ▶ 变体 #%d 这套广播数据控制器认了 —— 下一个版本就把它固化下来，"
+            % adv_ok)
+        say("      然后用手机/nRF Connect 搜 'ZK42V-EPD' 看能不能搜到。")
+        if adv_ok == adv_try:
+            say("      （表中 #%d 之后那几行写「没等到事件」，不是它们失败 ——"
+                % adv_ok)
+            say("        **是 #%d 一成功我们就停了**，后面的压根没试，故意的 ——"
+                % adv_ok)
+            say("        省时间，也免得把已经起来的广播活动折腾掉。）")
+    else:
+        say("    ▶ 6 种都没成功。看上面每个变体的状态码：")
+        say("      全是 0x4A  -> 广播数据这条路上还有别的规矩没满足")
+        say("      全是没等到  -> 链路层压根没处理 adv_start（回到扫描那边的结论）")
+
+    # ---- build 20：广播「自己停了」也要看得见 -------------------------------
+    # 之前完全没有这条记录：广播要是中途停了，状态块里一个数都不变，
+    # 我们还在说"在广播"。现在每停一次记一笔，非连接原因还会自动重开。
+    if len(words) > 55:
+        stop_cnt, stop_rsn, restart_cnt = words[53], words[54], words[55]
+        say("    ADV_STOP（广播自己停）：一共 %d 次   我们重开了 %d 次"
+            % (stop_cnt, restart_cnt))
+        if stop_cnt == 0:
+            say("      → 从开机到现在广播一直没停过（正常）")
+        else:
+            rsn = {0: '超时', 1: '被主机停掉', 2: '被连接打断（正常，等断开时会重开）'}
+            say("      最后一次停的原因 = %d（%s）"
+                % (stop_rsn,
+                   rsn.get(stop_rsn, '未知') if stop_rsn != 0xFFFFFFFF else '还没停过'))
+            if restart_cnt == 0 and stop_rsn != 2:
+                say("      → 停了又没能重开，空中可能已经没有我们的包了 —— 把这段发我。")
+
+
+def _zk_say_epd_service(words):
+    """build 21：网页连上来之后到底发生了什么（GATT 服务 / 推图 / 刷屏）"""
+    (svc_err, svc_hdl, conn_cnt, conn_idx, cccd, cmd_cnt, last_cmd,
+     chunks, last_flags, img_bw, img_red, rle_out, legacy,
+     panel_st, panel_ms, init_ms, noti_cnt, noti_err,
+     want_init, want_refresh, mtu_rpt, svc_end, svc_db_err) = words[56:79]
+    busy_delta = words[79] if len(words) > 79 else 0
+
+    say("")
+    say("  ---- B2-A.2：GATT 服务 / 推图（build 21 起，网页走的就是这条）----")
+    # 服务的建立分两步（build 22 起）：
+    #   ① ble_gatts_prf_add：在协议栈里登记 profile（svc_err）
+    #   ② 协议栈回头加载 profile 时才真正建库（svc_db_err），建完给我们句柄范围
+    # 只做①不做②的后果就是 build 21 那次：手机看到 "No Services matching UUID"。
+    if svc_hdl == 0:
+        if svc_err:
+            say("    服务**注册**就没成：ble_gatts_prf_add 返回 = %d（%s）"
+                % (svc_err, ZK_SDK_ERR_NAME.get(svc_err, '未知')))
+        else:
+            say("    profile 登记上了（返回 0），但**协议栈还没回来建库**："
+                "句柄还是 0，建库返回 = %d（%s）"
+                % (svc_db_err, ZK_SDK_ERR_NAME.get(svc_db_err, '未知')))
+        if svc_db_err == 0x10:
+            say("      0x10 = NO_RESOURCES —— 协议栈的堆不够放这张表了")
+        say("      → 手机连上来会看不到 62750001-… 这个服务（build 21 就是这么栽的）。")
+        say("        把这段发我。")
+        return
+
+    say("    服务：注册返回 = %d（%s）  建库返回 = %d（%s）"
+        % (svc_err, ZK_SDK_ERR_NAME.get(svc_err, '?'),
+           svc_db_err, ZK_SDK_ERR_NAME.get(svc_db_err, '?')))
+    # 注意：SDK 那个框架报的 end_hdl 是**开区间**（它自己写的是 start + 属性个数），
+    # 所以要减 1 才是最后一个真实句柄 —— 不然会像 build 21 那样报成"7 个属性"。
+    n_attr = (svc_end - svc_hdl) if svc_end > svc_hdl else 6
+    say("          句柄 = 0x%04X~0x%04X（%d 个属性）"
+        % (svc_hdl, svc_hdl + n_attr - 1, n_attr))
+
+    if conn_cnt == 0:
+        say("    连接：**还没有客户端连上来过**")
+    else:
+        say("    连接：连上过 %d 次，当前 conn_idx = %s   CCCD = 0x%04X（%s）"
+            % (conn_cnt,
+               '没连' if conn_idx == 0xFFFFFFFF else str(conn_idx),
+               cccd, '客户端开了通知' if cccd & 1 else '没开通知'))
+    say("    MTU：告诉网页的可写长度 = %d（网页按它 -2 切图块）" % mtu_rpt)
+
+    say("    命令：一共收到 %d 条，最后一条 = %s"
+        % (cmd_cnt,
+           '还没收到过' if last_cmd == 0xFFFFFFFF
+           else '0x%02X（%s）' % (last_cmd, ZK_EPD_CMD_NAME.get(last_cmd, '未知'))))
+    say("    INIT 命令收到 %d 次，REFRESH/CLEAR 收到 %d 次"
+        % (want_init, want_refresh))
+
+    say("    图像：WRITE_IMAGE 收到 %d 块   黑白面 %d/%d 字节   红面 %d/%d 字节"
+        % (chunks, img_bw, 15000, img_red, 15000))
+    if chunks:
+        say("      最后一块的 flags = 0x%02X（bit0 红面 / bit1 首块 / bit2 RLE）"
+            % last_flags)
+        if rle_out:
+            say("      RLE 解出 %d 字节 ⇒ 网页走了压缩那条路 ✅" % rle_out)
+        else:
+            say("      RLE 解出 0 字节 ⇒ 网页走的**没压缩**那条路"
+                "（要么图本来就压不小，要么它没收到我们 rle=1 的通知）")
+        if legacy:
+            say("      ⚠ 网页用的是 v1.5 老命令格式（说明它没收到我们的配置/MTU 通知）")
+
+    say("    屏：%s" % ZK_PANEL_STATE_NAME.get(panel_st, '?'))
+    if panel_st >= 1:
+        say("      初始化用了 %d ms，最近一次「写图 + 刷新」用了 %d ms"
+            % (init_ms, panel_ms))
+    if busy_delta:
+        say("      这一轮刷新时 BUSY 被轮询了 %d 次（×200us ≈ %.1f 秒）"
+            % (busy_delta, busy_delta * 0.0002))
+        if busy_delta < 5000:
+            say("      ⚠ 这个数太小了 —— **屏压根没做全刷**。真刷一屏时是几万~几十万次")
+            say("        （17 秒以上）。历史对照：82953 / 93684 / 469030 次 = 刷成功；")
+            say("        2277 次那次（build 22）屏一点动静都没有，原因是初始化完就把")
+            say("        屏的供电脚放开了、等刷新时屏已经掉电。build 24 修掉的就是这个。")
+
+    # ---- build 26：日历 / 时钟模式（网页只发时间戳，页面由固件画） ----
+    if len(words) > 82:
+        gui_mode, gui_ts, gui_draws = words[80], words[81], words[82]
+        mtxt = {0: '图片（推图）', 1: '日历', 2: '时钟'}.get(gui_mode, '?')
+        ttxt = '还没同步过'
+        if gui_ts:
+            ttxt = ('%s UTC' % time.strftime('%Y-%m-%d %H:%M:%S',
+                                             time.gmtime(gui_ts)))
+        say("    日历/时钟：模式 = %s   网页给的时间 = %s   画过 %d 次"
+            % (mtxt, ttxt, gui_draws))
+        if gui_mode in (1, 2) and gui_draws == 0:
+            say("      → 网页点了「日历/时钟模式」但我们还没画出来（看下一行的屏状态）")
+    say("    通知：发出去 %d 条，最后一次返回 %d（0 = 成功）" % (noti_cnt, noti_err))
+
+    # ---- 一句话判据 ----------------------------------------------------
+    if conn_cnt == 0:
+        say("    ▶ 还没有网页连上来 —— 先用手机 Chrome 打开 tsl0922 那个网页点「连接」。")
+    elif cmd_cnt == 0:
+        say("    ▶ 网页连上了但一条命令都没收到：写事件没进来（句柄算法或事件分发的问题）")
+        say("      —— 把这段和网页日志一起发我。")
+    elif chunks and (img_bw >= 15000 and img_red >= 15000 or
+                     (img_bw and img_red and want_refresh)):
+        say("    ▶ 服务在、图也收全了、屏也刷了 —— 整条链路通了 🎉")
+    elif chunks and (img_bw < 15000 or img_red < 15000):
+        say("    ▶ 收到图块了但没凑满：黑白面 %d/15000，红面 %d/15000" % (img_bw, img_red))
+        say("      如果块数远少于预期，多半是**无响应的写（Write Command）没被递上来**")
+        say("      —— 这种块丢了只能靠带响应的那些补齐，图会缺数据。把这段发我。")
+    elif want_init or want_refresh:
+        say("    ▶ 收到命令了但还没看到图像数据 —— 网页那边是不是没点「推送」？")
 
 
 @command('status', help='自研固件体检：多次采样 + 复位检测 + AON 寄存器')
@@ -4399,6 +4798,8 @@ def zkstatus():
         s['psc'] = rd(ZK_AON_PSC_CMD)
         s['psc_opc'] = rd(ZK_AON_PSC_OPC)
         s['mcurel'] = rd(ZK_AON_MCUREL)
+        s['pwrr01'] = rd(ZK_AON_PWRR01)
+        s['iser0'] = rd(ZK_NVIC_ISER0)
         s['wdt'] = (rd(ZK_WDT_BASE + 0x00), rd(ZK_WDT_BASE + 0x04),
                     rd(ZK_WDT_BASE + 0x08), rd(ZK_WDT_BASE + 0x10))
         words = []
@@ -4556,6 +4957,41 @@ def zkstatus():
         if last.get('mcurel') is not None:
             say("    MCU_RELEASE = 0x%08X" % last['mcurel'])
 
+    # ---- BLE 子系统（comm core）的上电/复位 + 协议栈调度中断 --------------
+    # 这两个是「射频到底有没有被启动」最直接的物证：
+    #   · AON->PWR_RET01 的 bit6/7 是 comm core / comm timer 的电源闸，
+    #     bit11/12 是它们的复位闸（=1 表示已放开复位、可以跑）
+    #   · NVIC ISER0 的 bit1/2 是协议栈的调度中断（BLE_SDK_IRQn/BLE_IRQn）。
+    #     中断没使能 = 命令全被收下、但没人去处理 = 事件永远不回。
+    r01 = last.get('pwrr01')
+    iser = last.get('iser0')
+    if r01 is not None:
+        say("")
+        say("  BLE 子系统（comm core）状态：")
+        say("    AON PWR_RET01 = 0x%08X" % r01)
+        say("      comm core  电源 = %d    comm timer 电源 = %d"
+            % ((r01 >> 6) & 1, (r01 >> 7) & 1))
+        say("      comm core  隔离 = %d    comm timer 隔离 = %d   （0 = 没隔离，正常）"
+            % ((r01 >> 8) & 1, (r01 >> 9) & 1))
+        say("      comm core  复位(1=已放开) = %d    comm timer 复位(1=已放开) = %d"
+            % ((r01 >> 12) & 1, (r01 >> 11) & 1))
+        if not ((r01 >> 6) & 1) or not ((r01 >> 12) & 1):
+            say("      → **BLE 子系统压根没上电/还在复位**：这个状态下链路层不会执行任何")
+            say("        东西，射频自然一点动静都没有。要查的就是「谁负责给它上电」——")
+            say("        原厂固件同一处的调用序列（反汇编里找 comm core 上电那段）。")
+        else:
+            say("      → BLE 子系统是上电、放开复位的 —— 那就不是电源/复位的问题。")
+    if iser is not None:
+        say("    NVIC ISER0 = 0x%08X" % iser)
+        say("      IRQ1 BLE_SDK（协议栈调度）= %s    IRQ2 BLE = %s    IRQ25 BLESLP = %s"
+            % ('使能' if (iser >> ZK_IRQ_BLE_SDK) & 1 else '**没使能**',
+               '使能' if (iser >> ZK_IRQ_BLE) & 1 else '**没使能**',
+               '使能' if (iser >> ZK_IRQ_BLESSLP) & 1 else '**没使能**'))
+        if not ((iser >> ZK_IRQ_BLE_SDK) & 1):
+            say("      → 协议栈的调度中断没使能：命令会被收下（API 返回 0），但队列永远")
+            say("        没人处理，事件一个都不会递上来。这跟「命令全接受、事件全不回」")
+            say("        的症状完全对得上，是要重点怀疑的一条。")
+
     # ---- AON 定时器：它跑在低功耗时钟上，不走 = 32k 时钟源没起来 ----
     # ---- B2-B 共享内存信箱：看看上位机写的到底落在哪了 ----
     mb_addr = _env_hex('MB_ADDR', ZK_MB_ADDR)
@@ -4620,6 +5056,34 @@ def zkstatus():
         else:
             say("    → 在走，低功耗时钟是活的（那 PSC 卡住就是别的原因）。")
 
+    # ---- 时基自检：SystemCoreClock 跟真实主频对不对得上 ----
+    c1 = rd(ZK_DWT_CYCCNT)
+    tw0 = time.monotonic()
+    time.sleep(0.25)
+    c2 = rd(ZK_DWT_CYCCNT)
+    tw1 = time.monotonic()
+    sysclk = rd(ZK_SYSCLK_VAR)
+    cycper = rd(ZK_CYC_PER_US)
+    if c1 is not None and c2 is not None and c2 != c1:
+        dt = tw1 - tw0
+        freq = ((c2 - c1) & 0xFFFFFFFF) / dt
+        say("")
+        say("  时基自检（固件里所有 ms 都是拿 SystemCoreClock 换算的，所以先看它对不对）：")
+        say("    SystemCoreClock = %s   固件的 DWT 校准值 s_cyc_per_us = %s"
+            % (sysclk if sysclk else '读不到', cycper if cycper else '0（没用上 DWT）'))
+        say("    DWT CYCCNT 实测：%.2f 秒走了 %d 个周期 ⇒ 实际主频 ≈ %.1f MHz"
+            % (dt, (c2 - c1) & 0xFFFFFFFF, freq / 1e6))
+        if sysclk:
+            ratio = freq / float(sysclk)
+            if 0.95 <= ratio <= 1.05:
+                say("    → 对得上 ✅ 状态块里的 ms 可以直接信。")
+            else:
+                say("    → **对不上：真实主频是 SystemCoreClock 的 %.2f 倍**" % ratio)
+                say("      ⇒ 固件报出来的 ms 要乘 %.2f 才是真时间" % ratio)
+                say("      （同时 `epd_wait_busy` 的超时也是按这个错比例算的：")
+                say("        标称 30 秒的刷新超时，真实只有 %.1f 秒 —— 慢刷有超时风险）"
+                    % (30.0 / ratio))
+
     words = last['words']
     say("")
     say("  状态块 0x%08X：" % ZK_DBG_ADDR)
@@ -4646,10 +5110,13 @@ def zkstatus():
                 % (words[12], words[13]))
             say("      这块 RAM 是 NOLOAD、软复位不清，所以它在涨就是芯片在反复复位）")
             if len(words) > 15 and build >= 4:
-                say("    test_step = %d   （B1.3 上色测试：这一轮做的第几步；"
-                    "按一下 RST 就进下一步）" % words[15])
+                say("    test_step = %d   （B1.3 那个「按 RST 换下一步」的遗留字段，"
+                    "B1.5 起就没人写了 —— 这块 RAM 不清零，所以那个数是垃圾，别当真）"
+                    % words[15])
             if build >= 10 and len(words) > 18:
-                sttxt = {0: '没起来', 1: '在广播，等连接', 2: '已连接'}.get(words[16], '?')
+                sttxt = {0: '没起来', 1: '在广播，等连接', 2: '已连接',
+                         3: '扫描实验：在听（build 19+）',
+                         4: '所有广播数据变体都被拒了（build 19+）'}.get(words[16], '?')
                 say("    BLE: state=%d（%s）  ble_err=%d  mtu=%d"
                     % (words[16], sttxt, words[17], words[18]))
                 if words[17]:
@@ -4659,8 +5126,14 @@ def zkstatus():
                 say("    BLE MAC: %02X:%02X:%02X:%02X:%02X:%02X"
                     % (b[5], b[4], b[3], b[2], b[1], b[0]))
             if build >= 18 and len(words) > 23:
-                say("    BLE 最后事件: id=%d  status=%d（0=成功）  共收到 %d 个事件"
-                    % (words[21], words[22], words[23]))
+                say("    BLE 最后事件: id=0x%03X（%s）  status=%d（%s）  共收到 %d 个事件"
+                    % (words[21], ZK_BLE_EVT_NAME.get(words[21], '未知事件'),
+                       words[22], ZK_BLE_ERR_NAME.get(words[22], '非 0 就是错误码'),
+                       words[23]))
+            if build >= 19 and len(words) >= 53:
+                _zk_say_ble_experiment(words)
+            if build >= 21 and len(words) >= 77:
+                _zk_say_epd_service(words)
         else:
             say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
                 % build)
@@ -4703,8 +5176,20 @@ def zkstatus():
             say("  ▶ 采样到的 PC 全挤在 0x%08X~0x%08X 这 %d 字节里 ⇒"
                 % (code_pcs[0], code_pcs[-1], code_pcs[-1] - code_pcs[0]))
             syms = [s for s in (_zk_sym(p) for p in code_pcs) if s]
-            say("    **卡在%s这个循环里**（不是在到处跑）。"
-                % ('「%s」' % syms[-1] if syms else '某个'))
+            # 「挤在一小段里」有两种情况，得分开说：
+            #   · 落在空闲循环的延时/轮询里 -> 这是**正常**的（大部分时间本来就花在
+            #     那个 5ms 延时上），stage=9 + 心跳在涨就是活的证据；
+            #   · 落在别的地方 -> 才叫「卡住了」。
+            idle_hit = bool(syms) and all(
+                s.split('+')[0] in ZK_IDLE_FUNCS for s in set(syms))
+            if idle_hit:
+                say("    这些 PC 落在%s —— **空闲循环里正常打转**"
+                    % ('「%s」' % syms[-1] if syms else '延时函数里'))
+                say("    （空闲循环 99% 的时间就花在那个 5 ms 延时上，采到它是最正常的；")
+                say("      只要 stage=9、心跳还在涨，就说明固件活得好好的。）")
+            else:
+                say("    **卡在%s这个循环里**（不是在到处跑）。"
+                    % ('「%s」' % syms[-1] if syms else '某个'))
 
     boots = [s['words'][12] for s in samples
              if s['words'] and len(s['words']) > 14

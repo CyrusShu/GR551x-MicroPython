@@ -15,6 +15,13 @@
 #      ☑ sys_swd_enable() 调用成功
 #  如果 stage 停在 3/4/5，说明卡在初始化，把整段发我。
 #
+#  B2-A.2（build 19 起）还会多打两段：
+#      「B2-A.2 实验一：扫描」 -> 听到几个设备 / 最后和最强的 RSSI
+#      「B2-A.2 实验二：广播数据变体」 -> 6 种广播数据各自的 ADV_START 状态码
+#  刚上电时这两段还没跑完（扫描要 4 秒，广播变体再各等一会儿），所以
+#  这条脚本默认先等 STATUS_SETTLE_MS=15000 毫秒再采。只想快速看一眼
+#  stage/boot_count 的话，用 STATUS_SETTLE_MS=0 bash status.sh 跳过等待。
+#
 #  注意：脚本会先试「不复位直接连」，连不上再抢复位窗口 ——
 #  连上之后会等 3 秒让固件把该做的做完（用 STATUS_WAIT_MS= 改）。
 # =====================================================================
@@ -34,6 +41,7 @@ export DUMP_WINDOW_MS="${WINDOW_MS:-8000}"
 export RST_VIA="${RST_VIA:-ttl}"
 export TTL_PORT="${TTL_PORT:-/dev/cu.usbserial-210}"
 export STATUS_WAIT_MS="${STATUS_WAIT_MS:-3000}"
+export STATUS_SETTLE_MS="${STATUS_SETTLE_MS:-15000}"
 
 LOG="$PWD/status-$(date +%Y%m%d-%H%M%S).log"
 "$PYOCD" commander -W -N -t cortex_m -f "$SPD" --no-config \
