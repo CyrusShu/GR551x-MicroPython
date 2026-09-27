@@ -4658,6 +4658,9 @@ def zkstatus():
                 b = struct.pack('<II', words[19], words[20])
                 say("    BLE MAC: %02X:%02X:%02X:%02X:%02X:%02X"
                     % (b[5], b[4], b[3], b[2], b[1], b[0]))
+            if build >= 18 and len(words) > 23:
+                say("    BLE 最后事件: id=%d  status=%d（0=成功）  共收到 %d 个事件"
+                    % (words[21], words[22], words[23]))
         else:
             say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
                 % build)

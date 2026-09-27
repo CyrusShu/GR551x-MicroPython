@@ -106,6 +106,13 @@ static void zk_ble_on_stack_init(void)
 
 void zk_ble_evt_handler(const ble_evt_t *p_evt)
 {
+    /* 记下"协议栈最后递上来什么事件、状态码是多少" ——
+       state=1 只代表"我们叫了 adv_start 而且它返回 0"，不代表控制器真的在广播；
+       真正的确认是 BLE_GAPM_EVT_ADV_START 这个事件（状态码 0 = 成功）。 */
+    g_dbg.ble_evt_id = p_evt->evt_id;
+    g_dbg.ble_evt_status = p_evt->evt_status;
+    g_dbg.ble_evt_count++;
+
     switch (p_evt->evt_id)
     {
         case BLE_COMMON_EVT_STACK_INIT:
