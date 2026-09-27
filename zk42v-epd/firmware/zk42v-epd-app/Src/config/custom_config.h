@@ -122,8 +122,19 @@
 #define APP_CODE_RUN_ADDR       0x0100A000
 #endif
 
+/* <<< 跟样例不一样 ⑤>>> 系统时钟跟原厂保持一致 = 16MHz（CPLL）
+ *
+ * 依据：原厂固件在 platform_init() 里调的是
+ *     platform_clock_init(r0=4, r1=2, 500, 0)
+ * r0=4 就是 mcu_clock_type_t 里的 CPLL_S16M_CLK（16MHz），r1=2 是低功耗时钟用内部 RC。
+ * 我们之前用样例默认的 0 = CPLL 64MHz。
+ *
+ * 为什么现在改：B2-A 的 BLE 广播"命令全部接受、错误码全 0、地址读得到，
+ * 但空中一个包都没有"。BLE 的射频初始化/校准对时钟配置很挑，
+ * 既然原厂在这块板子上就是用 16MHz 跑 BLE 的，先把这个变量对齐再说。
+ * （我们的软件 SPI 延时用的是 DWT 周期计数，跟主频无关，所以改这个不会影响点屏。） */
 #ifndef SYSTEM_CLOCK
-#define SYSTEM_CLOCK            0
+#define SYSTEM_CLOCK            4
 #endif
 
 #ifndef CFG_LF_ACCURACY_PPM
