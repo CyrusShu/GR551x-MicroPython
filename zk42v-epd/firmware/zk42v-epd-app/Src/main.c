@@ -179,6 +179,11 @@ int main(void)
     g_dbg.ms_init = 0;
     g_dbg.ms_write = 0;
     g_dbg.ms_refresh = 0;
+    /* B2-A：这三个也要清 —— 不清的话「BLE 还没启动」会读成随机大数，
+       跟"启动失败"分不出来。（这版之前就是靠这个坑浪费了一轮） */
+    g_dbg.ble_state = 0;
+    g_dbg.ble_err = 0;
+    g_dbg.ble_mtu = 0;
 
     g_dbg.magic    = ZK_DBG_MAGIC;
     g_dbg.build_id = ZK_BUILD_ID;
