@@ -9,23 +9,30 @@ STACK_HEAP_INIT(heaps_table);
 
 #define ZK_BLE_NAME  "ZK42V-EPD"
 
-/* 广播数据：
- *   0x02 0x01 0x06            flags：LE 通用可发现 + 不支持 BR/EDR
- *   0x11 0x07 <16 字节>       完整的 128 位服务 UUID 列表（LSB first）
- * 那 16 字节就是服务 UUID 62750001-d828-918d-fb46-b6c11c675aec 的小端写法。
- * Web Bluetooth 就是按这个过滤的 —— 不写它，网页的设备列表里就看不到我们。 */
+/* 广播数据 —— 2026-09-27 调整：**名字要放广播包里**，别放 scan response。
+ *
+ * 起因：用 Bluefy（iOS 的 Web Bluetooth 浏览器）也搜不到设备。回头去看那个网页，
+ * 它是 acceptAllDevices: true —— 压根不按服务 UUID 筛，附近所有 BLE 设备都会列出来。
+ * 也就是说"能不能被看到"只取决于：① 我们真在广播 ② 广播里**带名字**。
+ * 我原来把名字放在 scan response 里，而 iOS 那边不一定去取 scan response，
+ * 结果我们可能以"(未知)"的样子躺在列表里，谁也认不出来。
+ * 原项目（EPD-nRF5）就是把完整名字放广播包里的（BLE_ADVDATA_FULL_NAME）。
+ *
+ * 所以现在：
+ *   广播包    = flags + 完整名字
+ *   扫描响应  = 128 位服务 UUID（连上之后按 optionalServices 找服务用，不影响被发现） */
 static const uint8_t s_adv_data[] =
 {
     0x02, 0x01, 0x06,
+    0x0A, 0x09, 'Z', 'K', '4', '2', 'V', '-', 'E', 'P', 'D',
+};
+
+/* 128 位服务 UUID：62750001-d828-918d-fb46-b6c11c675aec 的小端 16 字节 */
+static const uint8_t s_adv_rsp_data[] =
+{
     0x11, 0x07,
     0xEC, 0x5A, 0x67, 0x1C, 0xC1, 0xB6, 0x46, 0xFB,
     0x8D, 0x91, 0x28, 0xD8, 0x01, 0x00, 0x75, 0x62,
-};
-
-/* 名字放 scan response 里（广播包里塞不下 UUID + 名字） */
-static const uint8_t s_adv_rsp_data[] =
-{
-    0x0A, 0x09, 'Z', 'K', '4', '2', 'V', '-', 'E', 'P', 'D',
 };
 
 static ble_gap_adv_param_t      s_adv_param;
