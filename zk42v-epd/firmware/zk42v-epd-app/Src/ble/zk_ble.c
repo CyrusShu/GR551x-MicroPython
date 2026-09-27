@@ -82,7 +82,19 @@ static void zk_ble_adv_start(void)
 
 static void zk_ble_on_stack_init(void)
 {
+    ble_gap_bdaddr_t bd;
+
     zk_ble_gap_init();
+
+    /* 把自己的 BLE 地址记进状态块 —— 扫描列表里认不出名字时，就靠这个地址找我们 */
+    if (0 == ble_gap_addr_get(&bd))
+    {
+        uint8_t *p = (uint8_t *)&g_dbg.ble_addr0;
+        p[0] = bd.gap_addr.addr[0]; p[1] = bd.gap_addr.addr[1];
+        p[2] = bd.gap_addr.addr[2]; p[3] = bd.gap_addr.addr[3];
+        p[4] = bd.gap_addr.addr[4]; p[5] = bd.gap_addr.addr[5];
+    }
+
     zk_ble_adv_start();
     g_dbg.ble_state = ZK_BLE_ST_ADV;      /* 状态块里能看到"在广播" */
 }

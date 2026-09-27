@@ -4654,6 +4654,10 @@ def zkstatus():
                     % (words[16], sttxt, words[17], words[18]))
                 if words[17]:
                     say("         ^ ble_err 非 0 = 协议栈/广播 API 报的错码，把这个数发我")
+            if build >= 13 and len(words) > 20:
+                b = struct.pack('<II', words[19], words[20])
+                say("    BLE MAC: %02X:%02X:%02X:%02X:%02X:%02X"
+                    % (b[5], b[4], b[3], b[2], b[1], b[0]))
         else:
             say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
                 % build)

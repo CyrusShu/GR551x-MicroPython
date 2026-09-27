@@ -20,7 +20,7 @@
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
 /* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   12u
+#define ZK_BUILD_ID   13u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -84,7 +84,7 @@ typedef struct
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 
-#define ZK_DBG_WORDS 24
+#define ZK_DBG_WORDS 26
 
 typedef struct
 {
@@ -108,7 +108,9 @@ typedef struct
     uint32_t ble_state;      /* B2-A：ZK_BLE_ST_xxx */
     uint32_t ble_err;        /* B2-A：协议栈/广播 API 返回的错误码（0 = 没出错） */
     uint32_t ble_mtu;        /* B2-A：协商出来的 MTU */
-    uint32_t rsv[ZK_DBG_WORDS - 19];
+    uint32_t ble_addr0;      /* B2-A：本机 BLE 地址低 4 字节 */
+    uint32_t ble_addr1;      /* B2-A：本机 BLE 地址高 2 字节（低 16 位有效） */
+    uint32_t rsv[ZK_DBG_WORDS - 21];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */
