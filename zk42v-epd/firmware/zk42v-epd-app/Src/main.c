@@ -96,6 +96,7 @@ static void zk_mailbox_poll(void)
             t0 = tick_ms();
             epd_refresh_ex(0xC7, 0);
             s_mb->ms_refresh = tick_ms() - t0;
+            epd_pins_release();
             s_mb->status = 3u;
             s_mb->ack_seq = s_mb->seq;
             zk_dbg_stage(ZK_STAGE_PUSHED);
@@ -229,6 +230,7 @@ int main(void)
     g_dbg.ms_refresh = tick_ms() - t_prev;
     g_dbg.test_step = 1u;
     zk_dbg_stage(ZK_STAGE_REFRESHED);
+    epd_pins_release();       /* 刷完松开屏的脚（尤其 P1_8），别影响 BLE */
 
     /* B2-A：起 BLE（广播 + 之后的服务）。
        放在刷完第一帧之后：屏先亮，再起无线；协议栈初始化不阻塞主循环。 */

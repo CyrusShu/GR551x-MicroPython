@@ -288,6 +288,8 @@ void epd_write_image(const uint8_t *buf)
      * 列不用动（X 递增，实测左边就是左边）。
      * ------------------------------------------------------------------ */
 
+    epd_gpio_init();          /* 原厂每次操作前都 pins_init（上次末尾 release 过） */
+
     epd_set_cursor();
     epd_cmd(0x24);                                   /* 黑白面 */
     for (row = (int32_t)rows - 1; row >= 0; row--)
@@ -311,6 +313,8 @@ void epd_write_image(const uint8_t *buf)
 
 void epd_refresh_ex(uint8_t ctrl, int with_temp)
 {
+    epd_gpio_init();
+
     if (with_temp)
     {
         /* 原厂 0x0100FE4E 那条路：先使能内部温度传感器、写一个温度值，再更新 */
@@ -320,6 +324,22 @@ void epd_refresh_ex(uint8_t ctrl, int with_temp)
     epd_cmd(0x22); epd_data(ctrl);
     epd_cmd(0x20);
     epd_wait_busy(30000);
+}
+
+void epd_pins_release(void)
+{
+    static const uint32_t outs[5] =
+    {
+        ZK42V_PIN_CS, ZK42V_PIN_RST, ZK42V_PIN_SCLK, ZK42V_PIN_SDI, ZK42V_PIN_DC,
+    };
+    int i;
+
+    for (i = 0; i < 5; i++)
+    {
+        app_io_deinit(ZK42V_PORT, outs[i]);
+    }
+    app_io_deinit(ZK42V_PIN_AUX_TYPE, ZK42V_PIN_AUX);   /* 关键：把 P1_8 也松开 */
+    app_io_deinit(ZK42V_PORT, ZK42V_PIN_BUSY);
 }
 
 void epd_refresh(void)

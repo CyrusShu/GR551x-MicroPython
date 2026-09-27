@@ -14,6 +14,11 @@
 /* 把 7 根脚配好（CS/RST/SCLK/SDI/DC/AUX 输出，BUSY 输入），并让它们回到空闲电平 */
 void epd_gpio_init(void);
 
+/* 像原厂 pins_release 那样把脚交还（设回默认态，等于松开）。
+ * 原厂每次刷完屏都做这一步；我们之前一直把 P1_8 钉在高电平 ——
+ * 怀疑 P1_8 还兼着射频前端/天线开关，钉着它 BLE 就发不出去。 */
+void epd_pins_release(void);
+
 /* 屏复位：RST 低 1ms -> 高 1ms -> CMD 0x12 -> 等 BUSY */
 void epd_reset(void);
 
