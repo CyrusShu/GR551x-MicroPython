@@ -1,5 +1,36 @@
 # ZK42V 自研固件（方向 B）第一版：把屏点亮
 
+> **2026-09-28 build 29 —— 日历页换成「整页农历月历」（版式照社区固件的实屏截图做的）**
+>
+> build 28 把农历算对了，但你一看屏就说"还是丑"。问题在两处：
+>
+> ① **版式**：老版左边一个红面板（表盘 + 大数字 + 大日期）、右边硬塞一个 27px 宽的
+> 月历，两边都挤。现在照 qbsg.top 固件目录里那几版 4.2 寸**实屏截图**（每个固件都带
+> 一张实拍图）重画成**整页农历月历**：
+> 顶部黑条 `2026年09月 农历八月 星期日` → 星期条（六/日红底白字）→ 6×7 格子，
+> 每格**大号日号 + 下面一行小号农历**，今天那格整块红底白字。时钟页也换成同一个
+> 表头 + 大表盘 + 底部黑底白字时间，两页看着是一套。
+> 怎么挑的、借了什么、每版的优缺点，记在 `outputs/analysis/qbsg-生态调研.md` 第 5 节
+> （**截图没进库** —— 第三方资料，只记版式描述和出处）。
+>
+> ② **字模**：老版那 18 个汉字是**手画的矩形**，简单的（日/月/十）还行，复杂的根本
+> 认不出来 —— 屏上「初」是个 π、「廿」是一条横线、「农/历/星/期/年」完全糊成一团。
+> 现在改成拿**真黑体**（冬青黑体简体中文）在 15px 下栅格化成 16x16 点阵：
+> `tools/cjk_from_ttf.py`（需要 Pillow，只在加字/换字体时跑）→ `tools/cjk_ascii.py`
+> （ASCII 点阵，一个字符看一个字）→ 照旧生成 `zkgui_font.h`。字从 18 加到 23 个，
+> 只多占 320 字节。
+>
+> 顺手修的：
+> * 表头右边写成 `CJK_QI`（= 七）而不是 `CJK_QI2`（= 期）——屏上「星期日」会印成
+>   「星七日」（这两个常量名字太像，注释里标了）；
+> * `test_gui.py` 的判据整段重写（老判据是"左红右白"那一套，新版式完全不适用）：
+>   现在拿 Python 自己排一遍月历，**逐格核对 30 天有没有画在正确的格子里**，
+>   再加上"空格子必须是空的""今天那格红底里有白字""红块会跟着日期换格子"
+>   "关农历只影响那行小字" —— 一共 14 项。
+>
+> 镜像：SHA-256 `a75dda4a…a648`，`check_sum = 0x00E4DB42`，**147804 字节（37 颗扇区）**，
+> 离 bootloader 上限还余 3684。
+
 > **2026-09-28 build 28 —— 农历进日历页；顺手修掉一个"表针变成横穿整屏的长线"的 bug；
 > 加上画面选项（反色 / 旋转 180° / 农历开关）**
 >
@@ -724,13 +755,15 @@ outputs/firmware/
     ├── fwpack.py                 ← 把 APP 打包成整片镜像（含自检）
     ├── img2epd.py                ← 图片 -> 30000 字节三色数据（+ 预览 PNG）
     ├── gen_lunar.py              ← 从原厂 Lunar.c 抽表，生成 Src/img/lunar.c
-    ├── gen_font.py               ← 字模（数字 5x7 + 18 个汉字 16x16 + 码点表）
+    ├── cjk_from_ttf.py           ← 拿真黑体栅格化出 16x16 汉字点阵（要 Pillow）
+    ├── cjk_ascii.py              ← 上一步的产物：ASCII 点阵，一个字符看一个字
+    ├── gen_font.py               ← 字模（数字 5x7 + 23 个汉字 + 码点表 + 角度表）
     ├── gui_preview.py            ← 在电脑上把日历/时钟页渲染成 PNG（刷机前先看）
     ├── test_fwpack.py            ← 打包器的离线自测
     ├── test_img2epd.py           ← 图片转换的离线自测
     ├── test_dbg_layout.py        ← 状态块布局的离线自测（固件/上位机别错位）
     ├── test_adv_data.py          ← 广播数据 AD 结构的离线自测（build 20 新增）
-    ├── test_gui.py               ← 日历/时钟页面的离线自测（build 26 建、build 28 扩）
+    ├── test_gui.py               ← 日历/时钟页面的离线自测（build 29 按新版式重写：14 项）
     ├── test_lunar.py             ← 农历的离线自测：19 个已知日期（build 28 新增）
     └── test_opt.py               ← 反色/旋转的自测（build 28 新增）
 ```
@@ -753,7 +786,7 @@ python3 tools/test_fwpack.py            # 打包器：18 项
 python3 tools/test_img2epd.py           # 图片转换：11 项
 python3 tools/test_dbg_layout.py        # 状态块布局：9 项（B2-A.2 新增）
 python3 tools/test_adv_data.py          # 广播数据 AD 结构：11 项（build 20 新增）
-python3 tools/test_gui.py               # 日历/时钟页面：13 项（build 26 建、build 28 扩）
+python3 tools/test_gui.py               # 日历/时钟页面：14 项（build 29 按新版式重写）
 python3 tools/test_lunar.py             # 农历：19 个已知日期 + 1 条边界（build 28 新增）
 python3 tools/test_opt.py               # 反色/旋转：10 项（build 28 新增）
 
@@ -1172,7 +1205,7 @@ cd /Users/mac/Documents/Codex/2026-09-15/a/outputs/firmware
 python3 tools/test_dbg_layout.py     # 状态块布局自测：9 项
 python3 tools/test_fwpack.py         # 打包器：18 项
 python3 tools/test_img2epd.py        # 图片转换：11 项
-python3 tools/test_gui.py            # 日历/时钟页面：13 项
+python3 tools/test_gui.py            # 日历/时钟页面：14 项
 python3 tools/test_lunar.py          # 农历：19 个已知日期
 python3 tools/test_opt.py            # 反色/旋转：10 项
 

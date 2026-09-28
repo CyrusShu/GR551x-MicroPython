@@ -348,6 +348,11 @@ static void draw_cjk(uint8_t *buf, int x, int y, int idx, int scale, int color)
 #define CJK_CHU  15   /* 初 */
 #define CJK_NIAN 16   /* 廿 */
 #define CJK_RUN  17   /* 闰 */
+#define CJK_YEAR 18   /* 年 */
+#define CJK_XING 19   /* 星 */
+#define CJK_QI2  20   /* 期（注意别跟 CJK_QI=七 撞名） */
+#define CJK_NONG 21   /* 农 */
+#define CJK_LI2  22   /* 历 */
 
 /* 中文串：按 UTF-8 码点在 zk_cjk_cp 里查字形（那张表由 gen_font.py 生成，
    所以不用手抄码点）。返回画完之后的 x；查不到的字符跳过。 */
@@ -450,161 +455,212 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
 
 /* ---------------------------------------------------------------- 两个页面 */
 
-/* 左半边：红底 + 表盘 + 数字时间 + 大日期 + 星期/月份（照你给的那张图） */
-static void draw_left_panel(uint8_t *buf, int year, int mon, int day, int wday,
-                            int hour, int min)
+/* ---- 日历页：整页「农历月历」（build 29 换的版式）-------------------------
+ *
+ * 版式照着社区那几版固件的**实屏截图**做的：qbsg.top 的固件目录里每个固件都带
+ * 一张实拍图（2026-09-28 挑 4.2 寸那几版看过，出处见
+ * outputs/analysis/qbsg-生态调研.md；**图没进库** —— 那是第三方资料）：
+ *
+ *   ┌───────────────────────────────────────────────┐
+ *   │ 黑条   2026年09月      农历八月        星期一  │   白字
+ *   ├───────────────────────────────────────────────┤
+ *   │  一   二   三   四   五  [六]  [日]           │   六/日 红底白字
+ *   ├───────────────────────────────────────────────┤
+ *   │    1     2     3     4     5     6     7      │   大号日号（周末红）
+ *   │   初八  初九  初十  十一  十二  十三  十四     │   小号农历（16x16 原大）
+ *   │  …（一共 6 行，今天那格整块红底白字）…         │
+ *   └───────────────────────────────────────────────┘
+ *
+ * 为什么换掉原来那版：老版左边一个红面板（表盘 + 大数字 + 大日期）、右边硬塞
+ * 月历，两边都挤；而且大数字是 5x7 点阵放大 7 倍，边缘全是台阶，看着糙。
+ * 现在整页让给月历 —— 农历用 16x16 原大画（一个格子一行字，一个像素都不缩放），
+ * 信息量更大，也更像一本"日历"。时钟另有「时钟模式」那页。
+ *
+ * 农历那一行的开关（0x70 的 bit2）保留：关掉就不画每格的农历小字。
+ */
+
+#define CAL_HDR_H    40                            /* 顶部黑条 */
+#define CAL_WD_Y     41                            /* 星期条 */
+#define CAL_WD_H     21
+#define CAL_GRID_Y   64
+#define CAL_COL_W    (ZKGUI_W / 7)                 /* 57 */
+#define CAL_ROW_H    ((ZKGUI_H - CAL_GRID_Y) / 6)  /* 39 */
+
+/* 某一天的农历日名（"初八"/"廿三"/"三十"）；算不出来返回 NULL */
+static const char *cal_lunar_day(int year, int mon, int day)
 {
-    char s[8];
-    int  tw;
+    uint8_t lm = 0, ld = 0, leap = 0;
 
-    fill_rect(buf, 4, 4, 192, 292, C_RED);
-
-    /* 表盘 */
-    draw_dial(buf, 100, 80, 48, hour, min);
-
-    /* 数字时间：黑底白字 */
-    fill_rect(buf, 26, 140, 148, 44, C_BLACK);
-    s[0] = (char)('0' + hour / 10);
-    s[1] = (char)('0' + hour % 10);
-    s[2] = ':';
-    s[3] = (char)('0' + min / 10);
-    s[4] = (char)('0' + min % 10);
-    s[5] = 0;
-    tw = text5_width(s, 4);
-    draw_text5(buf, 26 + (148 - tw) / 2, 148, s, 4, C_WHITE);
-
-    /* 大日期 */
-    s[0] = (char)('0' + (day / 10) % 10);
-    s[1] = (char)('0' + day % 10);
-    s[2] = 0;
-    draw_text5(buf, 34, 196, s, 7, C_BLACK);
-
-    /* 右边：星期（大） */
-    draw_cjk(buf, 124, 192, s_wday_cjk[wday], 3, C_BLACK);
-
-    /* 大日期下面那一行：农历（"六月十三" / "闰六月十三"），照参考图的位置。
-       农历算不出来（年份超出表范围）就画 "--"。
-       开关关掉时这一行留空（红底），整块版式不动 —— 免得有人嫌它挤。 */
-    if (s_lunar_on)
+    if (0 != zk_lunar_from_solar((uint16_t)year, (uint8_t)mon, (uint8_t)day,
+                                 &lm, &ld, &leap))
     {
-        uint8_t lmon = 0, lday = 0, leap = 0;
-        char    lbuf[24];
-        int     n = 0;
+        return NULL;
+    }
+    if (ld < 1 || ld > 30)
+    {
+        return NULL;
+    }
+    return zk_lunar_day_cn[ld];
+}
 
-        if (0 == zk_lunar_from_solar((uint16_t)year, (uint8_t)mon, (uint8_t)day,
-                                     &lmon, &lday, &leap) &&
-            lmon >= 1 && lmon <= 12 && lday >= 1 && lday <= 30)
-        {
-            const char *ms = zk_lunar_month_cn[lmon];
-            const char *ds = zk_lunar_day_cn[lday];
+/* 今天那个农历月（"八月" / "闰六月"），写进 out；算不出来就写 "" */
+static void cal_lunar_month(int year, int mon, int day, char *out, int cap)
+{
+    uint8_t lm = 0, ld = 0, leap = 0;
 
-            if (leap)
-            {
-                memcpy(lbuf + n, zk_lunar_leap_cn[1], 3);   /* "闰" 占 3 字节 */
-                n += 3;
-            }
-            memcpy(lbuf + n, ms, strlen(ms)); n += (int)strlen(ms);
-            memcpy(lbuf + n, ds, strlen(ds)); n += (int)strlen(ds);
-            lbuf[n] = 0;
-        }
-        else
-        {
-            lbuf[0] = '-'; lbuf[1] = '-'; lbuf[2] = 0;
-        }
-
-        {
-            int sc = 2;
-            int w  = text_cjk_width(lbuf, sc);
-
-            if (w > 170)                    /* 闰月那种 6 个字：缩小一号 */
-            {
-                sc = 1;
-                w  = text_cjk_width(lbuf, sc);
-            }
-            draw_text_cjk(buf, 34 + (170 - w) / 2, 250, lbuf, sc, C_BLACK);
-        }
+    out[0] = 0;
+    if (0 != zk_lunar_from_solar((uint16_t)year, (uint8_t)mon, (uint8_t)day,
+                                 &lm, &ld, &leap) || lm < 1 || lm > 12)
+    {
+        return;
+    }
+    if (leap && cap > 8)
+    {
+        memcpy(out, zk_lunar_leap_cn[1], 3);       /* "闰" 占 3 字节 */
+        strcpy(out + 3, zk_lunar_month_cn[lm]);
+    }
+    else
+    {
+        strcpy(out, zk_lunar_month_cn[lm]);
     }
 }
 
-/* 右半边：白底黑框 + 年月 + 月历（今天红圈） */
-static void draw_month_grid(uint8_t *buf, int year, int mon, int day)
+/* 顶部黑条：左边 2026年09月，中间 农历八月，右边 星期一（两页共用） */
+static void draw_header_bar(uint8_t *buf, int year, int mon, int day, int wday,
+                            int with_lunar)
 {
-    const int px = 200, py = 4, pw = 196, ph = 292;
-    const int yy = 54, row_h = 39;
-    const int col_w = (pw - 4) / 7;        /* 27（边框各 2px 先扣掉） */
-    int32_t   days0;
-    int       wday_sun, first_col, dim, d, col, row, i;
-    char      s[8];
-    int       tw;
+    char  s[12];
+    char  mbuf[16];
+    int   x, n;
 
-    /* 外框 */
-    fill_rect(buf, px, py, pw, 2, C_BLACK);
-    fill_rect(buf, px, py + ph - 2, pw, 2, C_BLACK);
-    fill_rect(buf, px, py, 2, ph, C_BLACK);
-    fill_rect(buf, px + pw - 2, py, 2, ph, C_BLACK);
+    fill_rect(buf, 0, 0, ZKGUI_W, CAL_HDR_H, C_BLACK);
 
-    /* 年月 "2026-09" */
+    /* 左：2026年09月 —— 数字用 5x7 放大 2 倍（14px 高），年月用 16x16 汉字 */
     s[0] = (char)('0' + (year / 1000) % 10);
     s[1] = (char)('0' + (year / 100) % 10);
     s[2] = (char)('0' + (year / 10) % 10);
     s[3] = (char)('0' + year % 10);
-    s[4] = '-';
-    s[5] = (char)('0' + (mon / 10) % 10);
-    s[6] = (char)('0' + mon % 10);
-    s[7] = 0;
-    draw_text5(buf, px + 10, 14, s, 2, C_BLACK);
+    s[4] = 0;
+    x = 8;
+    draw_text5(buf, x, 13, s, 2, C_WHITE);
+    x += text5_width(s, 2) + 3;
+    draw_cjk(buf, x, 12, CJK_YEAR, 1, C_WHITE);
+    x += 17 + 3;
+    s[0] = (char)('0' + (mon / 10) % 10);
+    s[1] = (char)('0' + mon % 10);
+    s[2] = 0;
+    draw_text5(buf, x, 13, s, 2, C_WHITE);
+    x += text5_width(s, 2) + 3;
+    draw_cjk(buf, x, 12, CJK_YUE, 1, C_WHITE);
 
-    /* 右上角一个月牙（黑圆 - 偏移的白圆） */
-    fill_circle(buf, px + pw - 22, 22, 11, C_BLACK);
-    fill_circle(buf, px + pw - 26, 18, 10, C_WHITE);
+    /* 中：农历八月（关掉农历时这条也不画，免得跟别处对不上） */
+    if (with_lunar && s_lunar_on)
+    {
+        cal_lunar_month(year, mon, day, mbuf, (int)sizeof(mbuf));
+        if (mbuf[0])
+        {
+            n  = text_cjk_width("农历", 1) + 1 + text_cjk_width(mbuf, 1);
+            x  = (ZKGUI_W - n) / 2;
+            x  = draw_text_cjk(buf, x, 12, "农历", 1, C_WHITE);
+            (void)draw_text_cjk(buf, x + 1, 12, mbuf, 1, C_WHITE);
+        }
+    }
 
-    /* 表头：一 二 三 四 五 六 日 */
+    /* 右：星期一 */
+    n = 3 * 17 - 1;
+    x = ZKGUI_W - 8 - n;
+    draw_cjk(buf, x, 12, CJK_XING, 1, C_WHITE);
+    draw_cjk(buf, x + 17, 12, CJK_QI2, 1, C_WHITE);   /* 期（不是 CJK_QI=七！） */
+    draw_cjk(buf, x + 34, 12, s_wday_cjk[wday], 1, C_WHITE);
+}
+
+/* 一个格子：日号（5x7 放大 3 倍）+ 下面一行农历（16x16 原大）。
+   今天那格整块红底、白字 —— 比画个红圈稳（圆形会被行高切掉）。 */
+static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
+                     int is_today, int weekend)
+{
+    const int x0 = col * CAL_COL_W;
+    const int y0 = CAL_GRID_Y + row * CAL_ROW_H;
+    const int cx = x0 + CAL_COL_W / 2;
+    const char *lun;
+    char  s[4];
+    int   tw, lw, color;
+
+    if (d < 1)
+    {
+        return;
+    }
+
+    if (d < 10)
+    {
+        s[0] = (char)('0' + d);
+        s[1] = 0;
+    }
+    else
+    {
+        s[0] = (char)('0' + d / 10);
+        s[1] = (char)('0' + d % 10);
+        s[2] = 0;
+    }
+    tw = text5_width(s, 3);
+    lun = s_lunar_on ? cal_lunar_day(year, mon, d) : NULL;
+
+    if (is_today)
+    {
+        fill_rect(buf, x0 + 4, y0 + 1, CAL_COL_W - 8, CAL_ROW_H - 2, C_RED);
+        color = C_WHITE;
+    }
+    else
+    {
+        color = weekend ? C_RED : C_BLACK;
+    }
+
+    draw_text5(buf, cx - tw / 2, y0 + 1, s, 3, color);
+    if (lun)
+    {
+        lw = text_cjk_width(lun, 1);
+        draw_text_cjk(buf, cx - lw / 2, y0 + 22, lun, 1, color);
+    }
+}
+
+static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
+                          int hour, int min)
+{
+    int32_t days0;
+    int     wday_sun, first_col, dim, d, col, row, i;
+
+    (void)hour;
+    (void)min;
+
+    draw_header_bar(buf, year, mon, day, wday, 1);
+
+    /* 星期条：一~日，六和日那两列整块红底白字（照社区版的配色） */
     for (i = 0; i < 7; i++)
     {
-        draw_cjk(buf, px + 2 + i * col_w + (col_w - 16) / 2, 34,
-                 s_head_cjk[i], 1, C_BLACK);
+        const int x0 = i * CAL_COL_W;
+        int       color = C_BLACK;
+
+        if (i >= 5)
+        {
+            fill_rect(buf, x0, CAL_WD_Y, CAL_COL_W, CAL_WD_H, C_RED);
+            color = C_WHITE;
+        }
+        draw_cjk(buf, x0 + (CAL_COL_W - 16) / 2, CAL_WD_Y + 2,
+                 s_head_cjk[i], 1, color);
     }
-    fill_rect(buf, px + 6, 52, pw - 12, 1, C_BLACK);
+    fill_rect(buf, 0, CAL_WD_Y + CAL_WD_H, ZKGUI_W, 1, C_BLACK);
 
     /* 这个月 1 号落在第几列（0 = 周一） */
-    days0 = days_from_ymd(year, mon, 1);
-    wday_sun = (int)(((days0 % 7) + 7 + 4) % 7);
+    days0     = days_from_ymd(year, mon, 1);
+    wday_sun  = (int)(((days0 % 7) + 7 + 4) % 7);
     first_col = (wday_sun + 6) % 7;
-    dim = days_in_month(year, mon);
+    dim       = days_in_month(year, mon);
 
     col = first_col;
     row = 0;
     for (d = 1; d <= dim; d++)
     {
-        int  cx = px + 2 + col * col_w + col_w / 2;                  /* 格子中心 */
-        int  cy = yy + row * row_h + row_h / 2 - 4;
-        int  x, y;
-
-        s[0] = (char)('0' + (d / 10) % 10);
-        if ('0' == s[0])
-        {
-            s[0] = (char)('0' + d % 10);
-            s[1] = 0;
-        }
-        else
-        {
-            s[1] = (char)('0' + d % 10);
-            s[2] = 0;
-        }
-        tw = text5_width(s, 2);
-        x  = cx - tw / 2;
-        y  = cy - 7;
-
-        if (d == day)
-        {
-            fill_circle(buf, cx, cy, 15, C_RED);
-            draw_text5(buf, x, y, s, 2, C_WHITE);
-        }
-        else
-        {
-            draw_text5(buf, x, y, s, 2, C_BLACK);
-        }
-
+        cal_cell(buf, col, row, year, mon, d, (d == day), (col >= 5));
         col++;
         if (col > 6)
         {
@@ -613,14 +669,6 @@ static void draw_month_grid(uint8_t *buf, int year, int mon, int day)
         }
     }
 }
-
-static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
-                          int hour, int min)
-{
-    draw_left_panel(buf, year, mon, day, wday, hour, min);
-    draw_month_grid(buf, year, mon, day);
-}
-
 /* 时钟模式：整屏一个大表盘 + 数字时间（原厂说这模式是"每分钟全刷"，
    页面上也提醒了，主要用于除残影） */
 static void draw_clock(uint8_t *buf, int year, int mon, int day, int wday,
@@ -629,7 +677,10 @@ static void draw_clock(uint8_t *buf, int year, int mon, int day, int wday,
     char s[8];
     int  tw;
 
-    draw_dial(buf, ZKGUI_W / 2, 118, 96, hour, min);
+    /* 跟日历页用同一个表头（2026年09月 / 农历八月 / 星期一），看着是一套东西 */
+    draw_header_bar(buf, year, mon, day, wday, 1);
+
+    draw_dial(buf, ZKGUI_W / 2, 148, 76, hour, min);
 
     fill_rect(buf, 100, 236, 200, 52, C_BLACK);
     s[0] = (char)('0' + hour / 10);
@@ -640,18 +691,6 @@ static void draw_clock(uint8_t *buf, int year, int mon, int day, int wday,
     s[5] = 0;
     tw = text5_width(s, 5);
     draw_text5(buf, 100 + (200 - tw) / 2, 244, s, 5, C_WHITE);
-
-    /* 左上角星期（红），右上角日期 */
-    draw_cjk(buf, 10, 8, s_wday_cjk[wday], 2, C_RED);
-    s[0] = (char)('0' + (year / 1000) % 10);
-    s[1] = (char)('0' + (year / 100) % 10);
-    s[2] = (char)('0' + (year / 10) % 10);
-    s[3] = (char)('0' + year % 10);
-    s[4] = '-';
-    s[5] = (char)('0' + (mon / 10) % 10);
-    s[6] = (char)('0' + mon % 10);
-    s[7] = 0;
-    draw_text5(buf, ZKGUI_W - 10 - text5_width(s, 2), 16, s, 2, C_BLACK);
 }
 
 /* ---------------------------------------------------------------- 入口 */
