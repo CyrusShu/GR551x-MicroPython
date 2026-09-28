@@ -276,6 +276,11 @@ int main(void)
     g_dbg.ble_gui_mode = 0;
     g_dbg.ble_gui_ts = 0;
     g_dbg.ble_gui_draws = 0;
+    /* build 28：画面选项（反色 / 旋转 180° / 不画农历）—— 同样得清，
+       否则 status.sh 里那行"没设过"会读成随机数，跟"设过但没生效"分不出来 */
+    g_dbg.ble_opt = 0;
+    g_dbg.ble_opt_cmds = 0;
+    g_dbg.ble_opt_frames = 0;
     {
         volatile uint32_t *st = &g_dbg.ble_adv_st0;
         uint32_t           i;

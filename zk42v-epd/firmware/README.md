@@ -35,7 +35,7 @@
 > 默认全关 —— **不开选项的时候，这一版跟 build 27 逐字节一样**（`test_opt.py` 第 1 条盯着）。
 > 发完回一条通知 `opt=XX`，网页日志和 `status.sh` 里都看得到。
 >
-> 镜像：SHA-256 `dac0f4e2…6e8c`，`check_sum = 0x00E54F26`，**147748 字节（37 颗扇区）**，
+> 镜像：SHA-256 `6f9438b2…cc12`，`check_sum = 0x00E5474B`，**147748 字节（37 颗扇区）**，
 > 离 bootloader 上限 151488 还余 3740。自测：固件这边 7 套（新增 `test_lunar.py`、
 > `test_opt.py`，`test_gui.py` 扩到 13 项），上位机那边 `test-flashwrite.py` 全绿。
 >
