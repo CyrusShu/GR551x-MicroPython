@@ -59,7 +59,7 @@ zk42v-epd/
 │   ├── flash-app.sh           MODE=app 写自研 APP / MODE=appverify 只读验收
 │   ├── flash-write.sh         原厂那套：probe / pagetest / peek / restore / verify
 │   ├── status.sh              体检自研固件（多次采样 + 复位检测 + AON 寄存器）
-│   └── test-*.py              离线测试台（不需要硬件，7 个文件、100+ 项断言）
+│   └── test-*.py              离线测试台（不需要硬件，8 个文件、100+ 项断言）
 ├── docs/
 │   ├── PANEL-zk42v.md                   屏的逆向结果（每条结论都有代码地址）
 │   ├── BACKUP-zk42v.md                  原厂固件备份与验真记录

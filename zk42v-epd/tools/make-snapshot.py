@@ -116,6 +116,7 @@ FILES = [
     ("outputs/pyocd/test-flashlab2.py",                 "host/pyocd/test-flashlab2.py"),
     ("outputs/pyocd/test-dapinfo.py",                   "host/pyocd/test-dapinfo.py"),
     ("outputs/pyocd/test-led-user.py",                  "host/pyocd/test-led-user.py"),
+    ("outputs/pyocd/test-symbols.py",                   "host/pyocd/test-symbols.py"),
 
     # ---- 文档 ---------------------------------------------------------------------
     ("outputs/pyocd/README.md",                         "docs/pyocd-notes.md"),

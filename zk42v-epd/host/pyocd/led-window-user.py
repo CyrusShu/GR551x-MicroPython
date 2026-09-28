@@ -4203,8 +4203,14 @@ ZK_IRQ_BLESSLP = 25
 #      所有时间都会按倍数偏（刷屏耗时、BUSY 超时都会跟着偏）。
 #      这里直接读 DWT 的周期计数器，跟宿主机的 250ms 睡眠卡一下，就知道真主频。
 ZK_DWT_CYCCNT  = 0xE0001004
-ZK_SYSCLK_VAR  = 0x300042C8   # SystemCoreClock（本机这份 .map 里的地址）
-ZK_CYC_PER_US  = 0x3000B2A8   # epd_zk42v.c 里那个 s_cyc_per_us（DWT 可用时非 0）
+# ⚠ 这两个地址**会随固件版本挪位置**，所以默认从 .map 里查（见 _zk_sym_addr）。
+#   下面这两个只是"查不到时的兜底"（比如 .map 不在），别当成真值用。
+#   build 28 那一轮就栽过：地址是按 build 22 的 .map 写死的，到 build 28
+#   它们已经挪了 —— 读 0x300042C8 读到的其实是 s_app_timer_info 的头 4 字节，
+#   于是 status 里蹦出「SystemCoreClock = 1」「真实主频是它的 15991430 倍」
+#   这种鬼话，全是假的（固件本身没问题）。
+ZK_SYSCLK_VAR  = 0x300041C0   # SystemCoreClock（build 28 的地址，兜底用）
+ZK_CYC_PER_US  = 0x3000B1E8   # epd_zk42v.c 的 s_cyc_per_us（build 28，兜底用）
 
 # 「采样到的 PC 落在这几个函数里 = 它在空闲循环里正常打转，不是卡死」。
 # 空闲循环里绝大部分时间就花在那个 5ms 延时上，所以采样十有八九落在 epd_delay_us。
@@ -4248,6 +4254,7 @@ def _zk_map_load():
     _ZK_MAP['path'] = None
     _ZK_MAP['text'] = []
     _ZK_MAP['data'] = []
+    _ZK_MAP['syms'] = {}
 
     path = _env_str('MAP_FILE', '') or ZK_MAP_DEFAULT
     if not os.path.exists(path):
@@ -4298,7 +4305,68 @@ def _zk_map_load():
         pass
     _ZK_MAP['text'].sort()
     _ZK_MAP['data'].sort()
+    _zk_map_syms(path)
     return _ZK_MAP
+
+
+def _zk_map_syms(path):
+    """从 .map 里抽「符号名 -> 地址」。
+
+    为什么要它：以前脚本把 SystemCoreClock / s_cyc_per_us 的地址**写死**在源码里，
+    固件一改代码、变量一挪位置，读出来的就是旁边别的变量的值 —— 于是 build 28
+    那轮 status 里出现「SystemCoreClock = 1」「主频对不上 15991430 倍」这种
+    假告警（读到的其实是 s_app_timer_info 的头 4 字节）。
+    现在按符号名查，跟哪一版固件都对得上。
+
+    .map 里符号有两种排版：
+         .data.s_loop_per_us
+                        0x3000431c        0x4 out/obj/epd_zk42v.o
+                        0x300041c0                SystemCoreClock
+    第一种：静态变量，符号名藏在段名 ".data.<符号>" / ".bss.<符号>" 里；
+    第二种：全局符号，地址后面直接跟名字（不带 .o 那一段）。
+    """
+    import re as _re
+    syms = _ZK_MAP['syms']
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()
+    except Exception:
+        return
+
+    pat_sec = _re.compile(r'^\s*\.(?:text|data|bss)\.([A-Za-z_]\w*)\s+'
+                          r'0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s+(\S+\.o)\s*$')
+    pat_sec2 = _re.compile(r'^\s*\.(?:text|data|bss)\.([A-Za-z_]\w*)\s*$')
+    pat_addr = _re.compile(r'^\s*0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+)\s+(\S+\.o)\s*$')
+    pat_name = _re.compile(r'^\s*0x([0-9a-fA-F]+)\s+([A-Za-z_]\w*)\s*$')
+    pending = None
+
+    for line in lines:
+        m = pat_sec.match(line)
+        if m:
+            name, addr, _size, _obj = m.groups()
+            syms.setdefault(name, int(addr, 16))
+            pending = None
+            continue
+        ms = pat_sec2.match(line)
+        if ms:
+            pending = ms.group(1)
+            continue
+        ma = pat_addr.match(line)
+        if ma and pending:
+            syms.setdefault(pending, int(ma.group(1), 16))
+            pending = None
+            continue
+        mn = pat_name.match(line)
+        if mn:
+            syms.setdefault(mn.group(2), int(mn.group(1), 16))
+    return
+
+
+def _zk_sym_addr(name, dflt=None):
+    """符号名 -> 地址（从本机这份 .map 查）。查不到返回 dflt。"""
+    m = _zk_map_load()
+    a = m.get('syms', {}).get(name)
+    return dflt if a is None else a
 
 
 def _zk_sym(pc):
@@ -5082,8 +5150,11 @@ def zkstatus():
     time.sleep(0.25)
     c2 = rd(ZK_DWT_CYCCNT)
     tw1 = time.monotonic()
-    sysclk = rd(ZK_SYSCLK_VAR)
-    cycper = rd(ZK_CYC_PER_US)
+    # 地址从 .map 里查（写死过的那个坑见 _zk_map_syms 的注释）
+    sysclk_addr = _zk_sym_addr('SystemCoreClock', ZK_SYSCLK_VAR)
+    cycper_addr = _zk_sym_addr('s_cyc_per_us', ZK_CYC_PER_US)
+    sysclk = rd(sysclk_addr)
+    cycper = rd(cycper_addr)
     if c1 is not None and c2 is not None and c2 != c1:
         dt = tw1 - tw0
         freq = ((c2 - c1) & 0xFFFFFFFF) / dt
@@ -5091,9 +5162,11 @@ def zkstatus():
         say("  时基自检（固件里所有 ms 都是拿 SystemCoreClock 换算的，所以先看它对不对）：")
         say("    SystemCoreClock = %s   固件的 DWT 校准值 s_cyc_per_us = %s"
             % (sysclk if sysclk else '读不到', cycper if cycper else '0（没用上 DWT）'))
+        say("      （两个符号的地址是从 .map 查的：SystemCoreClock @0x%08X，"
+            "s_cyc_per_us @0x%08X）" % (sysclk_addr, cycper_addr))
         say("    DWT CYCCNT 实测：%.2f 秒走了 %d 个周期 ⇒ 实际主频 ≈ %.1f MHz"
             % (dt, (c2 - c1) & 0xFFFFFFFF, freq / 1e6))
-        if sysclk:
+        if sysclk and sysclk >= 1000000:
             ratio = freq / float(sysclk)
             if 0.95 <= ratio <= 1.05:
                 say("    → 对得上 ✅ 状态块里的 ms 可以直接信。")
@@ -5103,6 +5176,11 @@ def zkstatus():
                 say("      （同时 `epd_wait_busy` 的超时也是按这个错比例算的：")
                 say("        标称 30 秒的刷新超时，真实只有 %.1f 秒 —— 慢刷有超时风险）"
                     % (30.0 / ratio))
+        elif sysclk:
+            say("    → SystemCoreClock 读出来是 %s —— 这个数太小，不可能是主频，"
+                "多半是**符号地址不对**（不是固件的问题）。" % sysclk)
+            say("      用 .map 查一下真地址：grep -n SystemCoreClock "
+                "outputs/firmware/zk42v-epd-app/GCC/out/lst/zk42v_epd.map")
 
     words = last['words']
     say("")

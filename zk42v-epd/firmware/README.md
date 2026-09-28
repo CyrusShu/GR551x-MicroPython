@@ -41,6 +41,14 @@
 >
 > 功能清单的现状与后续（局刷校准 / 休眠时段 / 倒计时 / 停车牌 / 字体字号…）都写在
 > **`docs/feature-backlog.md`**：每条标了控制通道、风险、和"为什么先做这条"。
+>
+> **实机验证（2026-09-28 10:01，`outputs/pyocd/status-20260928-100131.log`）**：
+> 刷上去之后 `magic = 0x5A4B3401` ✅、`stage = 9`（空闲循环）、`build = 28`、
+> `boot_count = 1`（没有反复复位）、BLE 在广播（`ADV_START status=0`）、
+> 采样到的 PC 落在 `epd_delay_us+0x10` = 空闲循环里正常打转。
+> 状态块里新那行也读出来了：`画面选项：没设过（默认…）`。
+> 同一份日志里那条「SystemCoreClock = 1 → 真实主频是它的 15991430 倍」**是假告警**
+> （脚本把符号地址写死了，见 `tools/test-symbols.py` 的说明），已经改成按名字查 `.map`。
 
 > **2026-09-28 build 27 —— 「刷完起不来、芯片停在原厂 bootloader 里」的真凶：镜像超了 bootloader 的上限**
 >
@@ -742,6 +750,7 @@ python3 tools/test_opt.py               # 反色/旋转：10 项（build 28 新�
 
 cd ../pyocd
 python3 test-flashwrite.py              # 烧写脚本：含 app/appverify/status，155 项
+python3 test-symbols.py                 # status 读的 RAM 符号地址跟 .map 对得上（build 28 新增）
 python3 test-dumpresume-modes.py
 python3 test-sanity.py
 python3 test-flashlab.py
@@ -751,6 +760,13 @@ python3 test-led-user.py
 ```
 
 `test-flashwrite.py` 里跟这一版直接相关的用例：
+
+> **`test-symbols.py` 是 build 28 补的**：status 里那三个「RAM 变量」
+> （`SystemCoreClock` / `s_cyc_per_us` / `g_dbg`）以前是把地址**写死**在脚本里的，
+> 固件一改代码变量就挪位置 —— build 28 那轮 status 里因此蹦出
+> 「SystemCoreClock = 1」「真实主频是它的 15991430 倍」这种**假告警**
+> （读到的其实是 `s_app_timer_info` 的头 4 字节）。现在改成按名字从 `.map` 查，
+> 这个测试就盯着「查出来的地址 == .map 文本里的地址」+「读的时候不再直接用常量」。
 
 | 用例 | 验的是什么 |
 |---|---|
