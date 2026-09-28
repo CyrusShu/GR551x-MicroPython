@@ -102,7 +102,17 @@ SIZE    = $(CROSS_COMPILE)size
 
 COMMON_COMPILE_FLAGS += -std=gnu99 --inline
 COMMON_COMPILE_FLAGS += -ggdb3
+# -Os：**这条是必须的，不是优化癖好**。
+# 原厂 bootloader 对 APP 镜像有硬上限：0x01003934 那句
+#     cmp r5, #0x26000        ; 155648 字节
+# 超了就打印 "Fw load data err" 然后把 APP 判成无效、进 DFU 分支
+# （实测症状：芯片停在 bootloader 的断言里，我们的状态块一个字节都不会被写）。
+# 反推：bin_size + 0x1040 向上取整到扇区后 ≤ 0x26000，也就是
+#     bin_size ≤ 0x24FC0 = 151488 字节（约 148 KB）
+# build 26 那版没开优化（默认 -O0）、又加了日历/时钟的字模，涨到 156164
+# 就超限了 —— 板子因此起不来。开 -Os 之后体积回到 100KB 出头。
 COMMON_COMPILE_FLAGS += -ffunction-sections -fdata-sections
+COMMON_COMPILE_FLAGS += -Os
 COMMON_COMPILE_FLAGS += -mfloat-abi=softfp -mfpu=fpv4-sp-d16 -mapcs-frame -mthumb-interwork -mthumb -mcpu=cortex-m4
 COMMON_COMPILE_FLAGS += -gdwarf-2 -MD
 

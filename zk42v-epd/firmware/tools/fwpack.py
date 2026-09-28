@@ -42,6 +42,12 @@ FLASH_BASE        = 0x01000000
 FLASH_TOTAL       = 0x00080000
 APP_BASE_DEFAULT  = 0x0100A000
 APP_LIMIT         = 0x00075000          # 0x0100A000 .. 0x0107F000
+
+# 原厂 bootloader 自己的上限，比 APP_LIMIT 严得多。见 check_app_image() 里的推导：
+# bootloader 要求 (bin_size + 0x1040) 按 4096 向上取整后不超过 0x26000，
+# 也就是 bin_size <= 0x24FC0。超了它就把 APP 判成无效、停在断言里不启动。
+# （2026-09-28 实测：build 26 = 156164 字节 → 卡死在 bootloader；开 -Os 后 145732 ✅）
+BOOTLOADER_APP_LIMIT = 0x00024FC0
 APP_INFO_OFF      = 0x002000
 APP_INFO_PATTERN  = 0x4744
 DFU_IMG_INFO_LEN  = 40
@@ -128,6 +134,21 @@ def check_app_image(app, app_base):
     n = len(app)
     if n == 0:
         log(FAIL, "APP 镜像 0 字节")
+        return False
+    # 原厂 bootloader 的硬上限（比 flash 里给 APP 留的 0x75000 小得多）。
+    # 依据：boot.asm 0x0100392A 那一段
+    #     r0 = bin_size + 0x1040 ; 按 4096 向上取整 ; cmp r5, #0x26000
+    #     bls 继续校验 ; 否则打印 "Fw load data err" 并把 APP 判成无效 -> 走 DFU
+    # 反推：bin_size + 0x1040 <= 0x26000 ⇒ bin_size <= 0x24FC0 = 151488。
+    # 2026-09-28 就栽在这上面：build 26 没开优化、又加了日历字模，涨到 156164,
+    # 超限 4676 字节 —— 现象是芯片停在 bootloader 的断言里、我们的固件一个字节
+    # 都不会被执行（status.sh 里 magic 不对、PC 在 0x01003720）。
+    if n > BOOTLOADER_APP_LIMIT:
+        log(FAIL, "APP 镜像 %d 字节，超过 bootloader 的上限 0x%X (%d)"
+            % (n, BOOTLOADER_APP_LIMIT, BOOTLOADER_APP_LIMIT))
+        log(FAIL, "  超限后果：bootloader 打印 \"Fw load data err\" 并拒绝启动，"
+                  "芯片会停在它自己的断言里")
+        log(FAIL, "  腾地方的办法：确认 Makefile 里有 -Os；实在还超就砍功能/字模")
         return False
     if n > APP_LIMIT:
         log(FAIL, "APP 镜像 %d 字节，超过 0x%X 的可用空间" % (n, APP_LIMIT))

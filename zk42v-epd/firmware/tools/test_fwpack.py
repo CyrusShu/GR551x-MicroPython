@@ -131,6 +131,16 @@ def main():
     rc, out, img = run_pack(bytes(bad_base), app)
     check('7: 底包 boot 头对不上就拒绝', rc != 0 and 'boot 头' in out)
 
+    # 8 bootloader 自己的硬上限（0x24FC0）—— 超了要拒刷，别让板子起不来
+    #   2026-09-28 实测过：build 26 = 156164 字节 → 芯片卡在 bootloader 断言里
+    rc, out, img = run_pack(base, make_app(size=fwpack.BOOTLOADER_APP_LIMIT + 4))
+    check('8: 超过 bootloader 上限(0x24FC0)就拒绝',
+          rc != 0 and 'bootloader 的上限' in out)
+    check('8: 说明超限的后果', 'Fw load data err' in out)
+    # 刚好在上限上要能过（边界）
+    rc, out, img = run_pack(base, make_app(size=fwpack.BOOTLOADER_APP_LIMIT))
+    check('8b: 正好等于上限时放行', rc == 0)
+
     bad = 0
     for label, ok in CHECKS:
         print('  [%s] %s' % ('PASS' if ok else '**FAIL**', label))
