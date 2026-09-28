@@ -20,7 +20,7 @@
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
 /* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   29u
+#define ZK_BUILD_ID   30u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -97,7 +97,7 @@ typedef struct
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 
-#define ZK_DBG_WORDS 88
+#define ZK_DBG_WORDS 92
 
 typedef struct
 {
@@ -217,7 +217,17 @@ typedef struct
     uint32_t ble_opt;             /* 83: 选项位掩码（ZK_OPT_xxx：1反色 2旋转 4不画农历） */
     uint32_t ble_opt_cmds;        /* 84: 收到过几次 0x70 SET_OPTIONS */
     uint32_t ble_opt_frames;      /* 85: 有几帧在写屏时真的做过变换（选项=0 时不涨） */
-    uint32_t rsv[ZK_DBG_WORDS - 86];
+
+    /* ---- build 30：日历/时钟那边"为什么重画"（以及时基有没有又跳）------
+       build 29 的现象：**什么都不干，屏每 4.5 分钟自己刷一次**。
+       根因是 tick_ms() 直接拿 32 位 CYCCNT 除，16MHz 下每 268 秒绕一圈，
+       日历页算出来的"现在"会突然跳 49.7 天 -> 判定换天 -> 重画 + 全刷。
+       现在时基改成单调的 64 位（board/zk_tick.h），并把这几个数记下来盯着。 */
+    uint32_t ble_gui_why;         /* 86: 最近一次重画的原因 1=收到时间/命令 2=换天 3=换分钟 */
+    uint32_t ble_gui_elapsed;     /* 87: 那次重画时"距同步时间过了几秒"。正常是几十~几万；
+                                     要是看到几百万（≈49.7 天），就是时基又绕了 */
+    uint32_t ble_tick_ms;         /* 88: 当前 zk_tick_ms()（低 32 位），看它有没有掉回 0 */
+    uint32_t rsv[ZK_DBG_WORDS - 89];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

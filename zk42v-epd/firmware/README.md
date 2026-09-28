@@ -1,5 +1,50 @@
 # ZK42V 自研固件（方向 B）第一版：把屏点亮
 
+> **2026-09-28 build 30 —— 「什么都不干，屏每 4.5 分钟自己刷一次」：毫秒时基每 268 秒绕一圈**
+>
+> 现象（你报的）：日历页摆着没动，屏自己刷新了 —— 而日历**一天只该在 0 点重画一次**。
+>
+> 日志（`outputs/pyocd/status-20260928-103809.log`）里的账目：
+> 这一轮开机只收到 **1 条 SET_TIME**（命令 2 条 = INIT + SET_TIME、通知 3 条），
+> 可是 **画过 3 次**，而且总的 BUSY 轮询 269338 ≈ 3 × 89802 —— **屏真全刷了 3 次**
+> （每次约 18 秒）。多出来的两次是谁点的？没人点。
+>
+> 真凶：`tick_ms()` 原来是
+>
+> ```c
+> return (uint32_t)(DWT->CYCCNT / (clk / 1000u));
+> ```
+>
+> 而 CYCCNT 是 **32 位自由计数器**，16 MHz 下 `2^32 / 16e6 ≈ 268 秒`就绕一圈 ——
+> 于是这个"毫秒"也是每 268 秒从 268435 掉回 0 的锯齿。日历页算"现在几点"用的是
+>
+> ```c
+> cur = s_ts + (tick_ms() - s_ts_ms) / 1000;   /* 网页给的时间戳 + 过了多久 */
+> ```
+>
+> 绕圈那一瞬间无符号减法变成 **≈ +4.29e6 秒（49.7 天）**，`cur/86400` 变了 ⇒
+> 固件判定"换天了" ⇒ 重画 + 整屏全刷；绕回去再刷一次。
+> 对上时间线：那轮日历模式活跃了约 327 秒 ⇒ 撞上 2 次绕圈 ⇒ 多刷 2 次 = 3 次 ✅
+> （上一轮 `status-101132.log` 日历模式只活跃 44 秒，一次都没撞上，所以看着正常。）
+>
+> 修法：新增 `board/zk_tick.h`（纯 C，主机端也能编）—— 按**无符号差值**累加，
+> 只推进整毫秒、余数留在计数器里，把 CYCCNT 扩成**单调的 64 位毫秒**
+> （低 32 位也留了进位，`ms_hi++`）。日历/时钟那条路改用 `zk_tick_ms64()`。
+>
+> 顺带把这件事变成**看得见**的：状态块新增三个字
+> （86 `ble_gui_why` / 87 `ble_gui_elapsed` / 88 `ble_tick_ms`）——
+> `status.sh` 现在会打印「最近一次重画是因为什么 + 那次距同步时间过了几秒」，
+> 要是又看到几百万秒（≈49.7 天）就会直接告警。修好之后应该是：
+> 换天一天一次（`why=2`、`elapsed` 是几万秒以内），或者你点一次日历模式画一次（`why=1`）。
+>
+> 自测：新增 `tools/test_tick.py` —— **编的是固件那份真头文件**，喂一段带 2~3 次
+> 回绕的 CYCCNT 轨迹进去对拍：新公式 601 个采样点全部严格等累计毫秒；
+> 同一段轨迹用老公式算出来跳了 3 次（量级 26 万）—— 老代码会被这个测试抓住。
+> 另外还有白盒用例（低 32 位绕圈时高位进位）和源码守卫。
+>
+> 镜像：SHA-256 `c8cf50ea…4a2c`，`check_sum = 0x00E526F0`，**148004 字节（37 颗扇区）**，
+> 离 bootloader 上限余 3484。
+
 > **2026-09-28 build 29 —— 日历页换成「整页农历月历」（版式照社区固件的实屏截图做的）**
 >
 > build 28 把农历算对了，但你一看屏就说"还是丑"。问题在两处：
@@ -765,7 +810,8 @@ outputs/firmware/
     ├── test_adv_data.py          ← 广播数据 AD 结构的离线自测（build 20 新增）
     ├── test_gui.py               ← 日历/时钟页面的离线自测（build 29 按新版式重写：14 项）
     ├── test_lunar.py             ← 农历的离线自测：19 个已知日期（build 28 新增）
-    └── test_opt.py               ← 反色/旋转的自测（build 28 新增）
+    ├── test_opt.py               ← 反色/旋转的自测（build 28 新增）
+    └── test_tick.py              ← 毫秒时基的自测：喂带 268 秒回绕的轨迹（build 30 新增）
 ```
 
 配套（在 `outputs/pyocd/`）：
@@ -789,6 +835,7 @@ python3 tools/test_adv_data.py          # 广播数据 AD 结构：11 项（buil
 python3 tools/test_gui.py               # 日历/时钟页面：14 项（build 29 按新版式重写）
 python3 tools/test_lunar.py             # 农历：19 个已知日期 + 1 条边界（build 28 新增）
 python3 tools/test_opt.py               # 反色/旋转：10 项（build 28 新增）
+python3 tools/test_tick.py              # 毫秒时基（带回绕的轨迹对拍）：8 项（build 30 新增）
 
 cd ../pyocd
 python3 test-flashwrite.py              # 烧写脚本：含 app/appverify/status，155 项
@@ -1208,6 +1255,7 @@ python3 tools/test_img2epd.py        # 图片转换：11 项
 python3 tools/test_gui.py            # 日历/时钟页面：14 项
 python3 tools/test_lunar.py          # 农历：19 个已知日期
 python3 tools/test_opt.py            # 反色/旋转：10 项
+python3 tools/test_tick.py           # 毫秒时基（回绕）：8 项
 
 cd ../pyocd
 python3 test-flashwrite.py           # 烧写脚本：123 项（含 build 19 的新解码）

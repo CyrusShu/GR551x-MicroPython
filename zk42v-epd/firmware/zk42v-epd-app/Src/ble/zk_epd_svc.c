@@ -125,7 +125,7 @@ static uint32_t s_ts;                /* 客户端同步过来的时间（秒） 
  *     MODE_CLOCK   ：每分钟重画一次（原厂说这模式就是用来除残影的，页面也提醒了）
  */
 static uint8_t  s_mode;              /* 0 = 图片, 1 = 日历, 2 = 时钟 */
-static uint32_t s_ts_ms;             /* 设时间那一刻的 zk_tick_ms()，用来往后推 */
+static uint64_t s_ts_ms;             /* 设时间那一刻的 zk_tick_ms64()，用来往后推 */
 static uint32_t s_drawn_day;         /* 上次画的是哪一天（cur/86400） */
 static uint32_t s_drawn_min;         /* 上次画的是哪一分钟（cur/60） */
 static uint8_t  s_need_gui;          /* 立刻重画一次 */
@@ -568,7 +568,9 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 {
                     s_mode = ZKGUI_MODE_CALENDAR;
                 }
-                s_ts_ms    = zk_tick_ms();
+                /* 用 64 位单调时基：低 32 位每 49.7 天绕一次，绕的时候
+                   "现在几点"会跳掉（build 29 就是这么每 4.5 分钟自刷一次的） */
+                s_ts_ms    = zk_tick_ms64();
                 s_need_gui = 1;
                 g_dbg.ble_gui_mode = s_mode;
                 g_dbg.ble_gui_ts   = s_ts;
@@ -821,20 +823,25 @@ void zk_epd_svc_poll(uint32_t now_ms)
     /* ---- 日历 / 时钟：该画了就画进缓冲，然后走同一条"写图 + 刷新"的路 ---- */
     if (s_mode != ZKGUI_MODE_PICTURE && s_ts_ms != 0u)
     {
-        uint32_t cur = s_ts + (zk_tick_ms() - s_ts_ms) / 1000u;
+        uint64_t el   = (zk_tick_ms64() - s_ts_ms) / 1000u;   /* 距 SET_TIME 过了几秒 */
+        uint32_t cur  = (uint32_t)((uint64_t)s_ts + el);
+        int      why  = 0;
         int      redraw = 0;
 
         if (s_need_gui)
         {
             redraw = 1;                        /* 刚设完时间，立刻画一页 */
+            why    = 1;
         }
         else if (ZKGUI_MODE_CALENDAR == s_mode)
         {
             redraw = (cur / 86400u != s_drawn_day);    /* 换天了（原厂也是 00:00 重画） */
+            why    = 2;
         }
         else
         {
             redraw = (cur / 60u != s_drawn_min);       /* 时钟模式：每分钟一张 */
+            why    = 3;
         }
 
         if (redraw)
@@ -852,6 +859,12 @@ void zk_epd_svc_poll(uint32_t now_ms)
             s_plane_pos[0] = 0;
             s_plane_pos[1] = 0;
             g_dbg.ble_gui_draws++;
+            /* 记下"为什么画"和"这一画距同步时间过了多久" —— 时基要是又出问题
+               （比如哪次改动退回到用 32 位/CYCCNT 直除），这个秒数会突然变成
+               几十万、几百万那种离谱值，一眼就能看出来。 */
+            g_dbg.ble_gui_why     = (uint32_t)why;
+            g_dbg.ble_gui_elapsed = (uint32_t)el;
+            g_dbg.ble_tick_ms     = zk_tick_ms();
         }
     }
 

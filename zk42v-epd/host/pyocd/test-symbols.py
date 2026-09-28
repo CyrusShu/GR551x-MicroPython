@@ -103,13 +103,16 @@ def main():
               % (sym, got or 0, want or 0), got == want)
 
     print()
-    print('== 3. 兜底常量没跟着过期 ==')
+    print('== 3. 没有"写死的兜底地址"（过期的比没有更坏）==')
     for sym, const in (('SystemCoreClock', ns['ZK_SYSCLK_VAR']),
                        ('s_cyc_per_us', ns['ZK_CYC_PER_US'])):
         want = map_addr(MAP, sym)
-        check('%s 的兜底常量 0x%08X == .map 的 0x%08X'
-              % (sym, const, want or 0), const == want,
-              '兜底常量过期了（虽然正常情况下走不到它，但别留在那儿骗人）')
+        check('%s 没有写死的兜底地址（值是 %s）' % (sym, hex(const)),
+              const == 0,
+              '一旦留了写死的地址，固件一改代码它就会指向别的变量 —— '
+              'build 28 的「SystemCoreClock = 1」就是这么来的；'
+              'build 30 一编译，上一版的兜底值又过期了。'
+              '（真地址见 .map：0x%08X）' % (want or 0))
 
     print()
     print('== 4. 读的时候不再直接用写死的常量 ==')

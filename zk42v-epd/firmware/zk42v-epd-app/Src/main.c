@@ -20,6 +20,7 @@
 #include "testimg.h"
 #include "zk_ble.h"
 #include "zk_epd_svc.h"      /* B2-A.2：GATT 服务 / 推图协议 */
+#include "zk_tick.h"         /* 把 CYCCNT 扩成单调毫秒（build 30 修 268 秒绕圈） */
 
 #include "gr55xx.h"
 #include "gr55xx_sys.h"      /* sys_swd_enable() */
@@ -50,10 +51,18 @@ static volatile zk_mailbox_t *const s_mb = (volatile zk_mailbox_t *)ZK_MB_ADDR;
    放在自己的 .zk_tag 段里，链接脚本里 KEEP 住了，不会被 --gc-sections 收走。 */
 const char zk_fw_tag[] __attribute__((section(".zk_tag"), used)) = "ZK42V-EPD-CUSTOM-FW-B1";
 
-/* 粗粒度毫秒计时，只用来往状态块里填「这步花了多久」 */
+/* 毫秒时基。
+ *
+ * ⚠ 这里**不能**直接 return CYCCNT / (clk/1000)：CYCCNT 是 32 位自由计数器，
+ *   16 MHz 下每 268 秒绕一圈，那样算出来的"毫秒"也跟着每 268 秒掉回 0。
+ *   凡是拿它当绝对时间的地方（日历页那句 `s_ts + (tick - s_ts_ms)/1000`）都会
+ *   在那一下突然跳 49.7 天 —— build 29 的"屏每 4.5 分钟自己刷一次"就是这么来的。
+ *   现在按差值累加成单调计数，见 board/zk_tick.h。 */
+static zk_tick_t s_tick;
+
 static uint32_t tick_ms(void)
 {
-    uint32_t clk;
+    uint32_t clk, per_ms;
 
     if (!(g_dbg.flags & ZK_FLAG_DWT_OK))
     {
@@ -65,8 +74,9 @@ static uint32_t tick_ms(void)
     {
         clk = 64000000u;
     }
+    per_ms = clk / 1000u;
 
-    return (uint32_t)(DWT->CYCCNT / (clk / 1000u));
+    return (uint32_t)zk_tick_step(&s_tick, DWT->CYCCNT, per_ms);
 }
 
 /* 给别的模块用（B2-A.2 的推图状态机要量「写图+刷新花了多久」——
@@ -74,6 +84,27 @@ static uint32_t tick_ms(void)
 uint32_t zk_tick_ms(void)
 {
     return tick_ms();
+}
+
+/* 单调的 64 位毫秒：日历/时钟那句"网页时间戳 + 已经过了多久"必须用这个，
+   否则低 32 位每 49.7 天绕一次，又会把"现在几点"算错。 */
+uint64_t zk_tick_ms64(void)
+{
+    uint32_t clk, per_ms;
+
+    if (!(g_dbg.flags & ZK_FLAG_DWT_OK))
+    {
+        return 0;
+    }
+
+    clk = SystemCoreClock;
+    if (clk < 1000000u || clk > 128000000u)
+    {
+        clk = 64000000u;
+    }
+    per_ms = clk / 1000u;
+
+    return zk_tick_step(&s_tick, DWT->CYCCNT, per_ms);
 }
 
 /* ------------------------------------------------------------------
@@ -281,6 +312,10 @@ int main(void)
     g_dbg.ble_opt = 0;
     g_dbg.ble_opt_cmds = 0;
     g_dbg.ble_opt_frames = 0;
+    /* build 30：日历/时钟"为什么重画"+ 时基自证 */
+    g_dbg.ble_gui_why = 0;
+    g_dbg.ble_gui_elapsed = 0;
+    g_dbg.ble_tick_ms = 0;
     {
         volatile uint32_t *st = &g_dbg.ble_adv_st0;
         uint32_t           i;

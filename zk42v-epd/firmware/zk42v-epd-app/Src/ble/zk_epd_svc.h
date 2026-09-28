@@ -37,4 +37,8 @@ int  zk_panel_ensure_init(void);
 /* 毫秒时基（由 main.c 提供，DWT 算的）。量"这次写图+刷新花了多久"用。 */
 uint32_t zk_tick_ms(void);
 
+/* 单调的 64 位毫秒（见 board/zk_tick.h）。日历/时钟算"过了多久"要用它 ——
+   32 位版本在 CYCCNT 绕圈时会跳（build 29 的"每 4.5 分钟自刷一次"）。 */
+uint64_t zk_tick_ms64(void);
+
 #endif /* __ZK_EPD_SVC_H__ */

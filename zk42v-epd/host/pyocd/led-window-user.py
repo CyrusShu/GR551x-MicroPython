@@ -1330,8 +1330,9 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 20 又加到 60 —— 补上「广播停了几次 / 我们重开几次」；
 # build 21 加到 80 —— B2-A.2 的 GATT 服务与推图（收到的命令/图块/屏的状态）；
 # build 24 加到 84 —— 多一个「这轮刷新时屏到底忙了多久」（busy_polls 增量）；
-# build 28 加到 88 —— 多一组「画面选项」（反色 / 旋转 180° / 农历开关）。
-ZK_DBG_WORDS = 88
+# build 28 加到 88 —— 多一组「画面选项」（反色 / 旋转 180° / 农历开关）；
+# build 30 加到 92 —— 多一组「日历/时钟为什么重画」（时基每 268 秒绕圈那个 bug）。
+ZK_DBG_WORDS = 92
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4203,14 +4204,17 @@ ZK_IRQ_BLESSLP = 25
 #      所有时间都会按倍数偏（刷屏耗时、BUSY 超时都会跟着偏）。
 #      这里直接读 DWT 的周期计数器，跟宿主机的 250ms 睡眠卡一下，就知道真主频。
 ZK_DWT_CYCCNT  = 0xE0001004
-# ⚠ 这两个地址**会随固件版本挪位置**，所以默认从 .map 里查（见 _zk_sym_addr）。
-#   下面这两个只是"查不到时的兜底"（比如 .map 不在），别当成真值用。
-#   build 28 那一轮就栽过：地址是按 build 22 的 .map 写死的，到 build 28
-#   它们已经挪了 —— 读 0x300042C8 读到的其实是 s_app_timer_info 的头 4 字节，
-#   于是 status 里蹦出「SystemCoreClock = 1」「真实主频是它的 15991430 倍」
-#   这种鬼话，全是假的（固件本身没问题）。
-ZK_SYSCLK_VAR  = 0x300041C0   # SystemCoreClock（build 28 的地址，兜底用）
-ZK_CYC_PER_US  = 0x3000B1E8   # epd_zk42v.c 的 s_cyc_per_us（build 28，兜底用）
+# ⚠ 这两个地址**会随固件版本挪位置**，所以一律从 .map 里按名字查（见 _zk_sym_addr）。
+#   这里故意留 0 = "没有兜底值"：查不到就别读（脚本会跳过那一段并说明原因），
+#   总好过读一个别的变量的值当成主频。
+#
+#   血泪史：build 22 那会儿把地址写死在脚本里，到 build 28 固件一改代码、变量挪了位置，
+#   0x300042C8 那个位置已经是 s_app_timer_info 了 —— 于是 status 里蹦出
+#   「SystemCoreClock = 1 ⇒ 真实主频是它的 15991430 倍」这种鬼话（固件一点问题没有）。
+#   后来把兜底值更新成 build 28 的地址，build 30 一编又过期了（test-symbols.py 抓到的）
+#   —— 干脆不再维护这个数。
+ZK_SYSCLK_VAR  = 0             # 0 = 没有兜底，必须从 .map 查
+ZK_CYC_PER_US  = 0             # 同上
 
 # 「采样到的 PC 落在这几个函数里 = 它在空闲循环里正常打转，不是卡死」。
 # 空闲循环里绝大部分时间就花在那个 5ms 延时上，所以采样十有八九落在 epd_delay_us。
@@ -4750,6 +4754,22 @@ def _zk_say_epd_service(words):
             if (opt & 0x03) and opt_frames == 0:
                 say("      → 设了反色/旋转但一帧都没变换过：要么还没刷屏，"
                     "要么写屏那条路上没走到变换（把这段发我）")
+
+    # ---- build 30：日历/时钟「为什么重画」+ 时基自证 ----
+    if len(words) > 88:
+        why, elapsed, tickms = words[86], words[87], words[88]
+        if why:
+            wtxt = {1: '收到时间/命令', 2: '换天（跨过本地 0 点）', 3: '换分钟'}.get(why, '?')
+            say("    日历/时钟重画：最近一次是因为「%s」，那次距同步时间已经过了 %d 秒"
+                % (wtxt, elapsed))
+            if why == 2:
+                say('      （「换天」一天只该发生一次；要是几分钟就冒一次，'
+                    '多半是时基绕圈又回来了）')
+            if elapsed > 172800:            # > 2 天
+                say("      ⚠ 这个秒数大得离谱 —— 时基很可能又绕了（build 29 那个 "
+                    "268 秒锯齿的典型值是 4294917 秒 ≈ 49.7 天）")
+        say("    zk_tick_ms() = %d（单调毫秒的低 32 位；它不该突然掉回 0）" % tickms)
+
     say("    通知：发出去 %d 条，最后一次返回 %d（0 = 成功）" % (noti_cnt, noti_err))
 
     # ---- 一句话判据 ----------------------------------------------------
@@ -5164,8 +5184,8 @@ def zkstatus():
     # 地址从 .map 里查（写死过的那个坑见 _zk_map_syms 的注释）
     sysclk_addr = _zk_sym_addr('SystemCoreClock', ZK_SYSCLK_VAR)
     cycper_addr = _zk_sym_addr('s_cyc_per_us', ZK_CYC_PER_US)
-    sysclk = rd(sysclk_addr)
-    cycper = rd(cycper_addr)
+    sysclk = rd(sysclk_addr) if sysclk_addr else None
+    cycper = rd(cycper_addr) if cycper_addr else None
     if c1 is not None and c2 is not None and c2 != c1:
         dt = tw1 - tw0
         freq = ((c2 - c1) & 0xFFFFFFFF) / dt
@@ -5173,8 +5193,12 @@ def zkstatus():
         say("  时基自检（固件里所有 ms 都是拿 SystemCoreClock 换算的，所以先看它对不对）：")
         say("    SystemCoreClock = %s   固件的 DWT 校准值 s_cyc_per_us = %s"
             % (sysclk if sysclk else '读不到', cycper if cycper else '0（没用上 DWT）'))
-        say("      （两个符号的地址是从 .map 查的：SystemCoreClock @0x%08X，"
-            "s_cyc_per_us @0x%08X）" % (sysclk_addr, cycper_addr))
+        if sysclk_addr and cycper_addr:
+            say("      （两个符号的地址是从 .map 查的：SystemCoreClock @0x%08X，"
+                "s_cyc_per_us @0x%08X）" % (sysclk_addr, cycper_addr))
+        else:
+            say("      ⚠ 本机这份 .map 里没找到 SystemCoreClock / s_cyc_per_us ——")
+            say("        这一段读不了（先 bash build.sh 编一次，别拿写死的旧地址凑）")
         say("    DWT CYCCNT 实测：%.2f 秒走了 %d 个周期 ⇒ 实际主频 ≈ %.1f MHz"
             % (dt, (c2 - c1) & 0xFFFFFFFF, freq / 1e6))
         if sysclk and sysclk >= 1000000:
