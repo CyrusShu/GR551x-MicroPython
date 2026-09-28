@@ -4722,8 +4722,11 @@ def _zk_say_epd_service(words):
         mtxt = {0: '图片（推图）', 1: '日历', 2: '时钟'}.get(gui_mode, '?')
         ttxt = '还没同步过'
         if gui_ts:
-            ttxt = ('%s UTC' % time.strftime('%Y-%m-%d %H:%M:%S',
-                                             time.gmtime(gui_ts)))
+            # 注意别被这行骗了：固件里的 s_ts 已经把时区加进去了
+            # （网页发 UTC 秒 + tz 小时，我们收的时候乘 3600 加上），
+            # 所以拿 gmtime 格式化出来的正好是**本地墙钟时间**，不是 UTC。
+            ttxt = ('%s（本地时间；固件里已经加过时区）'
+                    % time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(gui_ts)))
         say("    日历/时钟：模式 = %s   网页给的时间 = %s   画过 %d 次"
             % (mtxt, ttxt, gui_draws))
         if gui_mode in (1, 2) and gui_draws == 0:
@@ -4762,8 +4765,16 @@ def _zk_say_epd_service(words):
         say("    ▶ 收到图块了但没凑满：黑白面 %d/15000，红面 %d/15000" % (img_bw, img_red))
         say("      如果块数远少于预期，多半是**无响应的写（Write Command）没被递上来**")
         say("      —— 这种块丢了只能靠带响应的那些补齐，图会缺数据。把这段发我。")
+    elif gui_draws:
+        say("    ▶ 走的是**日历/时钟模式**（网页只发时间戳，页面由固件画）："
+            "已经画了 %d 次，" % gui_draws +
+            ("屏也刷完了 —— 这条链路是通的 ✅" if panel_st == 2 else
+             "但屏还没刷完（看上面「屏：」那行的状态）"))
     elif want_init or want_refresh:
         say("    ▶ 收到命令了但还没看到图像数据 —— 网页那边是不是没点「推送」？")
+        say("      （要是你点的是「日历/时钟模式」，那走的是另一条路："
+            "网页只发时间戳、页面由固件画 —— 这时看上面「日历/时钟」那行有没有"
+            "画过次数，有就说明成了）")
 
 
 @command('status', help='自研固件体检：多次采样 + 复位检测 + AON 寄存器')
