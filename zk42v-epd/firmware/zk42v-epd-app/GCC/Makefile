@@ -44,6 +44,8 @@ $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT.c \
 ../Src/epd/epd_zk42v.c \
 ../Src/img/testimg.c \
 ../Src/img/zkgui.c \
+../Src/img/lunar.c \
+../Src/img/zk_opt.c \
 ../Src/ble/zk_ble.c \
 ../Src/ble/zk_epd_svc.c \
 

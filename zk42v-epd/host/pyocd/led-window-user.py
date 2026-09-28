@@ -1329,8 +1329,9 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # 扫描设备数/RSSI 和 6 个广播数据变体的 ADV_START 状态码；
 # build 20 又加到 60 —— 补上「广播停了几次 / 我们重开几次」；
 # build 21 加到 80 —— B2-A.2 的 GATT 服务与推图（收到的命令/图块/屏的状态）；
-# build 24 加到 84 —— 多一个「这轮刷新时屏到底忙了多久」（busy_polls 增量）。
-ZK_DBG_WORDS = 84
+# build 24 加到 84 —— 多一个「这轮刷新时屏到底忙了多久」（busy_polls 增量）；
+# build 28 加到 88 —— 多一组「画面选项」（反色 / 旋转 180° / 农历开关）。
+ZK_DBG_WORDS = 88
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4659,6 +4660,25 @@ def _zk_say_epd_service(words):
             % (mtxt, ttxt, gui_draws))
         if gui_mode in (1, 2) and gui_draws == 0:
             say("      → 网页点了「日历/时钟模式」但我们还没画出来（看下一行的屏状态）")
+
+    # ---- build 28：画面选项（反色 / 旋转 180° / 农历开关）----
+    if len(words) > 85:
+        opt, opt_cmds, opt_frames = words[83], words[84], words[85]
+        if opt_cmds == 0 and opt == 0:
+            say("    画面选项：没设过（默认：不反色、不旋转、日历页画农历）")
+        else:
+            on = []
+            if opt & 0x01:
+                on.append('反色')
+            if opt & 0x02:
+                on.append('旋转180°')
+            if opt & 0x04:
+                on.append('日历页不画农历')
+            say("    画面选项：0x%02X（%s）  设过 %d 次  有 %d 帧真的变换过"
+                % (opt, '、'.join(on) if on else '全关', opt_cmds, opt_frames))
+            if (opt & 0x03) and opt_frames == 0:
+                say("      → 设了反色/旋转但一帧都没变换过：要么还没刷屏，"
+                    "要么写屏那条路上没走到变换（把这段发我）")
     say("    通知：发出去 %d 条，最后一次返回 %d（0 = 成功）" % (noti_cnt, noti_err))
 
     # ---- 一句话判据 ----------------------------------------------------

@@ -20,7 +20,7 @@
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
 /* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   27u
+#define ZK_BUILD_ID   28u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -97,7 +97,7 @@ typedef struct
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 
-#define ZK_DBG_WORDS 84
+#define ZK_DBG_WORDS 88
 
 typedef struct
 {
@@ -209,7 +209,15 @@ typedef struct
     uint32_t ble_gui_mode;        /* 80: 显示模式 0=图片 1=日历 2=时钟 */
     uint32_t ble_gui_ts;          /* 81: 网页同步过来的时间戳（已经加过时区） */
     uint32_t ble_gui_draws;       /* 82: 日历/时钟页一共画过几次 */
-    uint32_t rsv[ZK_DBG_WORDS - 83];
+
+    /* ---- build 28：画面选项（反色 / 旋转 180° / 农历开关）------
+       命令 0x70 SET_OPTIONS，网页那个「发送命令」框里敲 "7002" 就是旋转。
+       这两个变换是写屏之前对整帧做的，所以要做没做、做过几帧，得能看见 ——
+       不然"屏上怎么反了"这种问题只能靠猜。 */
+    uint32_t ble_opt;             /* 83: 选项位掩码（ZK_OPT_xxx：1反色 2旋转 4不画农历） */
+    uint32_t ble_opt_cmds;        /* 84: 收到过几次 0x70 SET_OPTIONS */
+    uint32_t ble_opt_frames;      /* 85: 有几帧在写屏时真的做过变换（选项=0 时不涨） */
+    uint32_t rsv[ZK_DBG_WORDS - 86];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

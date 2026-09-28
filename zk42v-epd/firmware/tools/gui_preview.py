@@ -7,6 +7,7 @@
     python3 tools/gui_preview.py 2 1758972000 /tmp/clock.png   # 时钟模式
 
 做法：拿宿主机 cc 把 tools/gui_preview.c + Src/img/zkgui.c 编成一个小程序，
+（zkgui.c 画农历要调 lunar.c，所以这两个源文件都要进编译命令行）
 跑出来 30000 字节的三色缓冲（前后各带 32 字节哨兵），在这里
   · 先检查哨兵有没有被写坏（越界写是屏上根本看不出来的 bug）
   · 再按"黑白面 bit=1 白 / 红面 bit=1 红"映射成 RGB，写 PNG
@@ -38,13 +39,15 @@ def build(tmpdir):
     exe = os.path.join(tmpdir, 'gui_preview')
     cmd = ['cc', '-std=gnu99', '-O1', '-Wall', '-I', IMG,
            os.path.join(HERE, 'gui_preview.c'),
-           os.path.join(IMG, 'zkgui.c'), '-o', exe]
+           os.path.join(IMG, 'zkgui.c'),
+           os.path.join(IMG, 'lunar.c'), '-o', exe]
     subprocess.run(cmd, check=True)
     return exe
 
 
-def render(exe, mode, ts):
-    out = subprocess.run([exe, str(mode), str(ts)], check=True,
+def render(exe, mode, ts, opt=0):
+    """opt：选项位，跟固件 zk_opt.h 的 ZK_OPT_xxx 对齐（这里只用到 0x04 = 不画农历）"""
+    out = subprocess.run([exe, str(mode), str(ts), str(opt)], check=True,
                          stdout=subprocess.PIPE).stdout
     assert len(out) == BYTES + 2 * GUARD, len(out)
     head, body, tail = out[:GUARD], out[GUARD:GUARD + BYTES], out[GUARD + BYTES:]

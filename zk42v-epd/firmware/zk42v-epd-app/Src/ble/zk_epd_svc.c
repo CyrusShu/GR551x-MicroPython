@@ -28,6 +28,7 @@
 #include "zk_dbg.h"
 #include "epd_zk42v.h"
 #include "zkgui.h"           /* 日历 / 时钟页面的绘制 */
+#include "zk_opt.h"          /* 画面选项：反色 / 旋转 180°（写屏前对整帧做变换） */
 
 #include "gr_includes.h"
 #include "ble.h"
@@ -128,6 +129,7 @@ static uint32_t s_ts_ms;             /* 设时间那一刻的 zk_tick_ms()，用
 static uint32_t s_drawn_day;         /* 上次画的是哪一天（cur/86400） */
 static uint32_t s_drawn_min;         /* 上次画的是哪一分钟（cur/60） */
 static uint8_t  s_need_gui;          /* 立刻重画一次 */
+static uint8_t  s_opt;               /* 画面选项位 ZK_OPT_xxx（命令 0x70 设） */
 
 /* 版本号的“值”放在用户空间（VAL_LOC_USER），读请求我们自己回 */
 static uint8_t  s_version = ZK_APP_VERSION;
@@ -510,6 +512,39 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
         case 0x90:      /* SET_CONFIG：我们的配置是写死的，收下就完事 */
             break;
 
+        /* 0x70 SET_OPTIONS：我们自己的扩展（网页那个「发送命令」框里直接敲就行）
+         *   70 00 -> 全关（默认）      70 01 -> 反色
+         *   70 02 -> 旋转 180°         70 04 -> 日历页不画农历
+         *   位可以叠加，比如 70 06 = 旋转 + 不画农历。
+         * 反色/旋转是在**写屏之前**对整帧做的（见 zk_opt.h），所以对网页推的图
+         * 和固件自己画的日历/时钟页一视同仁；缓冲写完会还原，SWD 信箱不受影响。 */
+        case 0x70:
+            if (len >= 2u)
+            {
+                uint8_t buf[16];
+
+                s_opt = (uint8_t)(d[1] & ZK_OPT_ALL);
+                zkgui_set_lunar((s_opt & ZK_OPT_NO_LUNAR) ? 0 : 1);
+
+                g_dbg.ble_opt = s_opt;
+                g_dbg.ble_opt_cmds++;
+
+                if (ZKGUI_MODE_PICTURE == s_mode)
+                {
+                    s_need_refresh = 1;     /* 图片模式：重刷一帧就能看到效果 */
+                }
+                else
+                {
+                    s_need_gui = 1;         /* 日历/时钟：重画一页（选项已生效） */
+                }
+
+                memcpy(buf, "opt=", 4);
+                buf[4] = "0123456789ABCDEF"[(s_opt >> 4) & 0x0F];
+                buf[5] = "0123456789ABCDEF"[s_opt & 0x0F];
+                zk_notify(buf, 6u);
+            }
+            break;
+
         case 0x20:      /* SET_TIME：把时间原样回给网页（我们不做日历模式） */
             if (len >= 5u)
             {
@@ -856,7 +891,20 @@ void zk_epd_svc_poll(uint32_t now_ms)
             epd_init_sequence();
             s_gpio_ready = 1;
         }
+
+        /* 画面选项（反色/旋转）在写屏这一步统一生效 —— 网页推的图和固件画的
+           日历/时钟页都走这里，两条路不用各写一遍。
+           两个变换都是自逆的，写完再变换一次就等于把缓冲还原，
+           免得 0x70 的效果"粘"在 ZK_IMG_BUF 里影响后面（比如 SWD 信箱那条路）。 */
+        zk_opt_transform((uint8_t *)ZK_IMG_BUF, ZK42V_EPD_ROW_BYTES,
+                         ZK42V_EPD_HEIGHT, s_opt);
+        if (s_opt & (ZK_OPT_INVERT | ZK_OPT_ROT180))
+        {
+            g_dbg.ble_opt_frames++;
+        }
         epd_write_image((const uint8_t *)ZK_IMG_BUF);
+        zk_opt_transform((uint8_t *)ZK_IMG_BUF, ZK42V_EPD_ROW_BYTES,
+                         ZK42V_EPD_HEIGHT, s_opt);
         epd_refresh_ex(0xC7, 0);
 
         /* 这一轮屏到底忙了多久 —— 全刷时是几万次轮询（17 秒以上）。

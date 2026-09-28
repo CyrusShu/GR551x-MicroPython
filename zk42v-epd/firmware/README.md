@@ -1,5 +1,47 @@
 # ZK42V 自研固件（方向 B）第一版：把屏点亮
 
+> **2026-09-28 build 28 —— 农历进日历页；顺手修掉一个"表针变成横穿整屏的长线"的 bug；
+> 加上画面选项（反色 / 旋转 180° / 农历开关）**
+>
+> 这一版三件事：
+>
+> **① 农历**（`outputs/firmware/docs/feature-backlog.md` 里第 3 条）。表直接从**我们
+> 那块价签的原厂固件** `GUI/Lunar.c` 里抽出来（`tools/gen_lunar.py`，覆盖 2000~2051），
+> 只留日期换算 + 月/日中文名（节气/干支/生肖那一堆没搬，省 flash）。
+> 日历页左红面板，大日期下面多一行 "八月十七" / 闰月是 "闰六月初八"（5 个字自动
+> 缩一号，不然会顶到边框）。字模新加了 `闰`（`gen_font.py` 的 `CJK_ORDER` 现在 18 个）。
+> 正确性不靠肉眼：`tools/test_lunar.py` 拿 **19 个已知日期**钉死 —— 8 个春节
+> （2000/2001/2010/2024/2025/2026/2027/2050）、2 个中秋、3 个闰月（2020 闰四月 /
+> 2023 闰二月 / 2025 闰六月）、大小月（2025-07-24 必须是六月三十）、传统叫法
+> （十一月 = 冬月），外加 1 条边界（1970 年要老老实实返回失败，别给瞎答案）。
+>
+> **② 修 `draw_line` 跑飞**（这个 bug 从 build 26 就在，屏上一定看得见）：
+> Bresenham 的误差项 `e` 被检查了两次，第二次用的是**已经减过 `dy` 的 `e`**；
+> 收尾条件又是拿**变了的** `x0/y0` 跟目标比。斜率不是 0/45/90 度时轨迹会冲过目标点，
+> 于是 `x0==x1 && y0==y1` 永远不成立，一路画满 4000 次迭代 ——
+> **60 个分钟刻度里有 35 个会把表针画成一条横穿整页的长线**（`put_px` 会裁掉屏外部分，
+> 所以哨兵检查抓不到它，只是在屏上留一道斜线）。build 26 预览那张恰好是 18:42，
+> 属于没踩上的 25 个之一，所以一直没看出来。
+> 现在按标准写法来，步数上限也收紧到 `dx+dy+2`；`tools/test_gui.py` 加了**第 6 条判据**：
+> 60 个分钟刻度 × 日历/时钟两张图逐张数"白名单框外面的黑像素"，一个都不许有
+> （拿老代码跑，日历页最差 297 个、时钟页最差 661 个，确实抓得住）。
+>
+> **③ 画面选项 `0x70 SET_OPTIONS`**（backlog 第 1、2、4 条，也是你要的那份功能清单里
+> 最省事的两条）：`70 01` 反色、`70 02` 旋转 180°、`70 04` 日历页不画农历，位可叠。
+> 网页**不用改**——它自带的那个「发送命令」框（`sendcmd()`，十六进制串，第一个字节当
+> 命令）就能发。固件侧生效点只有一处：**写屏之前对整帧做变换**（`Src/img/zk_opt.c`），
+> 于是网页推来的图和固件画的日历/时钟页都自动照顾到；两个变换都是自逆的，
+> 写完屏再变换一次就把缓冲还原（SWD 信箱那条路读到的还是原图）。
+> 默认全关 —— **不开选项的时候，这一版跟 build 27 逐字节一样**（`test_opt.py` 第 1 条盯着）。
+> 发完回一条通知 `opt=XX`，网页日志和 `status.sh` 里都看得到。
+>
+> 镜像：SHA-256 `dac0f4e2…6e8c`，`check_sum = 0x00E54F26`，**147748 字节（37 颗扇区）**，
+> 离 bootloader 上限 151488 还余 3740。自测：固件这边 7 套（新增 `test_lunar.py`、
+> `test_opt.py`，`test_gui.py` 扩到 13 项），上位机那边 `test-flashwrite.py` 全绿。
+>
+> 功能清单的现状与后续（局刷校准 / 休眠时段 / 倒计时 / 停车牌 / 字体字号…）都写在
+> **`docs/feature-backlog.md`**：每条标了控制通道、风险、和"为什么先做这条"。
+
 > **2026-09-28 build 27 —— 「刷完起不来、芯片停在原厂 bootloader 里」的真凶：镜像超了 bootloader 的上限**
 >
 > **现象**：刷完 build 26 之后，`status.sh` 显示 PC 一直停在 `0x01003720`（原厂
@@ -655,16 +697,25 @@ outputs/firmware/
 │       ├── board/zk_dbg.h        ← 调试状态块定义
 │       ├── epd/epd_zk42v.[ch]    ← 屏驱动（重放原厂的序列）
 │       ├── img/testimg.[ch]      ← 体检图
+│       ├── img/zkgui.[ch]        ← 日历/时钟页面（含农历行，主机端能编）
+│       ├── img/lunar.[ch]        ← 农历表 + 换算（由原厂 Lunar.c 生成）
+│       ├── img/zk_opt.[ch]       ← 画面选项：反色 / 旋转 180°
 │       ├── ble/zk_ble.[ch]       ← B2-A：协议栈 / 扫描实验 / 广播数据变体
 │       ├── ble/zk_epd_svc.[ch]   ← B2-A.2：GATT 服务 + 网页那套命令（推图）
 │       └── config/custom_config.h← SDK 配置（GR5513BEND、APP 在 0x0100A000）
 └── tools/
     ├── fwpack.py                 ← 把 APP 打包成整片镜像（含自检）
     ├── img2epd.py                ← 图片 -> 30000 字节三色数据（+ 预览 PNG）
+    ├── gen_lunar.py              ← 从原厂 Lunar.c 抽表，生成 Src/img/lunar.c
+    ├── gen_font.py               ← 字模（数字 5x7 + 18 个汉字 16x16 + 码点表）
+    ├── gui_preview.py            ← 在电脑上把日历/时钟页渲染成 PNG（刷机前先看）
     ├── test_fwpack.py            ← 打包器的离线自测
     ├── test_img2epd.py           ← 图片转换的离线自测
     ├── test_dbg_layout.py        ← 状态块布局的离线自测（固件/上位机别错位）
-    └── test_adv_data.py          ← 广播数据 AD 结构的离线自测（build 20 新增）
+    ├── test_adv_data.py          ← 广播数据 AD 结构的离线自测（build 20 新增）
+    ├── test_gui.py               ← 日历/时钟页面的离线自测（build 26 建、build 28 扩）
+    ├── test_lunar.py             ← 农历的离线自测：19 个已知日期（build 28 新增）
+    └── test_opt.py               ← 反色/旋转的自测（build 28 新增）
 ```
 
 配套（在 `outputs/pyocd/`）：
@@ -685,6 +736,9 @@ python3 tools/test_fwpack.py            # 打包器：18 项
 python3 tools/test_img2epd.py           # 图片转换：11 项
 python3 tools/test_dbg_layout.py        # 状态块布局：9 项（B2-A.2 新增）
 python3 tools/test_adv_data.py          # 广播数据 AD 结构：11 项（build 20 新增）
+python3 tools/test_gui.py               # 日历/时钟页面：13 项（build 26 建、build 28 扩）
+python3 tools/test_lunar.py             # 农历：19 个已知日期 + 1 条边界（build 28 新增）
+python3 tools/test_opt.py               # 反色/旋转：10 项（build 28 新增）
 
 cd ../pyocd
 python3 test-flashwrite.py              # 烧写脚本：含 app/appverify/status，155 项
@@ -1093,6 +1147,9 @@ cd /Users/mac/Documents/Codex/2026-09-15/a/outputs/firmware
 python3 tools/test_dbg_layout.py     # 状态块布局自测：9 项
 python3 tools/test_fwpack.py         # 打包器：18 项
 python3 tools/test_img2epd.py        # 图片转换：11 项
+python3 tools/test_gui.py            # 日历/时钟页面：13 项
+python3 tools/test_lunar.py          # 农历：19 个已知日期
+python3 tools/test_opt.py            # 反色/旋转：10 项
 
 cd ../pyocd
 python3 test-flashwrite.py           # 烧写脚本：123 项（含 build 19 的新解码）

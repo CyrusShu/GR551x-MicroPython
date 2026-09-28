@@ -9,6 +9,7 @@
 #include "zkgui.h"
 #include "zkgui_font.h"
 #include "zkgui_trig.h"
+#include "lunar.h"           /* 农历（表来自原厂，见 tools/gen_lunar.py） */
 
 #include <string.h>
 
@@ -17,6 +18,14 @@
 #define C_RED    2
 
 #define ROW_BYTES (ZKGUI_W / 8)
+
+/* 农历那一行开关（BLE 命令 0x70 的 bit2）。默认开。 */
+static int s_lunar_on = 1;
+
+void zkgui_set_lunar(int on)
+{
+    s_lunar_on = on ? 1 : 0;
+}
 
 /* ---------------------------------------------------------------- 画点/方块 */
 
@@ -81,7 +90,16 @@ static void fill_all(uint8_t *buf, int color)
     }
 }
 
-/* 直线（Bresenham），用来画表针 */
+/* 直线（Bresenham），用来画表针
+ *
+ * ⚠️ 这里踩过一个坑（build 27 之前一直带着）：误差项 `e` 必须"先算快照、
+ * 两次判断都用同一份"。一开始写成第二次判断重新读已经减过的 `e`，斜率不是
+ * 0/45/90 度时轨迹会跑过目标点 —— 而收尾条件是 `x0==x1 && y0==y1`（拿变了的
+ * `x0/y0` 跟目标比），一旦跑过就永远不相等，于是画满 4000 次迭代。
+ * 表现：**60 个分钟刻度里有 35 个会把表针画成一条横穿整屏的长线**（`put_px`
+ * 会裁掉屏外部分，所以看不出越界，只在屏上留下一道斜线）。
+ * 现在按标准写法来，并把步数上限收紧到 `dx+dy+2` —— 就算以后又写错，
+ * 也不会再画出屏外。 */
 static void draw_line(uint8_t *buf, int x0, int y0, int x1, int y1, int t, int color)
 {
     int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
@@ -89,21 +107,24 @@ static void draw_line(uint8_t *buf, int x0, int y0, int x1, int y1, int t, int c
     int sx = (x0 < x1) ? 1 : -1;
     int sy = (y0 < y1) ? 1 : -1;
     int e = dx - dy;
+    int steps = dx + dy + 2;
     int i;
 
-    for (i = 0; i < 4000; i++)
+    for (i = 0; i < steps; i++)
     {
+        int e2 = 2 * e;
+
         fill_rect(buf, x0 - t / 2, y0 - t / 2, t, t, color);
         if (x0 == x1 && y0 == y1)
         {
             break;
         }
-        if ((e << 1) > -dy)
+        if (e2 > -dy)
         {
             e -= dy;
             x0 += sx;
         }
-        if ((e << 1) < dx)
+        if (e2 < dx)
         {
             e += dx;
             y0 += sy;
@@ -326,6 +347,64 @@ static void draw_cjk(uint8_t *buf, int x, int y, int idx, int scale, int color)
 #define CJK_ZHENG 14  /* 正 */
 #define CJK_CHU  15   /* 初 */
 #define CJK_NIAN 16   /* 廿 */
+#define CJK_RUN  17   /* 闰 */
+
+/* 中文串：按 UTF-8 码点在 zk_cjk_cp 里查字形（那张表由 gen_font.py 生成，
+   所以不用手抄码点）。返回画完之后的 x；查不到的字符跳过。 */
+static int draw_text_cjk(uint8_t *buf, int x, int y, const char *s, int scale, int color)
+{
+    const uint8_t *p = (const uint8_t *)s;
+
+    while (*p)
+    {
+        uint32_t cp = 0;
+        int      i;
+
+        if (p[0] < 0x80)
+        {
+            p++;
+            x += 17 * scale;
+            continue;
+        }
+        if ((p[0] & 0xE0) == 0xC0)
+        {
+            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+            p += 2;
+        }
+        else
+        {
+            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) |
+                 (p[2] & 0x3F);
+            p += 3;
+        }
+
+        for (i = 0; i < ZK_CJK_NUM; i++)
+        {
+            if (zk_cjk_cp[i] == cp)
+            {
+                draw_cjk(buf, x, y, i, scale, color);
+                break;
+            }
+        }
+        x += 17 * scale;                       /* 16px 字形 + 1px 间距 */
+    }
+    return x;
+}
+
+static int text_cjk_width(const char *s, int scale)
+{
+    int            n = 0;
+    const uint8_t *p = (const uint8_t *)s;
+
+    while (*p)
+    {
+        if (p[0] < 0x80) { p++; }
+        else if ((p[0] & 0xE0) == 0xC0) { p += 2; }
+        else { p += 3; }
+        n++;
+    }
+    return (n > 0) ? (n * 17 - 1) * scale : 0;
+}
 
 /* 星期：0=周日 … 6=周六（跟 zkgui_civil 的 wday 一致） */
 static const uint8_t s_wday_cjk[7] =
@@ -372,7 +451,8 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
 /* ---------------------------------------------------------------- 两个页面 */
 
 /* 左半边：红底 + 表盘 + 数字时间 + 大日期 + 星期/月份（照你给的那张图） */
-static void draw_left_panel(uint8_t *buf, int mon, int day, int wday, int hour, int min)
+static void draw_left_panel(uint8_t *buf, int year, int mon, int day, int wday,
+                            int hour, int min)
 {
     char s[8];
     int  tw;
@@ -399,22 +479,51 @@ static void draw_left_panel(uint8_t *buf, int mon, int day, int wday, int hour, 
     s[2] = 0;
     draw_text5(buf, 34, 196, s, 7, C_BLACK);
 
-    /* 右边：上面是星期（大），下面是月份 */
+    /* 右边：星期（大） */
     draw_cjk(buf, 124, 192, s_wday_cjk[wday], 3, C_BLACK);
-    s[0] = (char)('0' + mon / 10);
-    if ('0' == s[0])
+
+    /* 大日期下面那一行：农历（"六月十三" / "闰六月十三"），照参考图的位置。
+       农历算不出来（年份超出表范围）就画 "--"。
+       开关关掉时这一行留空（红底），整块版式不动 —— 免得有人嫌它挤。 */
+    if (s_lunar_on)
     {
-        s[0] = (char)('0' + mon % 10);
-        s[1] = 0;
+        uint8_t lmon = 0, lday = 0, leap = 0;
+        char    lbuf[24];
+        int     n = 0;
+
+        if (0 == zk_lunar_from_solar((uint16_t)year, (uint8_t)mon, (uint8_t)day,
+                                     &lmon, &lday, &leap) &&
+            lmon >= 1 && lmon <= 12 && lday >= 1 && lday <= 30)
+        {
+            const char *ms = zk_lunar_month_cn[lmon];
+            const char *ds = zk_lunar_day_cn[lday];
+
+            if (leap)
+            {
+                memcpy(lbuf + n, zk_lunar_leap_cn[1], 3);   /* "闰" 占 3 字节 */
+                n += 3;
+            }
+            memcpy(lbuf + n, ms, strlen(ms)); n += (int)strlen(ms);
+            memcpy(lbuf + n, ds, strlen(ds)); n += (int)strlen(ds);
+            lbuf[n] = 0;
+        }
+        else
+        {
+            lbuf[0] = '-'; lbuf[1] = '-'; lbuf[2] = 0;
+        }
+
+        {
+            int sc = 2;
+            int w  = text_cjk_width(lbuf, sc);
+
+            if (w > 170)                    /* 闰月那种 6 个字：缩小一号 */
+            {
+                sc = 1;
+                w  = text_cjk_width(lbuf, sc);
+            }
+            draw_text_cjk(buf, 34 + (170 - w) / 2, 250, lbuf, sc, C_BLACK);
+        }
     }
-    else
-    {
-        s[1] = (char)('0' + mon % 10);
-        s[2] = 0;
-    }
-    tw = text5_width(s, 3);
-    draw_text5(buf, 124, 252, s, 3, C_BLACK);
-    draw_cjk(buf, 124 + tw + 4, 246, CJK_YUE, 2, C_BLACK);
 }
 
 /* 右半边：白底黑框 + 年月 + 月历（今天红圈） */
@@ -508,7 +617,7 @@ static void draw_month_grid(uint8_t *buf, int year, int mon, int day)
 static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
                           int hour, int min)
 {
-    draw_left_panel(buf, mon, day, wday, hour, min);
+    draw_left_panel(buf, year, mon, day, wday, hour, min);
     draw_month_grid(buf, year, mon, day);
 }
 

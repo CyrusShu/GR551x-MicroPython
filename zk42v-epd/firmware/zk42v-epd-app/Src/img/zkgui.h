@@ -32,6 +32,10 @@ typedef struct
 /* 把这一页画进 30000 字节的三色缓冲（前 15000 黑白面、后 15000 红面） */
 void zkgui_draw(uint8_t *buf, const zkgui_info_t *info);
 
+/* 日历页那一行农历画不画（BLE 命令 0x70 的 ZK_OPT_NO_LUNAR 位）。
+ * 默认画 —— 不开选项的时候行为跟以前一模一样。 */
+void zkgui_set_lunar(int on);
+
 /* 时间拆解（给外面判断"换天了 / 换分钟了"用，也方便自测） */
 void zkgui_civil(uint32_t ts, int *year, int *mon, int *day,
                  int *wday, int *hour, int *min, int *sec);

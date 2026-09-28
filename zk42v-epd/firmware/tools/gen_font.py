@@ -73,11 +73,13 @@ CJK_RECTS = {
     '初': [(4, 1, 3, 2), (5, 3, 2, 11), (2, 4, 3, 2), (2, 7, 3, 2),
            (9, 2, 4, 2), (11, 4, 2, 8), (9, 12, 6, 2)],
     '廿': [(2, 4, 12, 2), (5, 6, 2, 6), (9, 6, 2, 6), (2, 11, 12, 2)],
+    '闰': [(2, 1, 2, 13), (2, 1, 12, 2), (12, 1, 2, 13),
+           (5, 4, 6, 2), (7, 5, 2, 5), (5, 9, 6, 2)],
 }
 
 # 生成时的顺序 = C 里的索引顺序（zkgui.c 里有对应的 ZK_CJK_xxx 常量）
 CJK_ORDER = ['日', '一', '二', '三', '四', '五', '六', '月',
-             '七', '八', '九', '十', '冬', '腊', '正', '初', '廿']
+             '七', '八', '九', '十', '冬', '腊', '正', '初', '廿', '闰']
 
 
 def pack_rows(rows, w):
@@ -139,6 +141,10 @@ def gen_font():
     a('')
     a('/* 中文单字；索引顺序 = tools/gen_font.py 里的 CJK_ORDER */')
     a('#define ZK_CJK_NUM    %d' % len(CJK_ORDER))
+    # 字形索引 <-> 字符码点 的对照表：画中文串时按码点查字形（顺序同 CJK_ORDER）
+    a('static const uint32_t zk_cjk_cp[ZK_CJK_NUM] = {')
+    a('    ' + ', '.join('0x%04X' % ord(c) for c in CJK_ORDER) + ',')
+    a('};')
     a('static const uint8_t zk_font_cjk[ZK_CJK_NUM][ZK_FONT_CJK_H * 2] = {')
     for ch in CJK_ORDER:
         rows = pack_rows(cjk_bitmap(ch), 16)
