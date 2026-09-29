@@ -52,6 +52,23 @@ OUT = os.path.join(HERE, 'cjk_ascii.py')
 SIZE_S = 11         # 小字：11px 画进 12x12 格子
 THR_S = 100
 
+# 数字：**单独一套**，用 Arial Bold —— 样板上的日号就是这种粗黑数字（帽高约 14px、
+# 笔画 2~3px）。我们原来的 5x7 点阵放大 2 倍虽然也是 14px，但形状是方块拼的，
+# 细看差一截。这套只占 10 个字 x 32 字节 = 320 字节。
+NUM_FONT = "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
+DIGITS   = "0123456789:."
+SIZE_N   = 19       # 帽高约 14px，正好是样板的日号高
+
+
+def raster_num(ch, size=SIZE_N, canvas=32, crop_y=8, crop_x=10, thr=110, dy=-1):
+    """数字画进 12x16 的小格子（宽度留 12，够放 Arial Bold 的数字）"""
+    font = ImageFont.truetype(NUM_FONT, size)
+    img = Image.new('L', (canvas, canvas), 0)
+    ImageDraw.Draw(img).text((canvas / 2, canvas / 2 + dy), ch,
+                             font=font, fill=255, anchor='mm')
+    return [[1 if img.getpixel((x, y)) >= thr else 0
+             for x in range(crop_x, crop_x + 12)] for y in range(crop_y, crop_y + 16)]
+
 
 def raster(ch):
     font = ImageFont.truetype(FONT, SIZE)
@@ -117,6 +134,20 @@ def main():
         edge = sum(1 for y in range(12) for x in range(12)
                    if g[y][x] and (x in (0, 11) or y in (0, 11)))
         print("  [小] %s  墨=%3d  贴边=%2d" % (ch, ink, edge))
+    out.append("}")
+    out.append("")
+    out.append("# 日号/时间用的粗体数字（Arial Bold 19px -> 12x16）：见 cjk_from_ttf.py 的 DIGITS")
+    out.append("NUM_ASCII = {")
+    for ch in DIGITS:
+        g = raster_num(ch)
+        out.append("    '%s': [" % ch)
+        for row in g:
+            out.append("        '%s'," % ''.join('#' if b else '.' for b in row))
+        out.append("    ],")
+        ink = sum(sum(r) for r in g)
+        ys = [y for y in range(16) if any(g[y])]
+        print("  [数字] %s  墨=%3d  高=%d 行(%d..%d)" % (ch, ink, (max(ys)-min(ys)+1) if ys else 0,
+                                                     min(ys) if ys else -1, max(ys) if ys else -1))
     out.append("}")
     with open(OUT, 'w', encoding='utf-8') as f:
         f.write('\n'.join(out) + '\n')

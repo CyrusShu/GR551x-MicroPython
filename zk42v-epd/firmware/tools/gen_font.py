@@ -17,7 +17,7 @@
 import math
 import os
 
-from cjk_ascii import CJK_ASCII, CJK_ASCII_S   # 16x16 / 12x12 汉字点阵
+from cjk_ascii import CJK_ASCII, CJK_ASCII_S, NUM_ASCII   # 汉字 16x16 / 12x12 + 数字
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMGDIR = os.path.join(os.path.dirname(HERE), 'zk42v-epd-app', 'Src', 'img')
@@ -63,6 +63,7 @@ ASCII5x7 = {
 # 这里直接用它，免得两处顺序对不上。
 CJK_ORDER = list(CJK_ASCII)
 CJK_ORDER_S = list(CJK_ASCII_S)      # 小字（格子里的农历）
+NUM_ORDER = list(NUM_ASCII)          # 粗体数字：0-9 : .
 
 
 def pack_rows(rows, w):
@@ -142,6 +143,21 @@ def gen_font():
         a('      %s,' % ', '.join('0x%02X' % v for v in rows[16:24]))
         a('      %s },   /* %s */'
           % (', '.join('0x%02X' % v for v in rows[24:32]), ch))
+    a('};')
+    a('')
+    # ---- 粗体数字（12x16）：日号 / 时间 ----
+    a('/* 日号和时间用的粗体数字（Arial Bold 19px 栅格化，见 tools/cjk_from_ttf.py）。')
+    a('   样板上的日号就是这种粗黑数字：帽高 14px、笔画 2~3px。 */')
+    a('#define ZK_FONT_NUM_W   12')
+    a('#define ZK_FONT_NUM_H   16')
+    a('#define ZK_NUM_LEN      %d' % len(NUM_ORDER))
+    a('static const uint8_t zk_font_num[ZK_NUM_LEN][ZK_FONT_NUM_H * 2] = {')
+    for ch in NUM_ORDER:
+        rows = pack_rows(NUM_ASCII[ch], 12)
+        assert len(rows) == 32, len(rows)          # 16 行 x 2 字节
+        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:16]))
+        a('      %s },   /* %s */'
+          % (', '.join('0x%02X' % v for v in rows[16:32]), ch))
     a('};')
     a('')
     # ---- 小字（12x12）：月历格子里那行农历 ----

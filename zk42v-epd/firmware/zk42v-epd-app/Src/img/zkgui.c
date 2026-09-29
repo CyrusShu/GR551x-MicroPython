@@ -504,6 +504,63 @@ static int text_cjk_s_width(const char *s, int scale)
     return (n > 0) ? (n * (ZK_FONT_CJK_S_W + 1) - 1) * scale : 0;
 }
 
+/* ---------------------------------------------------------------- 粗体数字
+ *
+ * 日号和时间用这套（Arial Bold 19px 栅格化的 12x16 点阵，见 tools/cjk_from_ttf.py）。
+ * 比 5x7 放大那套更像样板的观感：帽高 14px、笔画 2~3px。
+ */
+static int num_idx(char c)
+{
+    if (c >= '0' && c <= '9')
+    {
+        return c - '0';
+    }
+    if (':' == c)
+    {
+        return 10;
+    }
+    if ('.' == c)
+    {
+        return 11;
+    }
+    return -1;
+}
+
+static int num_width(const char *s, int scale)
+{
+    int n = (int)strlen(s);
+
+    return (n > 0) ? (n * (ZK_FONT_NUM_W + 1) - 1) * scale : 0;
+}
+
+static int draw_num(uint8_t *buf, int x, int y, const char *s, int scale, int color)
+{
+    for (; *s; s++)
+    {
+        int idx = num_idx(*s);
+        int cy, cx;
+
+        if (idx >= 0)
+        {
+            const uint8_t *g = zk_font_num[idx];
+
+            for (cy = 0; cy < ZK_FONT_NUM_H; cy++)
+            {
+                for (cx = 0; cx < ZK_FONT_NUM_W; cx++)
+                {
+                    if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
+                    {
+                        fill_rect(buf, x + cx * scale, y + cy * scale,
+                                  scale, scale, color);
+                    }
+                }
+            }
+        }
+        x += (ZK_FONT_NUM_W + 1) * scale;
+    }
+    return x;
+}
+
 /* 星期：0=周日 … 6=周六（跟 zkgui_civil 的 wday 一致） */
 static const uint8_t s_wday_cjk[7] =
     { CJK_RI, CJK_YI, CJK_ER, CJK_SAN, CJK_SI, CJK_WU, CJK_LIU };
@@ -583,14 +640,39 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
 #define CAL_WD_H     22
 #define CAL_GRID_Y   48                            /* 格子区从黑条下沿开始 */
 #define CAL_GRID_PAD 6                             /* 第一行日号离黑条再留 6px */
+#define CAL_BOTTOM_PAD 8                           /* 最后一行离下边框（样板几乎贴边，我们留 8px） */
 #define CAL_COL_W    (ZKGUI_W / 7)                 /* 57 */
-#define CAL_ROW_H    ((ZKGUI_H - CAL_GRID_Y - CAL_GRID_PAD) / 6)  /* 41 */
-
 /* 格子里那两行的位置（相对行的上沿）：
    日号 3..17（scale 2 的 5x7 = 14px 高，跟样板的 13.6px 对得上），
    农历 19..35（16x16 原大，墨迹约 13px）。中间留 2px，行底还剩 6px 空。 */
 #define CAL_NUM_Y    3
 #define CAL_LUN_Y    19
+
+#define CAL_ROW_H_MIN 38                           /* 行距下限（6 行月） */
+#define CAL_ROW_H_MAX 56                           /* 行距上限（4 行月别拉太散） */
+
+/* 行距**按这个月要几行摊开** —— 样板就是这么做的：
+ *   它 5 行月的行距 48.4、最后一行农历离下边框只有 ~6px（我放大看过，
+ *   下面几乎贴着边）；6 行月按同一个公式压到 ~41。
+ *   算法：第一行内容顶(格子区顶) → 最后一行内容底(离底 CAL_BOTTOM_PAD)
+ *   这一段平分给 (行数-1) 个间隔。 */
+static int cal_row_h(int rows_used)
+{
+    const int content_h = (CAL_LUN_Y + ZK_FONT_CJK_H) - CAL_NUM_Y;   /* 32 */
+    const int top       = CAL_GRID_Y + CAL_GRID_PAD;
+    int       avail     = ZKGUI_H - CAL_BOTTOM_PAD - content_h - top;
+    int       h         = (rows_used > 1) ? (avail / (rows_used - 1)) : avail;
+
+    if (h < CAL_ROW_H_MIN)
+    {
+        h = CAL_ROW_H_MIN;
+    }
+    if (h > CAL_ROW_H_MAX)
+    {
+        h = CAL_ROW_H_MAX;
+    }
+    return h;
+}
 
 /* 某一天的农历日名（"初八"/"廿三"/"三十"）；算不出来返回 NULL */
 static const char *cal_lunar_day(int year, int mon, int day)
@@ -680,15 +762,15 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
     s[3] = (char)('0' + year % 10);
     s[4] = 0;
     x = 6;
-    draw_text5(buf, x, 6, s, 2, C_RED);
-    x += text5_width(s, 2) + 2;
+    draw_num(buf, x, 5, s, 1, C_RED);
+    x += num_width(s, 1) + 2;
     draw_cjk(buf, x, 5, CJK_YEAR, 1, C_RED);
     x += 17 + 2;
     s[0] = (char)('0' + (mon / 10) % 10);
     s[1] = (char)('0' + mon % 10);
     s[2] = 0;
-    draw_text5(buf, x, 6, s, 2, C_RED);
-    x += text5_width(s, 2) + 2;
+    draw_num(buf, x, 5, s, 1, C_RED);
+    x += num_width(s, 1) + 2;
     draw_cjk(buf, x, 5, CJK_YUE, 1, C_RED);
     x += 17 + 5;
 
@@ -758,11 +840,11 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
 
 /* 一个格子：日号（5x7 放大 3 倍）+ 下面一行农历（16x16 原大）。
    今天那格整块红底、白字 —— 比画个红圈稳（圆形会被行高切掉）。 */
-static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
-                     int is_today, int weekend)
+static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mon,
+                     int d, int is_today, int weekend)
 {
     const int x0 = col * CAL_COL_W;
-    const int y0 = CAL_GRID_Y + CAL_GRID_PAD + row * CAL_ROW_H;
+    const int y0 = CAL_GRID_Y + CAL_GRID_PAD + row * row_h;
     const int cx = x0 + CAL_COL_W / 2;
     const char *lun;
     char  s[4];
@@ -784,7 +866,7 @@ static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
         s[1] = (char)('0' + d % 10);
         s[2] = 0;
     }
-    tw = text5_width(s, 2);
+    tw = num_width(s, 1);
     lun = s_lunar_on ? cal_lunar_day(year, mon, d) : NULL;
 
     if (is_today)
@@ -796,8 +878,8 @@ static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
          *   · 农历两个字 33px 宽（16x16 原大）
          * 农历最外角离圆心 sqrt(16.5² + 15²) ≈ 22.3 —— 取 r=22：圆正好落在本行里
          * （上边越界 3px、下边刚好到行底），不会碰上一行的农历、也不会蹭到下一行。 */
-        fill_circle(buf, cx, y0 + 18, 22, C_RED);
-        draw_text5(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 2, C_WHITE);
+        fill_circle(buf, cx, y0 + 18, (row_h >= 46) ? 25 : 22, C_RED);
+        draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, C_WHITE);
         if (lun)
         {
             lw = text_cjk_width(lun, 1);
@@ -807,7 +889,7 @@ static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
     }
 
     color = weekend ? C_RED : C_BLACK;
-    draw_text5(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 2, color);
+    draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, color);
     if (lun)
     {
         lw = text_cjk_width(lun, 1);
@@ -850,16 +932,21 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
     first_col = (wday_sun + 6) % 7;
     dim       = days_in_month(year, mon);
 
-    col = first_col;
-    row = 0;
-    for (d = 1; d <= dim; d++)
     {
-        cal_cell(buf, col, row, year, mon, d, (d == day), (col >= 5));
-        col++;
-        if (col > 6)
+        const int rows_used = (first_col + dim + 6) / 7;
+        const int row_h     = cal_row_h(rows_used);
+
+        col = first_col;
+        row = 0;
+        for (d = 1; d <= dim; d++)
         {
-            col = 0;
-            row++;
+            cal_cell(buf, col, row, row_h, year, mon, d, (d == day), (col >= 5));
+            col++;
+            if (col > 6)
+            {
+                col = 0;
+                row++;
+            }
         }
     }
 }
@@ -883,8 +970,8 @@ static void draw_clock(uint8_t *buf, int year, int mon, int day, int wday,
     s[3] = (char)('0' + min / 10);
     s[4] = (char)('0' + min % 10);
     s[5] = 0;
-    tw = text5_width(s, 5);
-    draw_text5(buf, 100 + (200 - tw) / 2, 244, s, 5, C_WHITE);
+    tw = num_width(s, 3);
+    draw_num(buf, 100 + (200 - tw) / 2, 240, s, 3, C_WHITE);
 }
 
 /* ---------------------------------------------------------------- 入口 */

@@ -31,13 +31,24 @@ CAL_WD_Y = 26
 CAL_WD_H = 22
 CAL_GRID_Y = 48
 CAL_GRID_PAD = 6
-CAL_COL_W = G.W // 7                                          # 57
-CAL_ROW_H = (G.H - CAL_GRID_Y - CAL_GRID_PAD) // 6            # 41
+CAL_BOTTOM_PAD = 8
+CAL_COL_W = G.W // 7
+CAL_ROW_H_MIN = 38
+CAL_ROW_H_MAX = 56
+CAL_CONTENT_H = (19 + 16) - 3        # 农历底 - 日号顶 = 32（跟 zkgui.c 一致）
 
 
-def cell_xy(col, row):
+def row_h(rows_used):
+    """行距是按当月几行摊开的（跟 zkgui.c 的 cal_row_h 同一套算法）"""
+    top = CAL_GRID_Y + CAL_GRID_PAD
+    avail = G.H - CAL_BOTTOM_PAD - CAL_CONTENT_H - top
+    h = (avail // (rows_used - 1)) if rows_used > 1 else avail
+    return max(CAL_ROW_H_MIN, min(CAL_ROW_H_MAX, h))
+
+
+def cell_xy(col, row, pitch):
     """格子的左上角（含格子区上边距）"""
-    return col * CAL_COL_W, CAL_GRID_Y + CAL_GRID_PAD + row * CAL_ROW_H
+    return col * CAL_COL_W, CAL_GRID_Y + CAL_GRID_PAD + row * pitch
 
 BLACK = bytes(G.C_BLACK)
 WHITE = bytes(G.C_WHITE)
@@ -59,22 +70,22 @@ def count(rows, color, x0=0, y0=0, x1=G.W, y1=G.H):
                if at(rows, x, y) == color)
 
 
-def cell_ink(rows, col, row):
+def cell_ink(rows, col, row, pitch):
     """某个格子里有多少"有内容"的像素（黑或红都算）"""
-    x0, y0 = cell_xy(col, row)
-    return sum(1 for y in range(y0, min(y0 + CAL_ROW_H, G.H))
+    x0, y0 = cell_xy(col, row, pitch)
+    return sum(1 for y in range(y0, min(y0 + pitch, G.H))
                for x in range(x0, min(x0 + CAL_COL_W, G.W))
                if at(rows, x, y) in (BLACK, RED))
 
 
-def lunar_ink(rows, col, row, is_today=False):
+def lunar_ink(rows, col, row, pitch, is_today=False):
     """格子里那行农历小字的墨量（日号下面那一条）。
 
     颜色要按格子背景来数：普通格/周末格都是白底（字是黑或红），
     今天那格是红底白字（只在红块里面数，块外那圈白边不算）。"""
     x0 = col * CAL_COL_W
     w = CAL_COL_W
-    y0 = CAL_GRID_Y + CAL_GRID_PAD + row * CAL_ROW_H + 19
+    y0 = CAL_GRID_Y + CAL_GRID_PAD + row * pitch + 19
     if is_today:
         x0 += 4
         w -= 8
@@ -86,13 +97,13 @@ def lunar_ink(rows, col, row, is_today=False):
                if at(rows, x, y) == want)
 
 
-def today_cell(rows):
+def today_cell(rows, pitch):
     """今天那格（日号外面套着红圆）在第几列第几行；找不到返回 None。
 
-    判据：日号那一小块里红像素特别多（红圆 ≈ 700 个），别的格子最多只有红色的数字笔画。"""
+    判据：日号那一小块里红像素特别多，别的格子最多只有红色的数字笔画。"""
     for row in range(6):
         for col in range(7):
-            x0, y0 = cell_xy(col, row)
+            x0, y0 = cell_xy(col, row, pitch)
             if count(rows, RED, x0 + 6, y0 + 1, x0 + CAL_COL_W - 6, y0 + 22) > 300:
                 return (col, row)
     return None
@@ -144,30 +155,33 @@ def main():
         check('2: 星期条上 六/日 那两列是红底（%d 个红像素）' % wd_red, wd_red > 800)
 
         want = month_cells(2026, 9)
+        pitch = row_h(max(r for (_c, r) in want.values()) + 1)
         empty, wrong = [], []
         for d, (col, row) in want.items():
-            if cell_ink(cal_rows, col, row) < 40:
+            if cell_ink(cal_rows, col, row, pitch) < 40:
                 empty.append(d)
         # 反向：不该有内容的格子（这个月只有 30 天、前面空 1 格）
         for row in range(6):
             for col in range(7):
                 if (col, row) not in want.values():
-                    if cell_ink(cal_rows, col, row) > 0:
+                    if cell_ink(cal_rows, col, row, pitch) > 0:
                         wrong.append((col, row))
         check('2: 30 天全都画在正确的格子里（空格 %s）' % empty, not empty)
         check('2: 没排到日子的格子是空的（多画的 %s）' % wrong, not wrong)
 
         # 3) 今天那格：红圆 + 白字
-        cell = today_cell(cal_rows)
+        cell = today_cell(cal_rows, pitch)
         check('3: 今天（27 号）那格套着红圆 —— 在第 %s 格' % (cell,), cell == want[27])
         # 红圆里必须是白字：白像素太少说明日号没画上去（或被圆吃掉）
-        x0, y0 = 6 * CAL_COL_W, CAL_GRID_Y + 3 * CAL_ROW_H
+        x0, y0 = cell_xy(6, 3, pitch)
         check('3: 红圆里有白色日号（%d 个白像素）'
               % count(cal_rows, WHITE, x0 + 6, y0 + 1, x0 + CAL_COL_W - 6, y0 + 22),
               count(cal_rows, WHITE, x0 + 6, y0 + 1, x0 + CAL_COL_W - 6, y0 + 22) > 60)
         _, cal2 = render(1, TS + 5 * DAY)          # 挪 5 天 -> 1 号
+        pitch2 = row_h(5)
         check('3: 今天那格会跟着日期换位置（10-02 那次在第 %s 格）'
-              % (today_cell(G.to_rgb(cal2)),), today_cell(G.to_rgb(cal2)) != cell)
+              % (today_cell(G.to_rgb(cal2), pitch2),),
+              today_cell(G.to_rgb(cal2), pitch2) != cell)
 
         # 4) 表针不许出圈（时钟页；build 27 那个 Bresenham 跑飞的 bug 就靠它盯）
         worst = (0, None)
@@ -202,8 +216,8 @@ def main():
                 if y < CAL_GRID_Y:
                     outside.append((x, y))
                     continue
-                row = (y - CAL_GRID_Y) // CAL_ROW_H
-                if not (CAL_GRID_Y + row * CAL_ROW_H + 20 <= y):
+                row = (y - CAL_GRID_Y - CAL_GRID_PAD) // pitch
+                if not (CAL_GRID_Y + CAL_GRID_PAD + row * pitch + 18 <= y):
                     outside.append((x, y))
         check('5: 关农历只改了每格那行小字（改了 %d 个像素）' % diff, diff > 1200)
         check('5: 改动没跑到日号/表头上去（越界 %d 个）' % len(outside),
