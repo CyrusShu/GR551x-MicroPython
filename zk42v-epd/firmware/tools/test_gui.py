@@ -35,7 +35,7 @@ CAL_BOTTOM_PAD = 8
 CAL_COL_W = G.W // 7
 CAL_ROW_H_MIN = 38
 CAL_ROW_H_MAX = 56
-CAL_CONTENT_H = (18 + 16) - 3        # 农历底 - 日号顶 = 31（跟 zkgui.c 一致）
+CAL_CONTENT_H = (20 + 16) - 3        # 农历底 - 日号顶 = 33（跟 zkgui.c 一致）
 
 
 def row_h(rows_used):
@@ -85,7 +85,7 @@ def lunar_ink(rows, col, row, pitch, is_today=False):
     今天那格是红底白字（只在红块里面数，块外那圈白边不算）。"""
     x0 = col * CAL_COL_W
     w = CAL_COL_W
-    y0 = CAL_GRID_Y + CAL_GRID_PAD + row * pitch + 18
+    y0 = CAL_GRID_Y + CAL_GRID_PAD + row * pitch + 20
     if is_today:
         x0 += 4
         w -= 8
@@ -226,6 +226,18 @@ def main():
         check('5: 表头的红字（年月/生肖/电池）没受影响',
               count(cal_rows, RED, 0, 0, G.W, CAL_HDR_H)
               == count(rows_off, RED, 0, 0, G.W, CAL_HDR_H))
+
+        # 5b) 选项 0x08 = 节气加粗（同样的字错开 1px 再画一遍）：节气那格的墨要变多
+        rows_bold, _ = render(1, TS, 0x08)
+        tcell = want[23]                      # 2026-09-23 是秋分
+        red_a = count(cal_rows, RED, tcell[0] * CAL_COL_W, CAL_GRID_Y + CAL_GRID_PAD + tcell[1] * pitch + 18,
+                      (tcell[0] + 1) * CAL_COL_W, CAL_GRID_Y + CAL_GRID_PAD + tcell[1] * pitch + 36)
+        red_b = count(rows_bold, RED, tcell[0] * CAL_COL_W, CAL_GRID_Y + CAL_GRID_PAD + tcell[1] * pitch + 18,
+                      (tcell[0] + 1) * CAL_COL_W, CAL_GRID_Y + CAL_GRID_PAD + tcell[1] * pitch + 36)
+        check('5b: 节气加粗开关（0x08）确实把节气那格画粗了（%d -> %d 红像素）'
+              % (red_a, red_b), red_b > red_a + 20)
+        _, cal_plain = render(1, TS)
+        check('5b: 不加粗时不加粗（同一格 %d 像素）' % red_a, red_a > 0)
 
         # 6) 换一天，图不一样
         check('6: 换一天画出来的图不一样',

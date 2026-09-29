@@ -40,6 +40,7 @@ int main(int argc, char **argv)
         unsigned opt = (unsigned)strtoul(argv[3], NULL, 0);
 
         zkgui_set_lunar((opt & 0x04u) ? 0 : 1);      /* 0x04 = ZK_OPT_NO_LUNAR */
+        zkgui_set_term_bold((opt & 0x08u) ? 1 : 0);  /* 0x08 = ZK_OPT_TERM_BOLD */
     }
     if (argc > 4)
     {

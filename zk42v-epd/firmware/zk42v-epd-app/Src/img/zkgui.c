@@ -22,10 +22,17 @@
 
 /* 农历那一行开关（BLE 命令 0x70 的 bit2）。默认开。 */
 static int s_lunar_on = 1;
+/* 节气加粗（BLE 命令 0x70 的 bit3）。默认关：同样的字错开 1px 再画一遍。 */
+static int s_term_bold = 0;
 
 void zkgui_set_lunar(int on)
 {
     s_lunar_on = on ? 1 : 0;
+}
+
+void zkgui_set_term_bold(int on)
+{
+    s_term_bold = on ? 1 : 0;
 }
 
 /* ---------------------------------------------------------------- 画点/方块 */
@@ -563,7 +570,7 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
    日号 3..17（scale 2 的 5x7 = 14px 高，跟样板的 13.6px 对得上），
    农历 19..35（16x16 原大，墨迹约 13px）。中间留 2px，行底还剩 6px 空。 */
 #define CAL_NUM_Y    3
-#define CAL_LUN_Y    18
+#define CAL_LUN_Y    20
 
 #define CAL_ROW_H_MIN 38                           /* 行距下限（6 行月） */
 #define CAL_ROW_H_MAX 56                           /* 行距上限（4 行月别拉太散） */
@@ -822,9 +829,16 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     /* ---- 下面那行 ---- */
     if (jq)
     {
-        /* 节气：**大字 + 红字**（照样板：立秋/处暑明显比旁边的农历粗一号） */
+        /* 节气：**红字**（照样板）。要不要再"加粗"由 ZK_TERM_BOLD 决定：
+           置 1 就把同样的字**错开 1px 再画一遍**（视觉上粗 1px，
+           比换字体省事，也不用额外的字模）。 */
         lw = text_cjk_width(jq, 1);
-        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y - 2, jq, 1, C_RED);
+        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, jq, 1, C_RED);
+        if (s_term_bold)
+        {
+            /* 错开 1px 再画一遍 = 视觉上加粗 1px（照样板里"节气比农历粗"） */
+            draw_text_cjk(buf, cx - lw / 2 + 1, y0 + CAL_LUN_Y, jq, 1, C_RED);
+        }
     }
     else if (lun)
     {

@@ -37,7 +37,8 @@ C_RED = (190, 0, 0)          # 墨水屏的红没这么鲜艳，预览里压暗�
 
 def build(tmpdir):
     exe = os.path.join(tmpdir, 'gui_preview')
-    cmd = ['cc', '-std=gnu99', '-O1', '-Wall', '-I', IMG,
+    extra = os.environ.get('ZK_CC_FLAGS', '').split()      # 想试编译期开关时用
+    cmd = ['cc', '-std=gnu99', '-O1', '-Wall', '-I', IMG] + extra + [
            os.path.join(HERE, 'gui_preview.c'),
            os.path.join(IMG, 'zkgui.c'),
            os.path.join(IMG, 'lunar.c'),
@@ -99,11 +100,12 @@ def main(argv):
     tz = int(argv[4]) if len(argv) > 4 else 8
     bat_mv   = int(argv[5]) if len(argv) > 5 else 3970    # 预览默认给个像样的电池
     temp_c10 = int(argv[6]) if len(argv) > 6 else 264     # 26.4℃
+    opt      = int(argv[7], 0) if len(argv) > 7 else 0    # 选项位（0x04 不画农历 / 0x08 节气加粗）
     ts += tz * 3600
 
     with tempfile.TemporaryDirectory(prefix='zkgui-') as td:
         exe = build(td)
-        body = render(exe, mode, ts, 0, bat_mv, temp_c10)
+        body = render(exe, mode, ts, opt, bat_mv, temp_c10)
     rows = to_rgb(body)
     write_png(out, rows)
 

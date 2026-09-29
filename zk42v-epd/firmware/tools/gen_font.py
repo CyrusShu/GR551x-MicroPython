@@ -19,6 +19,7 @@ import os
 
 from cjk_ascii import CJK_ASCII, CJK_ASCII_S, NUM_ASCII   # 我们栅格化的（补字用）
 from vendor_font import CJK as V_CJK, NUM as V_NUM         # **原厂固件里的 u8g2 字形**
+from wqy_font import CJK16 as WQY_CJK16                    # 文泉驿点阵宋体 12pt（补原厂缺的字）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMGDIR = os.path.join(os.path.dirname(HERE), 'zk42v-epd-app', 'Src', 'img')
@@ -134,10 +135,15 @@ def pad16(g):
 
 
 def cjk_bitmap(ch):
-    """16x16 点阵：**优先用原厂 u8g2 字库里的字形**（跟样板同源、笔画细），
-    原厂没有的（目前只有"农/历"）才退回我们栅格化的那份。"""
+    """16x16 点阵，优先级：
+         1. 原厂固件里的 u8g2 字形（跟样板同源）
+         2. 文泉驿点阵宋体 12pt（"农/历"——原厂字库里没有，取点阵后加粗 1px 对齐字重）
+         3. 我们栅格化的那份（兜底，现在应该用不到了）
+    """
     if ch in V_CJK:
         return pad16(V_CJK[ch])
+    if ch in WQY_CJK16:
+        return pad16(WQY_CJK16[ch])
     if ch in CJK_ASCII:
         g = CJK_ASCII[ch]
         assert len(g) == 16 and all(len(r) == 16 for r in g), '字形 %s 不是 16x16' % ch

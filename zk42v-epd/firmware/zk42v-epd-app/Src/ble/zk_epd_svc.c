@@ -516,6 +516,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
         /* 0x70 SET_OPTIONS：我们自己的扩展（网页那个「发送命令」框里直接敲就行）
          *   70 00 -> 全关（默认）      70 01 -> 反色
          *   70 02 -> 旋转 180°         70 04 -> 日历页不画农历
+         *   70 08 -> 节气加粗（画两遍）
          *   位可以叠加，比如 70 06 = 旋转 + 不画农历。
          * 反色/旋转是在**写屏之前**对整帧做的（见 zk_opt.h），所以对网页推的图
          * 和固件自己画的日历/时钟页一视同仁；缓冲写完会还原，SWD 信箱不受影响。 */
@@ -526,6 +527,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
 
                 s_opt = (uint8_t)(d[1] & ZK_OPT_ALL);
                 zkgui_set_lunar((s_opt & ZK_OPT_NO_LUNAR) ? 0 : 1);
+                zkgui_set_term_bold((s_opt & ZK_OPT_TERM_BOLD) ? 1 : 0);
 
                 g_dbg.ble_opt = s_opt;
                 g_dbg.ble_opt_cmds++;

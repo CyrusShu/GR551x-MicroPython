@@ -44,6 +44,9 @@ void zkgui_draw(uint8_t *buf, const zkgui_info_t *info);
  * 默认画 —— 不开选项的时候行为跟以前一模一样。 */
 void zkgui_set_lunar(int on);
 
+/* 节气那两个字要不要加粗（BLE 命令 0x70 的 ZK_OPT_TERM_BOLD 位）。默认不加粗。 */
+void zkgui_set_term_bold(int on);
+
 /* 时间拆解（给外面判断"换天了 / 换分钟了"用，也方便自测） */
 void zkgui_civil(uint32_t ts, int *year, int *mon, int *day,
                  int *wday, int *hour, int *min, int *sec);

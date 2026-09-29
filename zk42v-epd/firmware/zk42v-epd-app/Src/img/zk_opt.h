@@ -19,8 +19,9 @@
                                     反色不该把红色也抹掉，这一点跟网页里那个"反色"一致 */
 #define ZK_OPT_ROT180    0x02u   /* 整屏旋转 180°（价签挂反了的时候用） */
 #define ZK_OPT_NO_LUNAR  0x04u   /* 日历页不画农历那一行（这条不碰缓冲，是画页面时查的） */
+#define ZK_OPT_TERM_BOLD 0x08u   /* 节气那两个字"加粗"（同样的字错开 1px 再画一遍） */
 
-#define ZK_OPT_ALL       0x07u
+#define ZK_OPT_ALL       0x0Fu
 
 /* 就地变换一帧。
  *
@@ -28,6 +29,8 @@
  *   row_bytes 每行多少字节（400/8 = 50）
  *   rows      多少行（300）
  *   opts      ZK_OPT_xxx 的掩码；**0 的时候一个字节都不动**
+ *             （只有 ZK_OPT_INVERT / ZK_OPT_ROT180 会改缓冲，
+ *               NO_LUNAR / TERM_BOLD 是画页面时查的开关）
  *
  * 两个变换都是"自逆"的：连做两次等于还原。所以固件里可以
  * 「写屏前变换一次、写完再变换一次」，缓冲内容跟没动过一样 ——

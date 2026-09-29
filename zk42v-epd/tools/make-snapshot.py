@@ -46,6 +46,7 @@ FILES = [
     ("outputs/firmware/tools/test_jieqi.py",                                  "firmware/tools/test_jieqi.py"),
     ("outputs/firmware/zk42v-epd-app/Src/img/jieqi.c",                        "firmware/zk42v-epd-app/Src/img/jieqi.c"),
     ("outputs/firmware/zk42v-epd-app/Src/img/jieqi.h",                        "firmware/zk42v-epd-app/Src/img/jieqi.h"),
+    ("outputs/firmware/docs/preview/preview-calendar-termbold.png",  "firmware/docs/preview/preview-calendar-termbold.png"),
     ("outputs/firmware/docs/preview/preview-calendar-2025-08.png",            "firmware/docs/preview/preview-calendar-2025-08.png"),
     ("outputs/firmware/tools/gen_wqy_bitmap.py",                            "firmware/tools/gen_wqy_bitmap.py"),
     ("outputs/firmware/tools/wqy_font.py",                                  "firmware/tools/wqy_font.py"),
