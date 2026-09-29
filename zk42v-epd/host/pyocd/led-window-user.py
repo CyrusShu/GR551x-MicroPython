@@ -4809,12 +4809,22 @@ def _zk_say_epd_service(words):
         refv = {3: '0.85V', 7: '1.28V', 10: '1.60V'}
         cp = (acfg >> 19) & 0x7
         cn = (acfg >> 16) & 0x7
-        rv = (acfg >> 24) & 0x7
+        rv = acfg & 0xF                 # REF_VALUE 在 bit0..3（bit24..26 是 REF_HP，别搞混）
         say("    ---- ADC 诊断（build 42 加）----")
         say("    AON SNSADC_CFG = 0x%08X" % acfg)
         say("      EN=%d  通道 P=%d(%s) N=%d(%s)  参考=%s  单端=%d  VBAT_EN=%d  TEMP_EN=%d"
             % ((acfg >> 30) & 1, cp, chn.get(cp, '?'), cn, chn.get(cn, '?'),
                refv.get(rv, str(rv)), (acfg >> 13) & 1, (acfg >> 14) & 1, (acfg >> 15) & 1))
+        say("      （这个快照是**温度读完那一刻**拍的：build 42 每轮最后读温度，"
+            "所以停在哪不重要，看读数）")
+        if bmo != 0xFFFFFFFF and bms != 0xFFFFFFFF:
+            say("      判据：1.28V 那条路应该 ≈ 你实际供给的电压；"
+                "0.85V 那条（SDK 老公式）会顶在 0.85×27/7 ≈ 3279mV 附近")
+            if abs(bmo - bms) < 30 and bms > 3200:
+                say("      ⚠ 两条路读数几乎一样、还都贴着 3279 —— 更像是**通道没切回来**"
+                    "（或者供给电压真的就在 3.28V 附近）")
+        if bmo != 0xFFFFFFFF and 2000 <= bmo <= 4500 and braw != 0xFFFFFFFF:
+            say("      ✅ 1.28V 那条路给出了一个像样的电压（%d mV，码值 %d）" % (bmo, braw))
         say("    读一次的量：原始码值 %s   1.28V 参考那条路 %s mV   0.85V 参考(SDK) %s mV"
             % ('-' if braw == 0xFFFFFFFF else braw,
                '-' if bmo == 0xFFFFFFFF else bmo,
@@ -5139,15 +5149,20 @@ def zkstatus():
         say("    SNSADC_CFG = 0x%08X   （ADC 唯一的配置寄存器）" % sn)
         say("      通道 P=%d(%s)  N=%d(%s)   参考=%s   VBAT_EN=%d  TEMP_EN=%d"
             % (_cp, _chn.get(_cp, '?'), _cn, _chn.get(_cn, '?'),
-               _rfv.get((sn >> 24) & 7, str((sn >> 24) & 7)),
+               _rfv.get(sn & 0xF, str(sn & 0xF)),          # REF_VALUE = bit0..3
                (sn >> 14) & 1, (sn >> 15) & 1))
-        if _cp == 5:
-            say("      ⚠ 现在选的是**温度**通道。SDK 的 hal_adc_vbat_read() 只翻 VBAT_EN、"
-                "不重选通道，")
-            say("        所以「读电池」其实读的是温度二极管 —— 这就是 2.59V 的来历"
-                "（build 42 已改成每次读之前重新 init 通道）。")
+        _w = last.get('words')
+        _bld = _w[11] if (_w and len(_w) > 11) else None
+        if _cp == 5 and (_bld is None or _bld < 42):
+            say("      ⚠ 现在选的是**温度**通道 —— 这一版就是问题本身：SDK 的")
+            say("        hal_adc_vbat_read() 只翻 VBAT_EN、不重选通道，所以「读电池」")
+            say("        读的是温度二极管 ≈0.67V，套上电池公式 ≈2.59V。")
+        elif _cp == 5:
+            say("      ℹ 停在温度通道是**正常**的：build 42 每一轮最后读的是温度，")
+            say("        寄存器就停在它上面；这一版读电池时会先把通道切回 BAT，")
+            say("        判据看下面那两条读数（1.28V 那条应该 ≈ 你供给的电压）。")
         elif _cp == 6:
-            say("      ✅ 现在选的是**电池**通道（build 42 起每次读之前重新 init）。")
+            say("      ✅ 停在**电池**通道。")
     say("    WDT LOAD/VALUE/CTRL/RIS = %s"
         % ' '.join(('0x%08X' % v) if v is not None else 'n/a' for v in last['wdt']))
 
