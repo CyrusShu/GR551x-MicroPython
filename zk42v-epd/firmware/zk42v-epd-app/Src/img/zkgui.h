@@ -27,7 +27,15 @@ typedef struct
 {
     uint32_t ts;      /* unix 秒（调用方已经把时区偏移加进去了） */
     uint8_t  mode;    /* ZKGUI_MODE_xxx */
+    /* build 31 起：表头右上角要画电池/温度（照社区那版）
+       bat_mv < 0 = 没读到（那就不画电池，宁可不画也别画假数据）
+       temp_c10 == ZK_TEMP_NONE = 没读到 */
+    int16_t  bat_mv;      /* 电池毫伏 */
+    int8_t   bat_pct;     /* 0..100；-1 = 不知道（只画空电池框） */
+    int16_t  temp_c10;    /* 温度 ×10 */
 } zkgui_info_t;
+
+#define ZK_TEMP_NONE  ((int16_t)(-32768))   /* "温度没读到" */
 
 /* 把这一页画进 30000 字节的三色缓冲（前 15000 黑白面、后 15000 红面） */
 void zkgui_draw(uint8_t *buf, const zkgui_info_t *info);

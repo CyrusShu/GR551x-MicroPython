@@ -21,6 +21,7 @@
 #include "zk_ble.h"
 #include "zk_epd_svc.h"      /* B2-A.2：GATT 服务 / 推图协议 */
 #include "zk_tick.h"         /* 把 CYCCNT 扩成单调毫秒（build 30 修 268 秒绕圈） */
+#include "zk_bat.h"          /* 电池电压 / 片内温度（GR5513 的 ADC 内部通道） */
 
 #include "gr55xx.h"
 #include "gr55xx_sys.h"      /* sys_swd_enable() */
@@ -316,6 +317,11 @@ int main(void)
     g_dbg.ble_gui_why = 0;
     g_dbg.ble_gui_elapsed = 0;
     g_dbg.ble_tick_ms = 0;
+    /* build 31：电池/温度 */
+    g_dbg.bat_mv = ZK_NONE_U32;
+    g_dbg.bat_pct = ZK_NONE_U32;
+    g_dbg.bat_temp_c10 = ZK_NONE_U32;
+    g_dbg.bat_errs = 0;
     {
         volatile uint32_t *st = &g_dbg.ble_adv_st0;
         uint32_t           i;
@@ -339,6 +345,10 @@ int main(void)
        BLE 实验这条路上原来没人调 delay_init，于是 flags 的 bit2 一直没置位、
        tick_ms() 恒为 0，空闲循环里的超时只能用"数圈数"。现在有真毫秒了。 */
     epd_timer_init();
+
+    /* build 31：把 ADC 的两个内部通道（VBAT / TMP）准备好。
+       表头右上角的电池和温度就是它读的 —— 不用外接任何东西。 */
+    zk_bat_init();
 
 #if ZK_BOOT_PANEL_TEST
     epd_gpio_init();
@@ -401,6 +411,14 @@ int main(void)
         /* B2-A.2：网页推图这条线。命令在事件回调里只做记账，屏的重活
            （初始化、写图、刷新十几秒）在这个 poll 里做，别堵住协议栈。 */
         zk_epd_svc_poll(tick_ms());
+
+        /* build 31：电池/温度（内部自己限速，一分钟一次） */
+        zk_bat_poll(tick_ms());
+        g_dbg.bat_mv      = (zk_bat_mv() < 0) ? ZK_NONE_U32 : (uint32_t)zk_bat_mv();
+        g_dbg.bat_pct     = (zk_bat_pct() < 0) ? ZK_NONE_U32 : (uint32_t)zk_bat_pct();
+        g_dbg.bat_temp_c10 = (zk_bat_temp_c10() == (int)(-32768))
+                             ? ZK_NONE_U32 : (uint32_t)(int32_t)zk_bat_temp_c10();
+        g_dbg.bat_errs    = zk_bat_errs();
 
         zk_mailbox_poll();      /* B2-B：有新图就刷 */
         epd_delay_ms(5);        /* 5ms 一圈 ≈ 200Hz：协议栈的活干得快一点 */

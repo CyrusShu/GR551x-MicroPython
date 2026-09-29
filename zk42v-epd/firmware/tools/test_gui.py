@@ -82,12 +82,14 @@ def lunar_ink(rows, col, row, is_today=False):
 
 
 def today_cell(rows):
-    """今天那格（整块红底）在第几列第几行；找不到返回 None"""
+    """今天那格（日号外面套着红圆）在第几列第几行；找不到返回 None。
+
+    判据：日号那一小块里红像素特别多（红圆 ≈ 700 个），别的格子最多只有红色的数字笔画。"""
     for row in range(6):
         for col in range(7):
-            x0 = col * CAL_COL_W + 4
-            y0 = CAL_GRID_Y + row * CAL_ROW_H + 1
-            if at(rows, x0 + 2, y0 + 2) == RED:
+            x0 = col * CAL_COL_W
+            y0 = CAL_GRID_Y + row * CAL_ROW_H
+            if count(rows, RED, x0 + 6, y0 + 1, x0 + CAL_COL_W - 6, y0 + 22) > 300:
                 return (col, row)
     return None
 
@@ -124,13 +126,17 @@ def main():
         cal_rows, cal_buf = render(1, TS)
         check('1: 画完缓冲前后哨兵完好（没有越界写）', True)
 
-        # 2) 日历页版式
-        hdr_black = count(cal_rows, BLACK, 0, 0, G.W, CAL_HDR_H)
-        check('2: 顶部是黑条（黑 %d / %d 像素）'
-              % (hdr_black, G.W * CAL_HDR_H), hdr_black > G.W * CAL_HDR_H * 0.6)
+        # 2) 日历页版式（build 31 起照社区第 14 号那版：白底表头 + 黑星期条）
+        hdr_red = count(cal_rows, RED, 0, 0, G.W, CAL_HDR_H)
+        hdr_blk = count(cal_rows, BLACK, 0, 0, G.W, CAL_HDR_H)
+        check('2: 表头是白底 + 红色年月/生肖（红 %d，黑 %d）'
+              % (hdr_red, hdr_blk), hdr_red > 400 and hdr_blk < 3000)
 
+        wd_blk = count(cal_rows, BLACK, 0, CAL_WD_Y, G.W, CAL_WD_Y + CAL_WD_H)
         wd_red = count(cal_rows, RED, 5 * CAL_COL_W, CAL_WD_Y,
                        7 * CAL_COL_W, CAL_WD_Y + CAL_WD_H)
+        check('2: 星期条是黑底（黑 %d / %d）' % (wd_blk, G.W * CAL_WD_H),
+              wd_blk > G.W * CAL_WD_H * 0.5)
         check('2: 星期条上 六/日 那两列是红底（%d 个红像素）' % wd_red, wd_red > 800)
 
         want = month_cells(2026, 9)
@@ -147,18 +153,14 @@ def main():
         check('2: 30 天全都画在正确的格子里（空格 %s）' % empty, not empty)
         check('2: 没排到日子的格子是空的（多画的 %s）' % wrong, not wrong)
 
-        # 3) 今天那格
+        # 3) 今天那格：红圆 + 白字
         cell = today_cell(cal_rows)
-        check('3: 今天（27 号）那格是整块红底 —— 在第 %s 格'
-              % (cell,), cell == want[27])
-        # 红块里必须是白字（白 = 已经是"红底"了；纯红块说明日号没画上去）
-        x0 = 6 * CAL_COL_W
-        y0 = CAL_GRID_Y + 4 * CAL_ROW_H
-        check('3: 今天那格的红底里有白字（%d 个白像素）'
-              % count(cal_rows, WHITE, x0 + 8, y0 + 6, x0 + CAL_COL_W - 4,
-                      y0 + CAL_ROW_H - 4),
-              count(cal_rows, WHITE, x0 + 8, y0 + 6, x0 + CAL_COL_W - 4,
-                    y0 + CAL_ROW_H - 4) > 60)
+        check('3: 今天（27 号）那格套着红圆 —— 在第 %s 格' % (cell,), cell == want[27])
+        # 红圆里必须是白字：白像素太少说明日号没画上去（或被圆吃掉）
+        x0, y0 = 6 * CAL_COL_W, CAL_GRID_Y + 3 * CAL_ROW_H
+        check('3: 红圆里有白色日号（%d 个白像素）'
+              % count(cal_rows, WHITE, x0 + 6, y0 + 1, x0 + CAL_COL_W - 6, y0 + 22),
+              count(cal_rows, WHITE, x0 + 6, y0 + 1, x0 + CAL_COL_W - 6, y0 + 22) > 60)
         _, cal2 = render(1, TS + 5 * DAY)          # 挪 5 天 -> 1 号
         check('3: 今天那格会跟着日期换位置（10-02 那次在第 %s 格）'
               % (today_cell(G.to_rgb(cal2)),), today_cell(G.to_rgb(cal2)) != cell)
@@ -180,16 +182,32 @@ def main():
         check('4: 时钟页 60 个刻度表针都没画到表盘外（最差 %d 像素 @%s 分）'
               % worst, worst[0] == 0)
 
-        # 5) 农历开关：只影响每格那行小字
+        # 5) 农历开关：**只**影响每格那行小字（日号一点都不能动）
         rows_off, _ = render(1, TS, 0x04)
-        lun_on = sum(lunar_ink(cal_rows, c, r, d == 27) for d, (c, r) in want.items())
-        lun_off = sum(lunar_ink(rows_off, c, r, d == 27) for d, (c, r) in want.items())
-        check('5: 关掉农历后小字全没了（%d -> %d）' % (lun_on, lun_off),
-              lun_on > 1200 and lun_off == 0)
-        day_on = sum(1 for c, r in want.values() if cell_ink(cal_rows, c, r) > 40)
-        day_off = sum(1 for c, r in want.values() if cell_ink(rows_off, c, r) > 20)
-        check('5: 关农历不影响日号（%d/%d 格还有内容）' % (day_off, day_on),
-              day_off == day_on)
+        diff = 0
+        outside = []
+        for y in range(G.H):
+            for x in range(G.W):
+                if at(cal_rows, x, y) == at(rows_off, x, y):
+                    continue
+                diff += 1
+                # 允许两处：表头（"农历八月"那条也会跟着消失）
+                #           和每格那行小字（y0+20 往下）
+                if y < CAL_HDR_H:
+                    continue
+                if y < CAL_GRID_Y:
+                    outside.append((x, y))
+                    continue
+                row = (y - CAL_GRID_Y) // CAL_ROW_H
+                if not (CAL_GRID_Y + row * CAL_ROW_H + 20 <= y):
+                    outside.append((x, y))
+        check('5: 关农历只改了每格那行小字（改了 %d 个像素）' % diff, diff > 1200)
+        check('5: 改动没跑到日号/表头上去（越界 %d 个）' % len(outside),
+              not outside, str(outside[:4]))
+        # 表头里的红色部分（年月、生肖、电池）一个像素都不该动
+        check('5: 表头的红字（年月/生肖/电池）没受影响',
+              count(cal_rows, RED, 0, 0, G.W, CAL_HDR_H)
+              == count(rows_off, RED, 0, 0, G.W, CAL_HDR_H))
 
         # 6) 换一天，图不一样
         check('6: 换一天画出来的图不一样',

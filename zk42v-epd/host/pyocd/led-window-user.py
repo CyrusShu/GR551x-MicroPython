@@ -1331,8 +1331,9 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 21 加到 80 —— B2-A.2 的 GATT 服务与推图（收到的命令/图块/屏的状态）；
 # build 24 加到 84 —— 多一个「这轮刷新时屏到底忙了多久」（busy_polls 增量）；
 # build 28 加到 88 —— 多一组「画面选项」（反色 / 旋转 180° / 农历开关）；
-# build 30 加到 92 —— 多一组「日历/时钟为什么重画」（时基每 268 秒绕圈那个 bug）。
-ZK_DBG_WORDS = 92
+# build 30 加到 92 —— 多一组「日历/时钟为什么重画」（时基每 268 秒绕圈那个 bug）；
+# build 31 加到 96 —— 多一组「电池电压 / 电量 / 片内温度」。
+ZK_DBG_WORDS = 96
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4769,6 +4770,22 @@ def _zk_say_epd_service(words):
                 say("      ⚠ 这个秒数大得离谱 —— 时基很可能又绕了（build 29 那个 "
                     "268 秒锯齿的典型值是 4294917 秒 ≈ 49.7 天）")
         say("    zk_tick_ms() = %d（单调毫秒的低 32 位；它不该突然掉回 0）" % tickms)
+
+    # ---- build 31：电池 + 片内温度（表头右上角那两个数）----
+    if len(words) > 92:
+        mv, pct, tc10, berr = words[89], words[90], words[91], words[92]
+        if mv == 0xFFFFFFFF:
+            say("    电池：**还没读到**（ADC 失败 %d 次）" % berr)
+            if berr:
+                say("      → 一直在失败说明 VBAT 那个内部通道不对（把这段发我）")
+        else:
+            ttxt = '温度读不到'
+            if tc10 != 0xFFFFFFFF:
+                ttxt = '片内温度 %.1f℃' % (_zk_i8(tc10) / 10.0)
+            say("    电池：%d mV（约 %d%%）   %s   ADC 失败 %d 次"
+                % (mv, pct if pct != 0xFFFFFFFF else 0, ttxt, berr))
+            if mv < 3200:
+                say("      ⚠ 电压偏低（<3.2V）—— 该充电了")
 
     say("    通知：发出去 %d 条，最后一次返回 %d（0 = 成功）" % (noti_cnt, noti_err))
 

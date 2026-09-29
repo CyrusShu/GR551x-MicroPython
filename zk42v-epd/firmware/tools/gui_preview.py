@@ -45,9 +45,11 @@ def build(tmpdir):
     return exe
 
 
-def render(exe, mode, ts, opt=0):
-    """opt：选项位，跟固件 zk_opt.h 的 ZK_OPT_xxx 对齐（这里只用到 0x04 = 不画农历）"""
-    out = subprocess.run([exe, str(mode), str(ts), str(opt)], check=True,
+def render(exe, mode, ts, opt=0, bat_mv=0, temp_c10=0):
+    """opt：选项位，跟固件 zk_opt.h 的 ZK_OPT_xxx 对齐（这里只用到 0x04 = 不画农历）
+       bat_mv / temp_c10：电池毫伏、温度×10（0 = 按"没读到"画，右上角就不显示）"""
+    out = subprocess.run([exe, str(mode), str(ts), str(opt),
+                          str(bat_mv), str(temp_c10)], check=True,
                          stdout=subprocess.PIPE).stdout
     assert len(out) == BYTES + 2 * GUARD, len(out)
     head, body, tail = out[:GUARD], out[GUARD:GUARD + BYTES], out[GUARD + BYTES:]
@@ -94,11 +96,13 @@ def main(argv):
     # 可选第 4 个参数：时区小时数（默认 +8）。固件里是拿客户端发来的时间戳
     # 加上时区偏移再画，所以预览也这么干，看到的才是"本地时间"。
     tz = int(argv[4]) if len(argv) > 4 else 8
+    bat_mv   = int(argv[5]) if len(argv) > 5 else 3970    # 预览默认给个像样的电池
+    temp_c10 = int(argv[6]) if len(argv) > 6 else 264     # 26.4℃
     ts += tz * 3600
 
     with tempfile.TemporaryDirectory(prefix='zkgui-') as td:
         exe = build(td)
-        body = render(exe, mode, ts)
+        body = render(exe, mode, ts, 0, bat_mv, temp_c10)
     rows = to_rgb(body)
     write_png(out, rows)
 

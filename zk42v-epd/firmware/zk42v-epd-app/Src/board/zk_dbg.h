@@ -20,7 +20,7 @@
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
 /* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   30u
+#define ZK_BUILD_ID   31u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -97,7 +97,7 @@ typedef struct
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 
-#define ZK_DBG_WORDS 92
+#define ZK_DBG_WORDS 96
 
 typedef struct
 {
@@ -227,7 +227,16 @@ typedef struct
     uint32_t ble_gui_elapsed;     /* 87: 那次重画时"距同步时间过了几秒"。正常是几十~几万；
                                      要是看到几百万（≈49.7 天），就是时基又绕了 */
     uint32_t ble_tick_ms;         /* 88: 当前 zk_tick_ms()（低 32 位），看它有没有掉回 0 */
-    uint32_t rsv[ZK_DBG_WORDS - 89];
+
+    /* ---- build 31：电池 + 片内温度（表头右上角那两个数）---------------------
+       GR5513 的 ADC 内部就有 VBAT / TMP 两个通道，SDK 库里也带了现成接口
+       （hal_adc_vbat_read / hal_adc_temp_read），所以这两个数是**真读出来的**。
+       读失败时 mv = 0xFFFFFFFF（页面上就不画电池，宁可不画也不画假的）。 */
+    uint32_t bat_mv;              /* 89: 电池毫伏（ZK_NONE_U32 = 还没有效读数） */
+    uint32_t bat_pct;             /* 90: 电量百分比 0..100（算不出来时 ZK_NONE_U32） */
+    uint32_t bat_temp_c10;        /* 91: 片内温度 ×10（26.4℃ -> 264；无效 = ZK_NONE_U32） */
+    uint32_t bat_errs;            /* 92: ADC 读失败/超范围了几次（一直在涨 = 通道不对） */
+    uint32_t rsv[ZK_DBG_WORDS - 93];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

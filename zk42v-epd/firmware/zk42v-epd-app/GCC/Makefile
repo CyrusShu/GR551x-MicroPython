@@ -25,6 +25,7 @@ $(SDK_ROOT)/platform/soc/common/gr_system.c \
 $(SDK_ROOT)/platform/soc/common/gr_platform.c \
 $(SDK_ROOT)/platform/soc/src/gr_soc.c \
 $(SDK_ROOT)/platform/boards/board_SK.c \
+../Src/board/zk_bat.c \
 $(SDK_ROOT)/components/libraries/app_key/app_key_core.c \
 $(SDK_ROOT)/components/libraries/app_key/app_key.c \
 $(SDK_ROOT)/components/libraries/app_timer/app_timer.c \
@@ -130,6 +131,11 @@ PATCH_FILE  = $(SDK_ROOT)/platform/soc/linker/gcc/rom_symbol_gcc.txt
 GCC_STARTUP_ASM_FILE = $(SDK_ROOT)/platform/arch/arm/cortex-m/gcc/startup_gr55xx.s
 
 LDFLAGS += -Wl,--gc-sections
+# newlib-nano：默认那份 libc 的 printf/snprintf 机制（dtoa/mprec/svfprintf…）
+# 会白白吃掉 8KB 左右 —— 我们自己一个字节都不打印，但 SDK 的 gr_interrupt.c
+# （fault 时 printf）和 app_log.c（用 snprintf）把它们拖了进来。
+# 换 nano 之后同一份代码少 6KB 多，镜像体积从"顶到 bootloader 上限"变成有余量。
+LDFLAGS += -specs=nano.specs
 LDFLAGS += -L$(SDK_ROOT)/components/libraries/app_crypto/gcc/ -lapp_crypto
 LDFLAGS += -L$(SDK_ROOT)/platform/soc/linker/gcc/ -lble_sdk
 

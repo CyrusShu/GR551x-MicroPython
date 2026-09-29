@@ -271,6 +271,18 @@ static int f5_idx(char c)
     {
         return ZK_F5_COLON;
     }
+    if ('.' == c)
+    {
+        return ZK_F5_DOT;
+    }
+    if ('V' == c)
+    {
+        return ZK_F5_V;
+    }
+    if ('C' == c)
+    {
+        return ZK_F5_C;
+    }
     return ZK_F5_SPACE;
 }
 
@@ -455,20 +467,21 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
 
 /* ---------------------------------------------------------------- 两个页面 */
 
-/* ---- 日历页：整页「农历月历」（build 29 换的版式）-------------------------
+/* ---- 日历页：整页「农历月历」（build 29 起，build 31 换成社区第 14 号那版的样子）
  *
- * 版式照着社区那几版固件的**实屏截图**做的：qbsg.top 的固件目录里每个固件都带
- * 一张实拍图（2026-09-28 挑 4.2 寸那几版看过，出处见
- * outputs/analysis/qbsg-生态调研.md；**图没进库** —— 那是第三方资料）：
+ * 版式照着社区那几版固件的**实屏截图**做的（qbsg.top 的固件目录里每个固件都带
+ * 一张实拍图；2026-09-28 挑出 4.2 寸那几版，出处见 outputs/analysis/qbsg-生态调研.md；
+ * **图没进库** —— 那是第三方资料）：
  *
  *   ┌───────────────────────────────────────────────┐
- *   │ 黑条   2026年09月      农历八月        星期一  │   白字
+ *   │ 2026年09月  农历八月  马年       [电池] 3.97V │  白底：年月红、农历黑、生肖红
+ *   │                                        26.4C  │  电池/温度是芯片内部通道真读出来的
  *   ├───────────────────────────────────────────────┤
- *   │  一   二   三   四   五  [六]  [日]           │   六/日 红底白字
+ *   │  一   二   三   四   五  [六]  [日]           │  黑底白字，六/日 红底白字
  *   ├───────────────────────────────────────────────┤
- *   │    1     2     3     4     5     6     7      │   大号日号（周末红）
- *   │   初八  初九  初十  十一  十二  十三  十四     │   小号农历（16x16 原大）
- *   │  …（一共 6 行，今天那格整块红底白字）…         │
+ *   │    1     2     3     4     5     6     7      │  大号日号（周末红）
+ *   │   初八  初九  初十  十一  十二  十三  十四     │  小号农历（16x16 原大）
+ *   │  …（一共 6 行；今天那格是红圆白字 + 红农历）…  │
  *   └───────────────────────────────────────────────┘
  *
  * 为什么换掉原来那版：老版左边一个红面板（表盘 + 大数字 + 大日期）、右边硬塞
@@ -525,53 +538,133 @@ static void cal_lunar_month(int year, int mon, int day, char *out, int cap)
     }
 }
 
-/* 顶部黑条：左边 2026年09月，中间 农历八月，右边 星期一（两页共用） */
-static void draw_header_bar(uint8_t *buf, int year, int mon, int day, int wday,
-                            int with_lunar)
+/* 电池图标：外框 + 正极凸点 + 里面按电量填格。
+   pct < 0（还没读到）就只画个空框 —— 宁可不画，也不画假电量。 */
+static void draw_battery(uint8_t *buf, int x, int y, int pct)
+{
+    const int w = 26, h = 13;
+    int       bars = 0, i;
+
+    fill_rect(buf, x, y, w - 2, h, C_BLACK);                  /* 外框 */
+    fill_rect(buf, x + 1, y + 1, w - 4, h - 2, C_WHITE);      /* 掏空 */
+    fill_rect(buf, x + w - 2, y + h / 3, 2, h / 3, C_BLACK);  /* 正极凸点 */
+
+    if (pct >= 0)
+    {
+        bars = (pct + 24) / 25;                               /* 0..4 格 */
+        for (i = 0; i < bars; i++)
+        {
+            fill_rect(buf, x + 3 + i * 5, y + 3, 4, h - 6, C_BLACK);
+        }
+    }
+}
+
+/*
+ * 表头（两页共用）—— 版式照社区第 14 号那版（三色纯日历）：
+ *
+ *   红 2026年09月     黑 农历八月     红 马年        [电池] 3.90V
+ *                                                           26C
+ *   ─────────────────────────────────────────────────────────────
+ *
+ * 跟 build 29 那版的区别：**不再是黑条白字**，改成白底 —— 年月用红色、农历黑色、
+ * 生肖年红色；右上角放电池图标 + 电压 + 温度（社区那版最显眼的特征）。
+ * 星期几交给下面的星期条表达（一~日 那一行），表头这里不重复。
+ */
+static void draw_header(uint8_t *buf, int year, int mon, int day,
+                        const zkgui_info_t *info, int with_lunar)
 {
     char  s[12];
     char  mbuf[16];
-    int   x, n;
+    int   x, n, zi;
 
-    fill_rect(buf, 0, 0, ZKGUI_W, CAL_HDR_H, C_BLACK);
+    fill_rect(buf, 0, 0, ZKGUI_W, CAL_HDR_H - 1, C_WHITE);
 
-    /* 左：2026年09月 —— 数字用 5x7 放大 2 倍（14px 高），年月用 16x16 汉字 */
+    /* 左：2026年09月（红）—— 数字 5x7 放大 2 倍，年月用 16x16 汉字 */
     s[0] = (char)('0' + (year / 1000) % 10);
     s[1] = (char)('0' + (year / 100) % 10);
     s[2] = (char)('0' + (year / 10) % 10);
     s[3] = (char)('0' + year % 10);
     s[4] = 0;
-    x = 8;
-    draw_text5(buf, x, 13, s, 2, C_WHITE);
-    x += text5_width(s, 2) + 3;
-    draw_cjk(buf, x, 12, CJK_YEAR, 1, C_WHITE);
-    x += 17 + 3;
+    x = 6;
+    draw_text5(buf, x, 13, s, 2, C_RED);
+    x += text5_width(s, 2) + 2;
+    draw_cjk(buf, x, 12, CJK_YEAR, 1, C_RED);
+    x += 17 + 2;
     s[0] = (char)('0' + (mon / 10) % 10);
     s[1] = (char)('0' + mon % 10);
     s[2] = 0;
-    draw_text5(buf, x, 13, s, 2, C_WHITE);
-    x += text5_width(s, 2) + 3;
-    draw_cjk(buf, x, 12, CJK_YUE, 1, C_WHITE);
+    draw_text5(buf, x, 13, s, 2, C_RED);
+    x += text5_width(s, 2) + 2;
+    draw_cjk(buf, x, 12, CJK_YUE, 1, C_RED);
+    x += 17 + 6;
 
-    /* 中：农历八月（关掉农历时这条也不画，免得跟别处对不上） */
+    /* 中：农历八月（黑）。关掉农历时这一条也不画。 */
     if (with_lunar && s_lunar_on)
     {
         cal_lunar_month(year, mon, day, mbuf, (int)sizeof(mbuf));
         if (mbuf[0])
         {
-            n  = text_cjk_width("农历", 1) + 1 + text_cjk_width(mbuf, 1);
-            x  = (ZKGUI_W - n) / 2;
-            x  = draw_text_cjk(buf, x, 12, "农历", 1, C_WHITE);
-            (void)draw_text_cjk(buf, x + 1, 12, mbuf, 1, C_WHITE);
+            x = draw_text_cjk(buf, x, 12, "农历", 1, C_BLACK);
+            x = draw_text_cjk(buf, x + 1, 12, mbuf, 1, C_BLACK);
+            x += 6;
         }
     }
 
-    /* 右：星期一 */
-    n = 3 * 17 - 1;
-    x = ZKGUI_W - 8 - n;
-    draw_cjk(buf, x, 12, CJK_XING, 1, C_WHITE);
-    draw_cjk(buf, x + 17, 12, CJK_QI2, 1, C_WHITE);   /* 期（不是 CJK_QI=七！） */
-    draw_cjk(buf, x + 34, 12, s_wday_cjk[wday], 1, C_WHITE);
+    /* 中右：生肖年（红）。甲子纪年：鼠=0 … 马=6 …，就是 (年-4) mod 12 */
+    zi = (int)(((year - 4) % 12 + 12) % 12);
+    draw_cjk(buf, x, 12, 23 + zi, 1, C_RED);
+    draw_cjk(buf, x + 17, 12, CJK_YEAR, 1, C_RED);
+
+    /* 右上：电池 + 电压 / 温度（照社区那版的两行小字） */
+    n = ZKGUI_W - 6;                       /* 右边界 */
+    if (info->bat_mv >= 0)
+    {
+        int mv = info->bat_mv;
+
+        s[0] = (char)('0' + (mv / 1000) % 10);
+        s[1] = '.';
+        s[2] = (char)('0' + (mv / 100) % 10);
+        s[3] = (char)('0' + (mv / 10) % 10);
+        s[4] = 'V';
+        s[5] = 0;
+        x = n - text5_width(s, 1);
+        draw_battery(buf, x - 30, 4, info->bat_pct);
+        draw_text5(buf, x, 7, s, 1, C_BLACK);
+    }
+    if (info->temp_c10 != ZK_TEMP_NONE)
+    {
+        int t  = info->temp_c10;
+        int av = (t < 0) ? -t : t;
+        int nch = 0;
+
+        /* "26.4C"：整数部分 + 小数点 + 一位小数 + C */
+        s[0] = (char)('0' + (av / 100) % 10);
+        s[1] = (char)('0' + (av / 10) % 10);
+        s[2] = '.';
+        s[3] = (char)('0' + av % 10);
+        s[4] = 'C';
+        s[5] = 0;
+        nch = 5;
+        if (av < 100)                      /* 不到 10 度：掐掉前导零 */
+        {
+            s[0] = s[1];
+            s[1] = s[2];
+            s[2] = s[3];
+            s[3] = 'C';
+            s[4] = 0;
+            nch = 4;
+        }
+        (void)nch;
+        x = n - text5_width(s, 1);
+        if (t < 0)
+        {
+            draw_text5(buf, x - 7, 21, "-", 1, C_BLACK);
+        }
+        draw_text5(buf, x, 21, s, 1, C_BLACK);
+    }
+
+    /* 表头下面一条黑线 == 星期条的上边框 */
+    fill_rect(buf, 0, CAL_HDR_H - 1, ZKGUI_W, 1, C_BLACK);
 }
 
 /* 一个格子：日号（5x7 放大 3 倍）+ 下面一行农历（16x16 原大）。
@@ -607,14 +700,25 @@ static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
 
     if (is_today)
     {
-        fill_rect(buf, x0 + 4, y0 + 1, CAL_COL_W - 8, CAL_ROW_H - 2, C_RED);
-        color = C_WHITE;
-    }
-    else
-    {
-        color = weekend ? C_RED : C_BLACK;
+        /* 今天：一个**红实心圆**套住日号（白字），农历那行写在圆外面、用红色。
+         *
+         * 为什么不用"圆里同时放日号和农历"（社区那版就是那样）：我们的农历字是
+         * 16x16 点阵、两个字 33px 宽，而行高只有 39px —— 圆在底部那一段的弦长
+         * 根本容不下 33px，字会戳出圆外面。所以圆只套日号（半径 13，正好包住
+         * 放 3 倍的 15x21），农历放圆下方，红字白底，一眼还是"今天"。 */
+        /* 半径 15：要能装下放大 3 倍的日号（15x21）。半径再小的话，
+           数字的白笔画会被圆吃掉，远看就是一团红（试过 r=13，真的糊）。 */
+        fill_circle(buf, cx, y0 + 11, 15, C_RED);
+        draw_text5(buf, cx - tw / 2, y0 + 1, s, 3, C_WHITE);
+        if (lun)
+        {
+            lw = text_cjk_width(lun, 1);
+            draw_text_cjk(buf, cx - lw / 2, y0 + 22, lun, 1, C_RED);
+        }
+        return;
     }
 
+    color = weekend ? C_RED : C_BLACK;
     draw_text5(buf, cx - tw / 2, y0 + 1, s, 3, color);
     if (lun)
     {
@@ -624,7 +728,7 @@ static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
 }
 
 static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
-                          int hour, int min)
+                          int hour, int min, const zkgui_info_t *info)
 {
     int32_t days0;
     int     wday_sun, first_col, dim, d, col, row, i;
@@ -632,18 +736,20 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
     (void)hour;
     (void)min;
 
-    draw_header_bar(buf, year, mon, day, wday, 1);
+    draw_header(buf, year, mon, day, info, 1);
 
-    /* 星期条：一~日，六和日那两列整块红底白字（照社区版的配色） */
+    /* 星期条（照社区第 14 号那版）：整条**黑底白字**，六/日那两列是**红底白字** */
+    fill_rect(buf, 0, CAL_WD_Y, ZKGUI_W, CAL_WD_H, C_BLACK);
     for (i = 0; i < 7; i++)
     {
         const int x0 = i * CAL_COL_W;
-        int       color = C_BLACK;
+        int       color = C_WHITE;
 
         if (i >= 5)
         {
-            fill_rect(buf, x0, CAL_WD_Y, CAL_COL_W, CAL_WD_H, C_RED);
-            color = C_WHITE;
+            /* 红块比黑条略窄一点，右边那两列之间留 2px 黑缝（社区版就这样） */
+            fill_rect(buf, x0 + (i == 5 ? 2 : 0), CAL_WD_Y, CAL_COL_W - 2,
+                      CAL_WD_H, C_RED);
         }
         draw_cjk(buf, x0 + (CAL_COL_W - 16) / 2, CAL_WD_Y + 2,
                  s_head_cjk[i], 1, color);
@@ -672,13 +778,13 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
 /* 时钟模式：整屏一个大表盘 + 数字时间（原厂说这模式是"每分钟全刷"，
    页面上也提醒了，主要用于除残影） */
 static void draw_clock(uint8_t *buf, int year, int mon, int day, int wday,
-                       int hour, int min)
+                       int hour, int min, const zkgui_info_t *info)
 {
     char s[8];
     int  tw;
 
-    /* 跟日历页用同一个表头（2026年09月 / 农历八月 / 星期一），看着是一套东西 */
-    draw_header_bar(buf, year, mon, day, wday, 1);
+    /* 跟日历页用同一个表头（2026年09月 / 农历八月 / 生肖 / 电池），一套东西 */
+    draw_header(buf, year, mon, day, info, 1);
 
     draw_dial(buf, ZKGUI_W / 2, 148, 76, hour, min);
 
@@ -706,11 +812,11 @@ void zkgui_draw(uint8_t *buf, const zkgui_info_t *info)
     switch (info->mode)
     {
         case ZKGUI_MODE_CALENDAR:
-            draw_calendar(buf, year, mon, day, wday, hour, min);
+            draw_calendar(buf, year, mon, day, wday, hour, min, info);
             break;
 
         case ZKGUI_MODE_CLOCK:
-            draw_clock(buf, year, mon, day, wday, hour, min);
+            draw_clock(buf, year, mon, day, wday, hour, min, info);
             break;
 
         default:

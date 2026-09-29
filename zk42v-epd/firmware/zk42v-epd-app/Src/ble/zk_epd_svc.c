@@ -29,6 +29,7 @@
 #include "epd_zk42v.h"
 #include "zkgui.h"           /* 日历 / 时钟页面的绘制 */
 #include "zk_opt.h"          /* 画面选项：反色 / 旋转 180°（写屏前对整帧做变换） */
+#include "zk_bat.h"          /* 电池/温度：表头右上角要画 */
 
 #include "gr_includes.h"
 #include "ble.h"
@@ -853,6 +854,9 @@ void zk_epd_svc_poll(uint32_t now_ms)
             s_drawn_min  = cur / 60u;
             info.ts      = cur;
             info.mode    = s_mode;
+            info.bat_mv  = (int16_t)zk_bat_mv();
+            info.bat_pct = (int8_t)zk_bat_pct();
+            info.temp_c10 = (int16_t)zk_bat_temp_c10();
             zkgui_draw((uint8_t *)ZK_IMG_BUF, &info);
 
             s_need_refresh = 1;                /* 交给下面的刷新分支去写屏 */
