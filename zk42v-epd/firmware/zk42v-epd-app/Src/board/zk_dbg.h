@@ -23,7 +23,7 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   44u
+#define ZK_BUILD_ID   45u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -262,7 +262,9 @@ typedef struct
     uint32_t adc_trim12;          /* 100: 出厂校准 1.28V 档：slope<<16 | offset */
     uint32_t adc_cfg;             /* 101: 读完之后的 AON->SNSADC_CFG（通道/参考） */
     uint32_t adc_trim_rc;         /* 102: sys_adc_trim_get() 的返回值（0 = 读到校准了） */
-    uint32_t rsv[ZK_DBG_WORDS - 103];
+    uint32_t tz_h;                /* 103: 网页给的时区（有符号小时数，例 8 = 北京；0xFFFFFFFF = 还没同步过）
+                                      —— 屏上时间/日期不对时先看这个：浏览器报错时区就会这样 */
+    uint32_t rsv[ZK_DBG_WORDS - 104];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

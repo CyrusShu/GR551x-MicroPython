@@ -136,6 +136,7 @@ static uint8_t  s_opt;               /* 画面选项位 ZK_OPT_xxx（命令 0x70
 static uint8_t  s_wx_code;           /* 0 = 不显示 */
 static int8_t   s_env_temp_c = (int8_t)(-128);   /* -128 = 还没收到过 */
 static uint8_t  s_bat_notify;        /* 0x72 之后：下一次 poll 把刚读到的电池值回报给网页 */
+static int8_t   s_tz_h;              /* 网页给的时区（小时）；只用来回报/记账，见 SET_TIME */
 
 /* 版本号的“值”放在用户空间（VAL_LOC_USER），读请求我们自己回 */
 static uint8_t  s_version = ZK_APP_VERSION;
@@ -604,7 +605,17 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                        ((uint32_t)d[3] << 8) | (uint32_t)d[4];
                 if (len > 5u)
                 {
-                    s_ts += (uint32_t)((int8_t)d[5]) * 3600u;   /* 时区 */
+                    /* 时区（有符号小时数）。⚠ 网页那边报错时区的话，屏上的时间/日期就跟着错：
+                       build 45 起把它记进状态块（tz_h），status.sh 会印出来 —— 之前遇到过
+                       浏览器报 +9，结果 23:05 就跳到第二天。 */
+                    s_tz_h = (int8_t)d[5];
+                    s_ts += (uint32_t)s_tz_h * 3600u;
+                    g_dbg.tz_h = (uint32_t)(int32_t)s_tz_h;
+                }
+                else
+                {
+                    s_tz_h = 0;
+                    g_dbg.tz_h = 0xFFFFFFFFu;
                 }
 
                 /* 模式字节（1=日历 2=时钟，见他网页 syncTime(1)/syncTime(2)）。

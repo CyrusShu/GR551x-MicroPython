@@ -4739,6 +4739,18 @@ def _zk_say_epd_service(words):
                     % time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(gui_ts)))
         say("    日历/时钟：模式 = %s   网页给的时间 = %s   画过 %d 次"
             % (mtxt, ttxt, gui_draws))
+        # build 45：网页给的时区（有符号小时）。屏上时间/日期不对，第一件事就是看它 ——
+        # 实机遇到过一次浏览器报 +9 的：屏上比北京时间快 1 小时，23:05 就跳到了第二天。
+        if len(words) > 103:
+            tzh = words[103]
+            if tzh == 0xFFFFFFFF:
+                say("      网页给的时区：还没同步过")
+            else:
+                v = _zk_i8(tzh)
+                say("      网页给的时区：UTC%+d（价签显示的是 UTC %+d 的墙钟）" % (v, v))
+                if v != 8:
+                    say("      ⚠ 不是 +8 —— 网页那边报错时区的话，屏上的时间/日期就跟着错。"
+                        "在网页「时区」框里填 8 再点一次「日历模式」。")
         if gui_mode in (1, 2) and gui_draws == 0:
             say("      → 网页点了「日历/时钟模式」但我们还没画出来（看下一行的屏状态）")
 
