@@ -653,7 +653,11 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
    我们按 6 行排：表头 26 + 黑条 22 + 格子 252 → 行距 42。 */
 #define CAL_HDR_H    26                            /* 表头（白底） */
 #define CAL_HDR_ICON_Y 3                           /* 表头里天气图标的上边距（20px 图标 -> 3..22） */
-#define CAL_HDR_TEMP_Y 10                          /* 表头里温度那串小字的上边距（5x7 字，跟 16px 的天气文字对齐居中） */
+/* 表头里那串温度（"26C"）用 5x7 点阵放大 2 倍 = 10x14，
+   上边距取 6 —— 跟旁边 16px 的天气文字（y 5..20）竖直居中对齐。
+   1 倍太小了（挨着 16px 的"多云"像脚注），2 倍正好跟汉字齐平。 */
+#define CAL_HDR_TEMP_SCALE 2
+#define CAL_HDR_TEMP_Y 6
 #define CAL_WD_Y     26                            /* 黑星期条 */
 #define CAL_WD_H     22
 #define CAL_GRID_Y   48                            /* 格子区从黑条下沿开始 */
@@ -822,11 +826,11 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
     x += 3;                                  /* 跟天气文字拉开 3px */
     if (neg)
     {
-        draw_text5(buf, x, CAL_HDR_TEMP_Y, "-", 1, C_BLACK);
-        x += 7;
+        draw_text5(buf, x, CAL_HDR_TEMP_Y, "-", CAL_HDR_TEMP_SCALE, C_BLACK);
+        x += 12;                             /* 5x7 放大 2 倍：10 宽 + 2 间隔 */
     }
-    draw_text5(buf, x, CAL_HDR_TEMP_Y, s, 1, C_BLACK);
-    return x + text5_width(s, 1);
+    draw_text5(buf, x, CAL_HDR_TEMP_Y, s, CAL_HDR_TEMP_SCALE, C_BLACK);
+    return x + text5_width(s, CAL_HDR_TEMP_SCALE);
 }
 
 static void draw_header(uint8_t *buf, int year, int mon, int day,
