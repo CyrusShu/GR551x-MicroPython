@@ -1334,7 +1334,8 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 30 加到 92 —— 多一组「日历/时钟为什么重画」（时基每 268 秒绕圈那个 bug）；
 # build 31 加到 96 —— 多一组「电池电压 / 电量 / 片内温度」；
 # build 41 加到 100 —— 多一组「天气」（手机经 0x71 下发：天气码 + 天气温度）。
-ZK_DBG_WORDS = 100
+# build 42 加到 104 —— 多一组「ADC 诊断」（原始码值 / 两条路的电压 / 通道寄存器 / 出厂校准）。
+ZK_DBG_WORDS = 104
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4184,6 +4185,9 @@ ZK_BFAR_ADDR  = 0xE000ED38
 ZK_AON_BASE   = 0xA000C500
 ZK_AON_SW0    = ZK_AON_BASE + 0x00
 ZK_AON_PWRR01 = ZK_AON_BASE + 0x04   # PWR_RET01：BLE comm core 的上电/复位状态
+ZK_AON_SNSADC = ZK_AON_BASE + 0x08   # SNSADC_CFG：ADC 的**唯一**配置寄存器
+                                     #（通道 CHN_P/CHN_N + 参考 REF_VALUE + VBAT_EN 全在里面，
+                                     #  谁最后调 hal_adc_init() 就听谁的 —— 见 build 42 那段）
 ZK_AON_PADCTL0= ZK_AON_BASE + 0x50
 ZK_AON_SW1    = ZK_AON_BASE + 0x60
 ZK_AON_SW2    = ZK_AON_BASE + 0x78
@@ -4788,6 +4792,51 @@ def _zk_say_epd_service(words):
             if mv < 3200:
                 say("      ⚠ 电压偏低（<3.2V）—— 该充电了")
 
+    # ---- build 42：ADC 诊断（"喂 3.3V 却显示 2.59V" 那件事）----
+    #
+    #  根因：ADC 只有**一个**配置寄存器 AON->SNSADC_CFG，通道（CHN_P/CHN_N）、
+    #  参考（REF_VALUE）、单端/使能全在里面 —— 谁最后调 hal_adc_init() 就听谁的。
+    #  而 SDK 的 hal_adc_vbat_read() 只翻一下 VBAT_EN，**不重选通道**；
+    #  我们开机时是 vbat_init() 然后 temp_init()，于是之后每次"读电池"
+    #  其实都在读温度二极管（≈0.67V 套上电池公式 ≈ 2.6V，看着还挺像）。
+    #  修法（build 42 已改）：每次读之前重新 init 自己要用的那个通道。
+    #  这一段把这些内部量都译出来，好核对：
+    if len(words) > 102:
+        braw, bms, bmo = words[96], words[97], words[98]
+        tr08, tr12, acfg, trc = words[99], words[100], words[101], words[102]
+        chn = {1: 'MSIO1', 2: 'MSIO2', 3: 'MSIO3', 4: 'MSIO4',
+               5: 'TMP(温度)', 6: 'BAT(电池)', 7: 'REF(参考)'}
+        refv = {3: '0.85V', 7: '1.28V', 10: '1.60V'}
+        cp = (acfg >> 19) & 0x7
+        cn = (acfg >> 16) & 0x7
+        rv = (acfg >> 24) & 0x7
+        say("    ---- ADC 诊断（build 42 加）----")
+        say("    AON SNSADC_CFG = 0x%08X" % acfg)
+        say("      EN=%d  通道 P=%d(%s) N=%d(%s)  参考=%s  单端=%d  VBAT_EN=%d  TEMP_EN=%d"
+            % ((acfg >> 30) & 1, cp, chn.get(cp, '?'), cn, chn.get(cn, '?'),
+               refv.get(rv, str(rv)), (acfg >> 13) & 1, (acfg >> 14) & 1, (acfg >> 15) & 1))
+        say("    读一次的量：原始码值 %s   1.28V 参考那条路 %s mV   0.85V 参考(SDK) %s mV"
+            % ('-' if braw == 0xFFFFFFFF else braw,
+               '-' if bmo == 0xFFFFFFFF else bmo,
+               '-' if bms == 0xFFFFFFFF else bms))
+        if trc == 0:
+            say("    出厂校准（sys_adc_trim_get 返回 0，读到了）："
+                " 0.85V 档 slope=%d offset=%d · 1.28V 档 slope=%d offset=%d"
+                % ((tr08 >> 16) & 0xFFFF, tr08 & 0xFFFF,
+                   (tr12 >> 16) & 0xFFFF, tr12 & 0xFFFF))
+        else:
+            say("    ⚠ 出厂校准没读到（sys_adc_trim_get 返回 %d）—— "
+                "换算只能用兜底常数，读数不可信" % (trc if trc != 0xFFFFFFFF else -1))
+        if braw != 0xFFFFFFFF and 0 < braw < 4095:
+            say("      码值在 1..4094 之间 = 没削顶，换算能信")
+        elif braw == 4095:
+            say("      码值 = 4095（削顶了）：参考档太小、或者电池电压超过满量程")
+        if cp == 5:
+            say("      ⚠ 寄存器里现在是**温度**通道 —— 说明读到的是温度二极管，"
+                "不是电池（build 42 之前的固件就是这样）")
+        elif cp == 6:
+            say("      ✅ 寄存器里是**电池**通道（build 42 每次读之前重新 init 过）")
+
     # ---- build 41：天气（手机经 BLE 0x71 下发）----
     if len(words) > 95:
         wx, envt, wxn = words[93], words[94], words[95]
@@ -4946,6 +4995,7 @@ def zkstatus():
         s['sw1'] = rd(ZK_AON_SW1)
         s['sw2'] = rd(ZK_AON_SW2)
         s['padctl0'] = rd(ZK_AON_PADCTL0)
+        s['snsadc'] = rd(ZK_AON_SNSADC)
         s['psc'] = rd(ZK_AON_PSC_CMD)
         s['psc_opc'] = rd(ZK_AON_PSC_OPC)
         s['mcurel'] = rd(ZK_AON_MCUREL)
@@ -5079,6 +5129,25 @@ def zkstatus():
         say("      → 里面没有 0x%04X 这个标志，平台那条「超深睡唤醒就复位整个系统」"
             "的路径**不成立**。" % ZK_UDS_MAGIC)
     say("    SOFTWARE_2 = 0x%08X" % (last['sw2'] if last['sw2'] is not None else 0))
+    # ADC 的通道/参考就在这一个寄存器里 —— "电压显示 2.59V"那件事的第一现场
+    sn = last.get('snsadc')
+    if sn is not None:
+        _chn = {1: 'MSIO1', 2: 'MSIO2', 3: 'MSIO3', 4: 'MSIO4',
+                5: 'TMP(温度)', 6: 'BAT(电池)', 7: 'REF(参考)'}
+        _rfv = {3: '0.85V', 7: '1.28V', 10: '1.60V'}
+        _cp, _cn = (sn >> 19) & 7, (sn >> 16) & 7
+        say("    SNSADC_CFG = 0x%08X   （ADC 唯一的配置寄存器）" % sn)
+        say("      通道 P=%d(%s)  N=%d(%s)   参考=%s   VBAT_EN=%d  TEMP_EN=%d"
+            % (_cp, _chn.get(_cp, '?'), _cn, _chn.get(_cn, '?'),
+               _rfv.get((sn >> 24) & 7, str((sn >> 24) & 7)),
+               (sn >> 14) & 1, (sn >> 15) & 1))
+        if _cp == 5:
+            say("      ⚠ 现在选的是**温度**通道。SDK 的 hal_adc_vbat_read() 只翻 VBAT_EN、"
+                "不重选通道，")
+            say("        所以「读电池」其实读的是温度二极管 —— 这就是 2.59V 的来历"
+                "（build 42 已改成每次读之前重新 init 通道）。")
+        elif _cp == 6:
+            say("      ✅ 现在选的是**电池**通道（build 42 起每次读之前重新 init）。")
     say("    WDT LOAD/VALUE/CTRL/RIS = %s"
         % ' '.join(('0x%08X' % v) if v is not None else 'n/a' for v in last['wdt']))
 

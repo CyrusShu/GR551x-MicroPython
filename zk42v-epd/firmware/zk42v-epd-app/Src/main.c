@@ -326,6 +326,14 @@ int main(void)
     g_dbg.wx_code = 0;
     g_dbg.env_temp_c = (uint32_t)(int32_t)(-128);
     g_dbg.wx_cmds = 0;
+    /* build 42：ADC 通道/参考/校准（查"电压显示 2.59V"用的） */
+    g_dbg.bat_raw = ZK_NONE_U32;
+    g_dbg.bat_mv_sdk = ZK_NONE_U32;
+    g_dbg.bat_mv_own = ZK_NONE_U32;
+    g_dbg.adc_trim08 = 0;
+    g_dbg.adc_trim12 = 0;
+    g_dbg.adc_cfg = 0;
+    g_dbg.adc_trim_rc = ZK_NONE_U32;
     {
         volatile uint32_t *st = &g_dbg.ble_adv_st0;
         uint32_t           i;
@@ -423,6 +431,14 @@ int main(void)
         g_dbg.bat_temp_c10 = (zk_bat_temp_c10() == (int)(-32768))
                              ? ZK_NONE_U32 : (uint32_t)(int32_t)zk_bat_temp_c10();
         g_dbg.bat_errs    = zk_bat_errs();
+        /* build 42：ADC 诊断——原始码值、两条路的读数、通道/参考寄存器、出厂校准 */
+        g_dbg.bat_raw     = (zk_bat_raw() < 0) ? ZK_NONE_U32 : (uint32_t)zk_bat_raw();
+        g_dbg.bat_mv_sdk  = (zk_bat_mv_sdk() < 0) ? ZK_NONE_U32 : (uint32_t)zk_bat_mv_sdk();
+        g_dbg.bat_mv_own  = (zk_bat_mv_own() < 0) ? ZK_NONE_U32 : (uint32_t)zk_bat_mv_own();
+        g_dbg.adc_cfg     = zk_bat_cfg();
+        g_dbg.adc_trim08  = zk_bat_trim08();
+        g_dbg.adc_trim12  = zk_bat_trim12();
+        g_dbg.adc_trim_rc = zk_bat_trim_rc();
 
         zk_mailbox_poll();      /* B2-B：有新图就刷 */
         epd_delay_ms(5);        /* 5ms 一圈 ≈ 200Hz：协议栈的活干得快一点 */

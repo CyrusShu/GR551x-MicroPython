@@ -97,7 +97,7 @@ typedef struct
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 
-#define ZK_DBG_WORDS 100
+#define ZK_DBG_WORDS 104
 
 typedef struct
 {
@@ -244,7 +244,22 @@ typedef struct
     uint32_t wx_code;             /* 93: 天气码（0 不显示 / 1 晴 / 2 多云 … / 9 风） */
     uint32_t env_temp_c;          /* 94: 手机给的天气温度（有符号 ℃；0xFFFFFF80 = 没收到过） */
     uint32_t wx_cmds;             /* 95: 收到过几次 0x71 SET_WEATHER */
-    uint32_t rsv[ZK_DBG_WORDS - 96];
+
+    /* ---- build 42：电压为什么显示 2.59V（ADC 通道/参考/校准，全在这里）----------
+       起因：喂 3.3V，表头却写 2.59V。查下来是 ADC 只有一个配置寄存器
+       （AON->SNSADC_CFG：通道 + 参考 + 使能都在这一个寄存器里），而 SDK 的
+       hal_adc_vbat_read() 只翻 VBAT_EN、**不重选通道** —— 我们开机时先
+       vbat_init 再 temp_init，于是"读电池"其实一直在读温度二极管。
+       修法：每次读之前重新 init 自己要用的通道（Src/board/zk_bat.c）。
+       下面这几个数是给 status.sh 对账用的：原始码值 + 两条路的读数 + 出厂校准。 */
+    uint32_t bat_raw;             /* 96: 原始 ADC 平均值 0..4095（没套公式的码值） */
+    uint32_t bat_mv_sdk;          /* 97: SDK 的 vbat api（0.85V 参考）读出来的毫伏 */
+    uint32_t bat_mv_own;          /* 98: 我们自己的（1.28V 参考）读出来的毫伏 */
+    uint32_t adc_trim08;          /* 99: 出厂校准 0.85V 档：slope<<16 | offset */
+    uint32_t adc_trim12;          /* 100: 出厂校准 1.28V 档：slope<<16 | offset */
+    uint32_t adc_cfg;             /* 101: 读完之后的 AON->SNSADC_CFG（通道/参考） */
+    uint32_t adc_trim_rc;         /* 102: sys_adc_trim_get() 的返回值（0 = 读到校准了） */
+    uint32_t rsv[ZK_DBG_WORDS - 103];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */
