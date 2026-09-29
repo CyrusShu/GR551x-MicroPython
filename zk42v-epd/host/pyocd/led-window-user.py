@@ -4820,9 +4820,6 @@ def _zk_say_epd_service(words):
         if bmo != 0xFFFFFFFF and bms != 0xFFFFFFFF:
             say("      判据：1.28V 那条路应该 ≈ 你实际供给的电压；"
                 "0.85V 那条（SDK 老公式）会顶在 0.85×27/7 ≈ 3279mV 附近")
-            if abs(bmo - bms) < 30 and bms > 3200:
-                say("      ⚠ 两条路读数几乎一样、还都贴着 3279 —— 更像是**通道没切回来**"
-                    "（或者供给电压真的就在 3.28V 附近）")
         if bmo != 0xFFFFFFFF and 2000 <= bmo <= 4500 and braw != 0xFFFFFFFF:
             say("      ✅ 1.28V 那条路给出了一个像样的电压（%d mV，码值 %d）" % (bmo, braw))
         say("    读一次的量：原始码值 %s   1.28V 参考那条路 %s mV   0.85V 参考(SDK) %s mV"
@@ -4837,15 +4834,25 @@ def _zk_say_epd_service(words):
         else:
             say("    ⚠ 出厂校准没读到（sys_adc_trim_get 返回 %d）—— "
                 "换算只能用兜底常数，读数不可信" % (trc if trc != 0xFFFFFFFF else -1))
-        if braw != 0xFFFFFFFF and 0 < braw < 4095:
-            say("      码值在 1..4094 之间 = 没削顶，换算能信")
-        elif braw == 4095:
-            say("      码值 = 4095（削顶了）：参考档太小、或者电池电压超过满量程")
+        # 码值 -> ADC 输入电压（用 1.28V 档那对校准）。这是"到底削没削顶"的硬判据：
+        # 输入 < 参考 = 没削顶；贴近参考 = 到顶了（该换更大的参考档）。
+        if braw != 0xFFFFFFFF and trc == 0:
+            _sl, _of = (tr12 >> 16) & 0xFFFF, tr12 & 0xFFFF
+            if _sl:
+                _vadc = (braw - _of) / (-float(_sl))
+                say("      码值 → ADC 输入 ≈ %.4f V（1.28V 参考；离 1.28V 还差 %.0f mV，"
+                    "没削顶）" % (_vadc, (1.28 - _vadc) * 1000))
         if cp == 5:
-            say("      ⚠ 寄存器里现在是**温度**通道 —— 说明读到的是温度二极管，"
-                "不是电池（build 42 之前的固件就是这样）")
-        elif cp == 6:
-            say("      ✅ 寄存器里是**电池**通道（build 42 每次读之前重新 init 过）")
+            _w3 = words
+            _b3 = _w3[11] if (_w3 and len(_w3) > 11) else None
+            if _b3 is None or _b3 < 42:
+                say("      ⚠ 快照里是**温度**通道 —— build 42 之前就是这样："
+                    "读电池读到的是温度二极管")
+            else:
+                say("      ℹ 快照里是温度通道（这一版正常：每轮最后读的是温度）——"
+                    " 判断按上面那两条读数")
+        else:
+            say("      ✅ 快照里是**电池**通道（build 42 读之前重新 init 过）")
 
     # ---- build 41：天气（手机经 BLE 0x71 下发）----
     if len(words) > 95:
