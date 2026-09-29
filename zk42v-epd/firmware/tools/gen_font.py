@@ -19,7 +19,7 @@ import os
 
 from cjk_ascii import CJK_ASCII, CJK_ASCII_S, NUM_ASCII   # 我们栅格化的（补字用）
 from vendor_font import CJK as V_CJK, NUM as V_NUM         # **原厂固件里的 u8g2 字形**
-from wqy_font import CJK16 as WQY_CJK16                    # 文泉驿点阵宋体 12pt（补原厂缺的字）
+from wqy_font import CJK16 as WQY_CJK16, LUNAR16 as WQY_LUNAR16  # 文泉驿点阵宋体（补字 / 农历细字）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMGDIR = os.path.join(os.path.dirname(HERE), 'zk42v-epd-app', 'Src', 'img')
@@ -98,6 +98,7 @@ CJK_ORDER = [
     '霜',
     '露',
 ]
+LUNAR_ORDER = list(WQY_LUNAR16)      # 农历日名的细字（16x16，1px）
 NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 
 
@@ -222,6 +223,25 @@ def gen_font():
         a('    { %s,' % ', '.join('0x%02X' % v for v in packed[:13]))
         a('      %s },   /* %s */'
           % (', '.join('0x%02X' % v for v in packed[13:26]), ch))
+    a('};')
+    a('')
+    # ---- 农历日名的"细字"（16x16、笔画 1px）----
+    a('/* 日历格子里农历日名的**细字**：文泉驿点阵宋体 12pt（16x16，笔画 1px）——')
+    a('   跟节气（原厂 wqy12，2px 笔画）同为 16px、只差笔画粗细，正好是样板那层次。')
+    a('   数据见 tools/wqy_font.py 的 LUNAR16（生成器 tools/gen_wqy_bitmap.py）。 */')
+    a('#define ZK_LUNAR_NUM   %d' % len(LUNAR_ORDER))
+    a('static const uint32_t zk_lunar_cp[ZK_LUNAR_NUM] = {')
+    a('    ' + ', '.join('0x%04X' % ord(c) for c in LUNAR_ORDER) + ',')
+    a('};')
+    a('static const uint8_t zk_font_lunar[ZK_LUNAR_NUM][ZK_FONT_CJK_H * 2] = {')
+    for ch in LUNAR_ORDER:
+        rows = pack_rows(WQY_LUNAR16[ch], 16)
+        assert len(rows) == 32, len(rows)
+        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:8]))
+        a('      %s,' % ', '.join('0x%02X' % v for v in rows[8:16]))
+        a('      %s,' % ', '.join('0x%02X' % v for v in rows[16:24]))
+        a('      %s },   /* %s */'
+          % (', '.join('0x%02X' % v for v in rows[24:32]), ch))
     a('};')
     a('')
     a('#endif /* __ZK_GUI_FONT_H__ */')

@@ -431,6 +431,84 @@ static int text_cjk_width(const char *s, int scale)
     return (n > 0) ? (n * 17 - 1) * scale : 0;
 }
 
+/* ---------------------------------------------------------------- 农历细字（16x16、1px）
+ *
+ * 格子里那行农历日名（初一..三十）用这套：**文泉驿点阵宋体 12pt**，
+ * 16x16、笔画 1px —— 跟节气（原厂 wqy12，2px 笔画）同高同宽、只差笔画粗细，
+ * 于是"节气比农历粗"这个层次不用换字号就出来了（样板就是这样）。
+ */
+static void draw_cjk_lunar(uint8_t *buf, int x, int y, int idx, int scale, int color)
+{
+    const uint8_t *g;
+    int cy, cx;
+
+    if (idx < 0 || idx >= ZK_LUNAR_NUM)
+    {
+        return;
+    }
+    g = zk_font_lunar[idx];
+
+    for (cy = 0; cy < ZK_FONT_CJK_H; cy++)
+    {
+        for (cx = 0; cx < ZK_FONT_CJK_W; cx++)
+        {
+            if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
+            {
+                fill_rect(buf, x + cx * scale, y + cy * scale, scale, scale, color);
+            }
+        }
+    }
+}
+
+static int draw_text_lunar(uint8_t *buf, int x, int y, const char *s, int scale, int color)
+{
+    const uint8_t *p = (const uint8_t *)s;
+
+    while (*p)
+    {
+        uint32_t cp = 0;
+        int      i;
+
+        if (p[0] < 0x80) { p++; x += 17 * scale; continue; }
+        if ((p[0] & 0xE0) == 0xC0)
+        {
+            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+            p += 2;
+        }
+        else
+        {
+            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) |
+                 (p[2] & 0x3F);
+            p += 3;
+        }
+        for (i = 0; i < ZK_LUNAR_NUM; i++)
+        {
+            if (zk_lunar_cp[i] == cp)
+            {
+                draw_cjk_lunar(buf, x, y, i, scale, color);
+                break;
+            }
+        }
+        x += 17 * scale;
+    }
+    return x;
+}
+
+static int text_lunar_width(const char *s, int scale)
+{
+    int            n = 0;
+    const uint8_t *p = (const uint8_t *)s;
+
+    while (*p)
+    {
+        if (p[0] < 0x80) { p++; }
+        else if ((p[0] & 0xE0) == 0xC0) { p += 2; }
+        else { p += 3; }
+        n++;
+    }
+    return (n > 0) ? (n * 17 - 1) * scale : 0;
+}
+
 /* ---------------------------------------------------------------- 数字
  *
  * 日号和时间用的数字表来自**原厂固件里的 u8g2_font_helvB14_tn**
@@ -842,9 +920,10 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     }
     else if (lun)
     {
-        /* 农历日名：16x16 的文泉驿（原厂 wqy12，笔画 2px）—— 实物上比 1px 细字清楚 */
-        lw = text_cjk_width(lun, 1);
-        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
+        /* 农历日名：16x16 的**细字**（文泉驿点阵宋体 12pt，1px 笔画）
+           —— 跟旁边 2px 的节气拉开层次（样板就是这样） */
+        lw = text_lunar_width(lun, 1);
+        draw_text_lunar(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
     }
 }
 

@@ -239,6 +239,17 @@ def main():
         _, cal_plain = render(1, TS)
         check('5b: 不加粗时不加粗（同一格 %d 像素）' % red_a, red_a > 0)
 
+        # 5c) 笔画层次：农历那行（16x16 细字）要比节气（16x16 粗字）细
+        sys.path.insert(0, HERE)
+        from wqy_font import LUNAR16                     # 农历（文泉驿点阵宋体 12pt，1px）
+        from vendor_font import CJK as V_CJK             # 节气用的原厂 wqy12（2px）
+        thin = sum(r.count('#') for r in LUNAR16['十'])
+        thick = sum(r.count('#') for r in V_CJK['十'])
+        check('5c: 同样是"十"，农历那版比节气那版细（墨 %d vs %d）' % (thin, thick),
+              thin * 3 <= thick * 2)
+        check('5c: 两边都是 16x16（字号相同，只差笔画）',
+              len(LUNAR16['十']) == 16 and len(V_CJK['十']) == 16)
+
         # 6) 换一天，图不一样
         check('6: 换一天画出来的图不一样',
               G.render(exe, 1, TS + 3 * DAY) != cal_buf)

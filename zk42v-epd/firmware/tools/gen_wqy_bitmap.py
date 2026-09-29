@@ -36,6 +36,10 @@ WANT = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '�
 # 纯点阵操作，不会像 TTF 栅格化那样"发虚"），字重就跟旁边对上了。
 WANT16 = ['农', '历']
 
+# 农历日名的 16px 版：**同一套文泉驿点阵宋体、但用 12pt**（16x16、笔画 1px）。
+# 想让"日历格子里的农历"保持 16px、但比节气（原厂 wqy12，2px 笔画）细一档时用它。
+WANT_L16 = WANT
+
 
 def load_bdf(path):
     """BDF -> {码点: (w, h, xoff, yoff, [每行的 '#'/'.' 字符串])}"""
@@ -126,9 +130,23 @@ def main():
         print('  %s  BBX %2dx%-2d 墨=%3d 贴边行=%d' % (ch, w, h, ink, edge))
     lines.append('}')
     lines.append('')
+    f12 = load_bdf(BDF12)
+    lines.append('# 农历日名的 16px 版：文泉驿点阵宋体 12pt（16x16、笔画 1px，不加粗）')
+    lines.append('LUNAR16 = {')
+    for ch in WANT_L16:
+        g = f12.get(ord(ch))
+        if g is None:
+            continue
+        w, h, xo, yo = g['bbx']
+        rows = pad16(rows_of(g, w))
+        lines.append("    '%s': [" % ch)
+        for r in rows:
+            lines.append("        '%s'," % r)
+        lines.append('    ],')
+    lines.append('}')
+    lines.append('')
     lines.append('# 表头"农历"用的 16x16：文泉驿点阵宋体 12pt + 加粗 1px（原厂字库缺这两个字）')
     lines.append('CJK16 = {')
-    f12 = load_bdf(BDF12)
     for ch in WANT16:
         g = f12.get(ord(ch))
         if g is None:
