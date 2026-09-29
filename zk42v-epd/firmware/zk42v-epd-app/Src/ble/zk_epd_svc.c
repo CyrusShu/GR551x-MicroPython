@@ -135,6 +135,7 @@ static uint8_t  s_opt;               /* 画面选项位 ZK_OPT_xxx（命令 0x70
 /* 天气（手机经 0x71 下发）：这块板子上没有天气/温度传感器，天气只能从外面来 */
 static uint8_t  s_wx_code;           /* 0 = 不显示 */
 static int8_t   s_env_temp_c = (int8_t)(-128);   /* -128 = 还没收到过 */
+static uint8_t  s_bat_notify;        /* 0x72 之后：下一次 poll 把刚读到的电池值回报给网页 */
 
 /* 版本号的“值”放在用户空间（VAL_LOC_USER），读请求我们自己回 */
 static uint8_t  s_version = ZK_APP_VERSION;
@@ -632,6 +633,20 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
         case 0x21:      /* SET_WEEK_START：收下就完事 */
             break;
 
+        /* 0x72 READ_BAT：**立刻重读一次电池 + 重画一页**（挑电量图标 / 拿台电源扫电压时用）。
+           为什么这里只置标志不直接读：这个回调是 pwr_mgmt_schedule() 里跑起来的，
+           主循环接下来先走 zk_bat_poll()（build 43 把它挪到 zk_epd_svc_poll() 前面），
+           所以"读电池 → 画页面 → 回报读数"都在下一次 poll 里完成，
+           zk_bat_trigger() 就是让它跳过那 60 秒的限速。 */
+        case 0x72:
+            zk_bat_trigger();
+            s_bat_notify = 1;
+            if (ZKGUI_MODE_PICTURE != s_mode)
+            {
+                s_need_gui = 1;
+            }
+            break;
+
         case 0x91:      /* SYS_RESET */
             NVIC_SystemReset();
             break;
@@ -866,6 +881,21 @@ void zk_epd_svc_poll(uint32_t now_ms)
             zk_notify_config();
             s_cfg_sent = 1;
         }
+    }
+
+    /* 0x72 的回报：电池刚被强制读了一次（主循环里 zk_bat_poll() 跑在我们前面），
+       把结果发回网页 —— 扫电压的时候盯着网页日志就知道读到多少。 */
+    if (s_bat_notify)
+    {
+        uint8_t  nb[24];
+        uint8_t *q = nb;
+
+        s_bat_notify = 0;
+        memcpy(q, "bat=", 4); q += 4;
+        q = zk_put_u32(q, (uint32_t)(int32_t)zk_bat_mv());
+        memcpy(q, " pct=", 5); q += 5;
+        q = zk_put_u32(q, (uint32_t)(int32_t)zk_bat_pct());
+        zk_notify(nb, (uint16_t)(q - nb));
     }
 
     /* ---- 日历 / 时钟：该画了就画进缓冲，然后走同一条"写图 + 刷新"的路 ---- */

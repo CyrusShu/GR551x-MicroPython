@@ -420,11 +420,10 @@ int main(void)
            传进去的是 DWT 算的毫秒数（拿不到时基就是 0，函数里会退回数圈数）。 */
         zk_ble_poll(tick_ms());
 
-        /* B2-A.2：网页推图这条线。命令在事件回调里只做记账，屏的重活
-           （初始化、写图、刷新十几秒）在这个 poll 里做，别堵住协议栈。 */
-        zk_epd_svc_poll(tick_ms());
-
-        /* build 31：电池/温度（内部自己限速，一分钟一次） */
+        /* build 31：电池/温度（内部自己限速，一分钟一次）。
+           ⚠ 顺序有讲究：build 43 把它**挪到 zk_epd_svc_poll() 前面** ——
+           BLE 命令 0x72（立刻读电池 + 重画）在 pwr_mgmt_schedule() 里置好标志，
+           这一轮先在这儿把新电压读进来，紧接着画页面时用的就是新值（否则会慢一轮）。 */
         zk_bat_poll(tick_ms());
         g_dbg.bat_mv      = (zk_bat_mv() < 0) ? ZK_NONE_U32 : (uint32_t)zk_bat_mv();
         g_dbg.bat_pct     = (zk_bat_pct() < 0) ? ZK_NONE_U32 : (uint32_t)zk_bat_pct();
@@ -439,6 +438,10 @@ int main(void)
         g_dbg.adc_trim08  = zk_bat_trim08();
         g_dbg.adc_trim12  = zk_bat_trim12();
         g_dbg.adc_trim_rc = zk_bat_trim_rc();
+
+        /* B2-A.2：网页推图这条线。命令在事件回调里只做记账，屏的重活
+           （初始化、写图、刷新十几秒）在这个 poll 里做，别堵住协议栈。 */
+        zk_epd_svc_poll(tick_ms());
 
         zk_mailbox_poll();      /* B2-B：有新图就刷 */
         epd_delay_ms(5);        /* 5ms 一圈 ≈ 200Hz：协议栈的活干得快一点 */

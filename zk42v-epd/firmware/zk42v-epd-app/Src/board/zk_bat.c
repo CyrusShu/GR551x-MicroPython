@@ -38,6 +38,7 @@ static uint32_t s_cfg;                       /* 读完之后的 AON->SNSADC_CFG 
 static uint32_t s_trim08;
 static uint32_t s_trim12;
 static uint32_t s_trim_rc = 0xFFFFFFFFu;
+static uint8_t  s_force;                     /* 被 zk_bat_trigger() 置 1：下一次 poll 跳过限速 */
 
 /* 我们自己的 VBAT 通道（1.28V 参考）。SDK 的 vbat api 用的是它自己那份 handle。 */
 static adc_handle_t s_bat_handle;
@@ -104,15 +105,17 @@ void zk_bat_poll(uint32_t now_ms)
     {
         return;
     }
-    /* 限速：第一次读也要等够一个周期，免得开机就跟 BLE 初始化抢总线 */
-    if (s_last_ms == 0u && now_ms < 2000u)
+    /* 限速：第一次读也要等够一个周期，免得开机就跟 BLE 初始化抢总线。
+       s_force 是 BLE 命令 0x72 要求"马上读一次"（扫电压 / 看电量图标时用）。 */
+    if (!s_force && s_last_ms == 0u && now_ms < 2000u)
     {
         return;
     }
-    if (s_last_ms != 0u && (uint32_t)(now_ms - s_last_ms) < ZK_BAT_PERIOD_MS)
+    if (!s_force && s_last_ms != 0u && (uint32_t)(now_ms - s_last_ms) < ZK_BAT_PERIOD_MS)
     {
         return;
     }
+    s_force = 0;
 
     /* ---- 1) SDK 那个 api（0.85V 参考）—— 读之前**必须**重新 init -------------- */
     hal_adc_vbat_init();
@@ -251,4 +254,9 @@ uint32_t zk_bat_trim12(void)
 uint32_t zk_bat_trim_rc(void)
 {
     return s_trim_rc;
+}
+
+void zk_bat_trigger(void)
+{
+    s_force = 1;
 }

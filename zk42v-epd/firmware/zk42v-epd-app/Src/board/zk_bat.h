@@ -35,6 +35,8 @@
 
 void     zk_bat_init(void);            /* 开机调一次：初始化 ADC 的两个内部通道 */
 void     zk_bat_poll(uint32_t now_ms); /* 空闲循环里调；内部自己限速 */
+void     zk_bat_trigger(void);         /* 让下一次 zk_bat_poll() 跳过限速、立刻读一次
+                                          （BLE 命令 0x72 用它来"扫电压/挑电量图标"） */
 
 int      zk_bat_mv(void);              /* 电池毫伏（1.28V 参考那条路）；-1 = 还没读到 */
 int      zk_bat_pct(void);             /* 0..100（按 3.0V=0% / 4.2V=100%）；-1 = 无效 */
