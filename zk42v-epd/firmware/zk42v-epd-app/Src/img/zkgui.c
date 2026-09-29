@@ -653,6 +653,7 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
    我们按 6 行排：表头 26 + 黑条 22 + 格子 252 → 行距 42。 */
 #define CAL_HDR_H    26                            /* 表头（白底） */
 #define CAL_HDR_ICON_Y 3                           /* 表头里天气图标的上边距（20px 图标 -> 3..22） */
+#define CAL_HDR_TEMP_Y 10                          /* 表头里温度那串小字的上边距（5x7 字，跟 16px 的天气文字对齐居中） */
 #define CAL_WD_Y     26                            /* 黑星期条 */
 #define CAL_WD_H     22
 #define CAL_GRID_Y   48                            /* 格子区从黑条下沿开始 */
@@ -754,8 +755,7 @@ static void draw_battery(uint8_t *buf, int x, int y, int pct)
 /*
  * 表头（两页共用）—— 版式照社区第 14 号那版（三色纯日历）：
  *
- *   红 2026年09月   黑 农历八月   红 马年   [图标]多云   [电池] 3.90V
- *                                                                 26C
+ *   红 2026年09月   黑 农历八月   红 马年   [图标]多云 26C    [电池] 3.90V
  *   ─────────────────────────────────────────────────────────────
  *
  * 跟 build 29 那版的区别：**不再是黑条白字**，改成白底 —— 年月用红色、农历黑色、
@@ -765,13 +765,76 @@ static void draw_battery(uint8_t *buf, int x, int y, int pct)
  *   · 星期（星期X）**不画了**：下面那条黑星期条已经写着一~日，表头重复一遍是浪费；
  *   · 天气画在"马年"右边：**图标 + 文字**（多云 / 雷阵雨…），
  *     天气码 + 天气温度都是手机经 BLE 命令 0x71 下发的（这块板子没有天气传感器）。
+ *
+ * build 43：**温度跟着天气走**（原来挤在右上角电池下面那行小字的位置）——
+ *   现在挨着天气文字画，"多云 26C"读起来是一句话；右上角**只留电池图标**
+ *   （不写 "3.97V" 那几个字了，电量多少看图标里那几格）。
  */
+/* 表头里那串温度（"26C" / "-2C" / "26.4C"）—— build 43 起画在**天气后面**。
+   手机下发的天气温度优先（整度）；没收到过才退回片内温度（一位小数）。
+   返回画完之后的 x（没温度可画就原样返回）。 */
+static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
+{
+    char s[8];
+    int  neg = 0;
+
+    if (info->env_temp_c != (int8_t)(-128))
+    {
+        int t  = info->env_temp_c;
+        int av = (t < 0) ? -t : t;
+        int k  = 0;
+
+        neg = (t < 0);
+        if (av >= 10)
+        {
+            s[k++] = (char)('0' + (av / 10) % 10);
+        }
+        s[k++] = (char)('0' + av % 10);
+        s[k++] = 'C';
+        s[k]   = 0;
+    }
+    else if (info->temp_c10 != ZK_TEMP_NONE)
+    {
+        int t  = info->temp_c10;
+        int av = (t < 0) ? -t : t;
+
+        neg = (t < 0);
+        s[0] = (char)('0' + (av / 100) % 10);
+        s[1] = (char)('0' + (av / 10) % 10);
+        s[2] = '.';
+        s[3] = (char)('0' + av % 10);
+        s[4] = 'C';
+        s[5] = 0;
+        if (av < 100)                        /* 26.4 -> "26.4C" */
+        {
+            s[0] = s[1];
+            s[1] = s[2];
+            s[2] = s[3];
+            s[3] = 'C';
+            s[4] = 0;
+        }
+    }
+    else
+    {
+        return x;                            /* 两个温度都没有：这一段留空 */
+    }
+
+    x += 3;                                  /* 跟天气文字拉开 3px */
+    if (neg)
+    {
+        draw_text5(buf, x, CAL_HDR_TEMP_Y, "-", 1, C_BLACK);
+        x += 7;
+    }
+    draw_text5(buf, x, CAL_HDR_TEMP_Y, s, 1, C_BLACK);
+    return x + text5_width(s, 1);
+}
+
 static void draw_header(uint8_t *buf, int year, int mon, int day,
                         const zkgui_info_t *info, int with_lunar)
 {
     char  s[12];
     char  mbuf[16];
-    int   x, n, zi;
+    int   x, zi;
 
     fill_rect(buf, 0, 0, ZKGUI_W, CAL_HDR_H - 1, C_WHITE);
 
@@ -854,69 +917,16 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
         }
     }
 
-    /* 右上：电池 + 电压 / 温度（两行小字，照样板挤在右上角） */
-    n = ZKGUI_W - 6;
+    /* 再右：温度 —— **手机给的天气温度优先**，没有才退回片内温度。
+       build 43 起从右上角挪到这里，紧跟天气（"多云 26C"是一句话） */
+    x = draw_header_temp(buf, x, info);
+
+    /* 右上：**只画电池图标**（build 43：不写"3.97V"那几个字了，格子不够好看；
+       电量多少直接看图标里那几格）。图标竖直居中，跟左边那行字对齐。 */
+    static const int bat_w = 26;                 /* draw_battery 里那个 26x13 的外形 */
     if (info->bat_mv >= 0)
     {
-        int mv = info->bat_mv;
-
-        s[0] = (char)('0' + (mv / 1000) % 10);
-        s[1] = '.';
-        s[2] = (char)('0' + (mv / 100) % 10);
-        s[3] = (char)('0' + (mv / 10) % 10);
-        s[4] = 'V';
-        s[5] = 0;
-        x = n - text5_width(s, 1);
-        draw_battery(buf, x - 29, 2, info->bat_pct);
-        draw_text5(buf, x, 3, s, 1, C_BLACK);
-    }
-    /* 温度：**优先用手机下发的天气温度**（整度，见 BLE 命令 0x71）；
-       没收到过才退回片内温度（一位小数）—— 片内温度是芯片结温，不是天气 */
-    if (info->env_temp_c != (int8_t)(-128))
-    {
-        int t  = info->env_temp_c;
-        int av = (t < 0) ? -t : t;
-        int k  = 0;
-
-        if (t < 0)
-        {
-            s[k++] = '-';
-        }
-        if (av >= 10)
-        {
-            s[k++] = (char)('0' + (av / 10) % 10);
-        }
-        s[k++] = (char)('0' + av % 10);
-        s[k++] = 'C';
-        s[k]   = 0;
-        x = n - text5_width(s, 1);
-        draw_text5(buf, x, 14, s, 1, C_BLACK);
-    }
-    else if (info->temp_c10 != ZK_TEMP_NONE)
-    {
-        int t  = info->temp_c10;
-        int av = (t < 0) ? -t : t;
-
-        s[0] = (char)('0' + (av / 100) % 10);
-        s[1] = (char)('0' + (av / 10) % 10);
-        s[2] = '.';
-        s[3] = (char)('0' + av % 10);
-        s[4] = 'C';
-        s[5] = 0;
-        if (av < 100)
-        {
-            s[0] = s[1];
-            s[1] = s[2];
-            s[2] = s[3];
-            s[3] = 'C';
-            s[4] = 0;
-        }
-        x = n - text5_width(s, 1);
-        if (t < 0)
-        {
-            draw_text5(buf, x - 7, 14, "-", 1, C_BLACK);
-        }
-        draw_text5(buf, x, 14, s, 1, C_BLACK);
+        draw_battery(buf, ZKGUI_W - 6 - bat_w, (CAL_HDR_H - 1 - 13) / 2, info->bat_pct);
     }
 
     /* 表头下面一条黑线 == 星期条的上边框 */
