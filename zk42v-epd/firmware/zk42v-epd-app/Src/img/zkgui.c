@@ -11,6 +11,7 @@
 #include "zkgui_trig.h"
 #include "lunar.h"           /* 农历（表来自原厂，见 tools/gen_lunar.py） */
 #include "jieqi.h"           /* 二十四节气（表和算法也来自原厂，见 tools/gen_jieqi.py） */
+#include "weather.h"         /* 天气图标（手机经 BLE 下发天气码，见 tools/gen_weather.py） */
 
 #include <string.h>
 
@@ -325,6 +326,23 @@ static int text5_width(const char *s, int scale)
     return (n > 0) ? (n * (ZK_FONT5_W + 1) - 1) * scale : 0;
 }
 
+/* 16x16 点阵（每行 2 字节，MSB first）—— 天气文字用 weather.c 里那张表 */
+static void draw_glyph16(uint8_t *buf, int x, int y, const uint8_t *g, int scale, int color)
+{
+    int cy, cx;
+
+    for (cy = 0; cy < ZK_WX_TEXT_H; cy++)
+    {
+        for (cx = 0; cx < ZK_WX_TEXT_W; cx++)
+        {
+            if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
+            {
+                fill_rect(buf, x + cx * scale, y + cy * scale, scale, scale, color);
+            }
+        }
+    }
+}
+
 /* 中文单字（16x16，scale 倍） */
 static void draw_cjk(uint8_t *buf, int x, int y, int idx, int scale, int color)
 {
@@ -563,10 +581,6 @@ static int draw_num(uint8_t *buf, int x, int y, const char *s, int scale, int co
     return x;
 }
 
-/* 星期：0=周日 … 6=周六（跟 zkgui_civil 的 wday 一致）—— 表头"星期X"用 */
-static const uint8_t s_wday_cjk2[7] =
-    { CJK_RI, CJK_YI, CJK_ER, CJK_SAN, CJK_SI, CJK_WU, CJK_LIU };
-
 /* 月历表头：周一开头（跟国内日历、以及 4.2 寸那块屏的做法一致） */
 static const uint8_t s_head_cjk[7] =
     { CJK_YI, CJK_ER, CJK_SAN, CJK_SI, CJK_WU, CJK_LIU, CJK_RI };
@@ -638,6 +652,7 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
    今天那个红圆直径 48px（把日号和农历两个字都圈住）。
    我们按 6 行排：表头 26 + 黑条 22 + 格子 252 → 行距 42。 */
 #define CAL_HDR_H    26                            /* 表头（白底） */
+#define CAL_HDR_ICON_Y 3                           /* 表头里天气图标的上边距（20px 图标 -> 3..22） */
 #define CAL_WD_Y     26                            /* 黑星期条 */
 #define CAL_WD_H     22
 #define CAL_GRID_Y   48                            /* 格子区从黑条下沿开始 */
@@ -739,15 +754,19 @@ static void draw_battery(uint8_t *buf, int x, int y, int pct)
 /*
  * 表头（两页共用）—— 版式照社区第 14 号那版（三色纯日历）：
  *
- *   红 2026年09月     黑 农历八月     红 马年        [电池] 3.90V
- *                                                           26C
+ *   红 2026年09月   黑 农历八月   红 马年   [图标]多云   [电池] 3.90V
+ *                                                                 26C
  *   ─────────────────────────────────────────────────────────────
  *
  * 跟 build 29 那版的区别：**不再是黑条白字**，改成白底 —— 年月用红色、农历黑色、
  * 生肖年红色；右上角放电池图标 + 电压 + 温度（社区那版最显眼的特征）。
- * 星期几交给下面的星期条表达（一~日 那一行），表头这里不重复。
+ *
+ * build 41：表头这块给"天气"腾了地方 ——
+ *   · 星期（星期X）**不画了**：下面那条黑星期条已经写着一~日，表头重复一遍是浪费；
+ *   · 天气画在"马年"右边：**图标 + 文字**（多云 / 雷阵雨…），
+ *     天气码 + 天气温度都是手机经 BLE 命令 0x71 下发的（这块板子没有天气传感器）。
  */
-static void draw_header(uint8_t *buf, int year, int mon, int day, int wday,
+static void draw_header(uint8_t *buf, int year, int mon, int day,
                         const zkgui_info_t *info, int with_lunar)
 {
     char  s[12];
@@ -794,10 +813,46 @@ static void draw_header(uint8_t *buf, int year, int mon, int day, int wday,
     draw_cjk(buf, x + 17, 5, CJK_YEAR, 1, C_RED);
     x += 17 + 17 + 6;
 
-    /* 再右：星期（黑）—— 马年后面那块空着也是空着 */
-    draw_cjk(buf, x, 5, CJK_XING, 1, C_BLACK);
-    draw_cjk(buf, x + 17, 5, CJK_QI2, 1, C_BLACK);
-    draw_cjk(buf, x + 34, 5, s_wday_cjk2[wday], 1, C_BLACK);
+    /* 再右：天气 = **图标 + 文字**（手机经 BLE 0x71 下发；见 weather.h）。
+       图标 20x20（表头 26px 高，上下各留 3px），文字是 16x16 的 1px 点阵，
+       跟旁边农历那行同一个字源，所以不会"一个粗一个细"。 */
+    {
+        const uint8_t *ic = zk_weather_icon(info->wx_code);
+        const uint32_t *tx = zk_weather_text(info->wx_code);
+
+        if (ic != 0)
+        {
+            const int stride = (ZK_WX_ICON_W + 7) / 8;
+            int cy, cx;
+
+            for (cy = 0; cy < ZK_WX_ICON_H; cy++)
+            {
+                for (cx = 0; cx < ZK_WX_ICON_W; cx++)
+                {
+                    if (ic[cy * stride + (cx >> 3)] & (0x80u >> (cx & 7)))
+                    {
+                        fill_rect(buf, x + cx, CAL_HDR_ICON_Y + cy, 1, 1, C_BLACK);
+                    }
+                }
+            }
+            x += ZK_WX_ICON_W + 3;
+        }
+        if (tx != 0)
+        {
+            int i;
+
+            for (i = 0; tx[i] != 0u; i++)
+            {
+                const uint8_t *g = zk_weather_glyph(tx[i]);
+
+                if (g != 0)
+                {
+                    draw_glyph16(buf, x, 5, g, 1, C_BLACK);
+                }
+                x += 17;                        /* 16px 字形 + 1px 间距 */
+            }
+        }
+    }
 
     /* 右上：电池 + 电压 / 温度（两行小字，照样板挤在右上角） */
     n = ZKGUI_W - 6;
@@ -815,7 +870,29 @@ static void draw_header(uint8_t *buf, int year, int mon, int day, int wday,
         draw_battery(buf, x - 29, 2, info->bat_pct);
         draw_text5(buf, x, 3, s, 1, C_BLACK);
     }
-    if (info->temp_c10 != ZK_TEMP_NONE)
+    /* 温度：**优先用手机下发的天气温度**（整度，见 BLE 命令 0x71）；
+       没收到过才退回片内温度（一位小数）—— 片内温度是芯片结温，不是天气 */
+    if (info->env_temp_c != (int8_t)(-128))
+    {
+        int t  = info->env_temp_c;
+        int av = (t < 0) ? -t : t;
+        int k  = 0;
+
+        if (t < 0)
+        {
+            s[k++] = '-';
+        }
+        if (av >= 10)
+        {
+            s[k++] = (char)('0' + (av / 10) % 10);
+        }
+        s[k++] = (char)('0' + av % 10);
+        s[k++] = 'C';
+        s[k]   = 0;
+        x = n - text5_width(s, 1);
+        draw_text5(buf, x, 14, s, 1, C_BLACK);
+    }
+    else if (info->temp_c10 != ZK_TEMP_NONE)
     {
         int t  = info->temp_c10;
         int av = (t < 0) ? -t : t;
@@ -935,8 +1012,9 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
 
     (void)hour;
     (void)min;
+    (void)wday;             /* 表头不画星期了（build 41：那格改成天气），改成下面那条星期条 */
 
-    draw_header(buf, year, mon, day, wday, info, 1);
+    draw_header(buf, year, mon, day, info, 1);
 
     /* 星期条（照社区第 14 号那版）：整条**黑底白字**，六/日那两列是**红底白字** */
     fill_rect(buf, 0, CAL_WD_Y, ZKGUI_W, CAL_WD_H, C_BLACK);
@@ -988,8 +1066,10 @@ static void draw_clock(uint8_t *buf, int year, int mon, int day, int wday,
     char s[8];
     int  tw;
 
+    (void)wday;             /* 表头不画星期了，见 draw_header */
+
     /* 跟日历页用同一个表头（2026年09月 / 农历八月 / 生肖 / 电池），一套东西 */
-    draw_header(buf, year, mon, day, wday, info, 1);
+    draw_header(buf, year, mon, day, info, 1);
 
     draw_dial(buf, ZKGUI_W / 2, 140, 80, hour, min);
 

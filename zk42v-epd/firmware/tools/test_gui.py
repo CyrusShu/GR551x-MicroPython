@@ -133,8 +133,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='zkguitest-') as td:
         exe = G.build(td)
 
-        def render(mode, ts, opt=0):
-            body = G.render(exe, mode, ts, opt)     # 里面会断言哨兵完好
+        def render(mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp=-128):
+            body = G.render(exe, mode, ts, opt, bat_mv, temp_c10,
+                            wx_code, env_temp)      # 里面会断言哨兵完好
             return G.to_rgb(body), body
 
         # 1) 哨兵：G.render 里断言，能走到这儿就算过
@@ -249,6 +250,19 @@ def main():
               thin * 3 <= thick * 2)
         check('5c: 两边都是 16x16（字号相同，只差笔画）',
               len(LUNAR16['十']) == 16 and len(V_CJK['十']) == 16)
+
+        # 5d) 天气（图标 + 文字）：给了天气码才画，画在表头"马年"后面那一格
+        #     （build 41：表头不再画"星期X"，那格让给天气）
+        rows_wx,  _ = render(1, TS, 0, 3970, 264, 2, 26)    # 参数顺序见 gui_preview.render
+        rows_wx3, _ = render(1, TS, 0, 3970, 264, 6, 30)    # 雷阵雨（3 个字）
+        xa, xb, ya, yb = 220, 336, 0, 26                    # 表头里天气那块（含右边电池）
+        blk_plain = count(cal_rows, BLACK, xa, ya, xb, yb)
+        blk_wx    = count(rows_wx, BLACK, xa, ya, xb, yb)
+        blk_wx3   = count(rows_wx3, BLACK, xa, ya, xb, yb)
+        check('5d: 天气码=2（多云）时表头多出图标+文字（%d -> %d 黑像素）'
+              % (blk_plain, blk_wx), blk_wx > blk_plain + 150)
+        check('5d: 码=6（雷阵雨，3 个字）比码=2（多云，2 个字）多画一个字（%d vs %d）'
+              % (blk_wx, blk_wx3), blk_wx3 > blk_wx + 80)
 
         # 6) 换一天，图不一样
         check('6: 换一天画出来的图不一样',

@@ -6,6 +6,7 @@
  *   选项位（跟固件 zk_opt.h 的 ZK_OPT_xxx 一致，这里只用到"不画农历"那位）：
  *     0x04 = 日历页不画农历那一行
  *   电池/温度：不传就按"没读到"（不画电池）；传 0 也当没读到。
+ *   第 8/9 个参数：天气码（1 晴 2 多云 … 9 风）、天气温度（℃，-128=没收到过）
  *
  * 底下那 32 字节"哨兵"是故意的：缓冲前后各留一段填 0xA5，画完之后由 Python 检查
  * 有没有被越界写坏 —— 这种"画到缓冲外面"的 bug 在屏上是看不出来的。
@@ -35,6 +36,16 @@ int main(int argc, char **argv)
     info.bat_mv   = -1;
     info.bat_pct  = -1;
     info.temp_c10 = ZK_TEMP_NONE;
+    info.wx_code  = 0;
+    info.env_temp_c = (int8_t)-128;
+    if (argc > 6)
+    {
+        info.wx_code = (uint8_t)atoi(argv[6]);
+    }
+    if (argc > 7)
+    {
+        info.env_temp_c = (int8_t)atoi(argv[7]);
+    }
     if (argc > 3)
     {
         unsigned opt = (unsigned)strtoul(argv[3], NULL, 0);

@@ -30,6 +30,7 @@
 #include "zkgui.h"           /* 日历 / 时钟页面的绘制 */
 #include "zk_opt.h"          /* 画面选项：反色 / 旋转 180°（写屏前对整帧做变换） */
 #include "zk_bat.h"          /* 电池/温度：表头右上角要画 */
+#include "weather.h"         /* 天气码（手机下发）：表头画图标 */
 
 #include "gr_includes.h"
 #include "ble.h"
@@ -131,6 +132,9 @@ static uint32_t s_drawn_day;         /* 上次画的是哪一天（cur/86400） 
 static uint32_t s_drawn_min;         /* 上次画的是哪一分钟（cur/60） */
 static uint8_t  s_need_gui;          /* 立刻重画一次 */
 static uint8_t  s_opt;               /* 画面选项位 ZK_OPT_xxx（命令 0x70 设） */
+/* 天气（手机经 0x71 下发）：这块板子上没有天气/温度传感器，天气只能从外面来 */
+static uint8_t  s_wx_code;           /* 0 = 不显示 */
+static int8_t   s_env_temp_c = (int8_t)(-128);   /* -128 = 还没收到过 */
 
 /* 版本号的“值”放在用户空间（VAL_LOC_USER），读请求我们自己回 */
 static uint8_t  s_version = ZK_APP_VERSION;
@@ -548,6 +552,47 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             }
             break;
 
+        /* 0x71 SET_WEATHER：手机下发天气（我们自己定的私有命令）
+         *   71 <code> <temp>      code 见 weather.h（1 晴 2 多云 … 9 风）
+         *                         temp 是**有符号整度**（℃），例：71 02 1A = 多云 26℃
+         *   71 00                 = 不显示天气
+         * 为什么要手机下发：这板子上没有温度传感器（原厂固件里连 I2C 都没有），
+         * 而且"天气"本来就只能从外部来。 */
+        case 0x71:
+            if (len >= 2u)
+            {
+                s_wx_code = (d[1] <= ZK_WX_MAX) ? d[1] : 0u;
+                if (len >= 3u)
+                {
+                    s_env_temp_c = (int8_t)d[2];
+                }
+                else
+                {
+                    s_env_temp_c = (int8_t)(-128);
+                }
+                g_dbg.wx_code    = s_wx_code;
+                g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
+                g_dbg.wx_cmds++;
+
+                if (ZKGUI_MODE_PICTURE != s_mode)
+                {
+                    s_need_gui = 1;          /* 日历/时钟页：重画一版 */
+                }
+
+                /* 回一条通知，网页日志里能看到设成了什么 */
+                {
+                    uint8_t nb[24];
+                    uint8_t *q = nb;
+
+                    memcpy(q, "wx=", 3); q += 3;
+                    q = zk_put_u32(q, s_wx_code);
+                    memcpy(q, " t=", 3); q += 3;
+                    q = zk_put_u32(q, (uint32_t)(int32_t)s_env_temp_c);
+                    zk_notify(nb, (uint16_t)(q - nb));
+                }
+            }
+            break;
+
         case 0x20:      /* SET_TIME：把时间原样回给网页（我们不做日历模式） */
             if (len >= 5u)
             {
@@ -859,6 +904,8 @@ void zk_epd_svc_poll(uint32_t now_ms)
             info.bat_mv  = (int16_t)zk_bat_mv();
             info.bat_pct = (int8_t)zk_bat_pct();
             info.temp_c10 = (int16_t)zk_bat_temp_c10();
+            info.wx_code  = s_wx_code;
+            info.env_temp_c = s_env_temp_c;
             zkgui_draw((uint8_t *)ZK_IMG_BUF, &info);
 
             s_need_refresh = 1;                /* 交给下面的刷新分支去写屏 */

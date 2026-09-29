@@ -97,7 +97,7 @@ typedef struct
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 
-#define ZK_DBG_WORDS 96
+#define ZK_DBG_WORDS 100
 
 typedef struct
 {
@@ -236,7 +236,15 @@ typedef struct
     uint32_t bat_pct;             /* 90: 电量百分比 0..100（算不出来时 ZK_NONE_U32） */
     uint32_t bat_temp_c10;        /* 91: 片内温度 ×10（26.4℃ -> 264；无效 = ZK_NONE_U32） */
     uint32_t bat_errs;            /* 92: ADC 读失败/超范围了几次（一直在涨 = 通道不对） */
-    uint32_t rsv[ZK_DBG_WORDS - 93];
+
+    /* ---- build 41：天气（手机经 BLE 0x71 下发）--------------------------------
+       这块板子没有天气/温度传感器（原厂固件里连 I2C 都没有），所以"天气"只能
+       从外面来：网页把天气码 + 天气温度发给固件，固件画在表头（"马年"右边）。
+       ⚠ ADC 那个"温度"是**芯片结温**，不是环境温度，别拿它当天气。 */
+    uint32_t wx_code;             /* 93: 天气码（0 不显示 / 1 晴 / 2 多云 … / 9 风） */
+    uint32_t env_temp_c;          /* 94: 手机给的天气温度（有符号 ℃；0xFFFFFF80 = 没收到过） */
+    uint32_t wx_cmds;             /* 95: 收到过几次 0x71 SET_WEATHER */
+    uint32_t rsv[ZK_DBG_WORDS - 96];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

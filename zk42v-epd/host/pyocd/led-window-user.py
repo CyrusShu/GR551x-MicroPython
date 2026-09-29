@@ -1332,8 +1332,9 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 24 加到 84 —— 多一个「这轮刷新时屏到底忙了多久」（busy_polls 增量）；
 # build 28 加到 88 —— 多一组「画面选项」（反色 / 旋转 180° / 农历开关）；
 # build 30 加到 92 —— 多一组「日历/时钟为什么重画」（时基每 268 秒绕圈那个 bug）；
-# build 31 加到 96 —— 多一组「电池电压 / 电量 / 片内温度」。
-ZK_DBG_WORDS = 96
+# build 31 加到 96 —— 多一组「电池电压 / 电量 / 片内温度」；
+# build 41 加到 100 —— 多一组「天气」（手机经 0x71 下发：天气码 + 天气温度）。
+ZK_DBG_WORDS = 100
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4786,6 +4787,20 @@ def _zk_say_epd_service(words):
                 % (mv, pct if pct != 0xFFFFFFFF else 0, ttxt, berr))
             if mv < 3200:
                 say("      ⚠ 电压偏低（<3.2V）—— 该充电了")
+
+    # ---- build 41：天气（手机经 BLE 0x71 下发）----
+    if len(words) > 95:
+        wx, envt, wxn = words[93], words[94], words[95]
+        wxname = {0: '不显示', 1: '晴', 2: '多云', 3: '阴', 4: '小雨', 5: '大雨',
+                  6: '雷阵雨', 7: '雪', 8: '雾', 9: '风'}.get(wx, '?')
+        etxt = '还没收到过'
+        if envt != 0xFFFFFF80:
+            etxt = '%d℃' % _zk_i8(envt)
+        say("    天气（手机下发）：%s   天气温度 %s   收到过 %d 次"
+            % (wxname, etxt, wxn))
+        if wxn == 0:
+            say("      → 还没发过。网页「发送命令」里敲 `71 02 1A` = 多云 26℃"
+                "（码：1晴 2多云 3阴 4小雨 5大雨 6雷阵雨 7雪 8雾 9风；`71 00` 不显示）")
 
     say("    通知：发出去 %d 条，最后一次返回 %d（0 = 成功）" % (noti_cnt, noti_err))
 

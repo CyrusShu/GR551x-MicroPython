@@ -322,6 +322,10 @@ int main(void)
     g_dbg.bat_pct = ZK_NONE_U32;
     g_dbg.bat_temp_c10 = ZK_NONE_U32;
     g_dbg.bat_errs = 0;
+    /* build 41：天气（手机下发） */
+    g_dbg.wx_code = 0;
+    g_dbg.env_temp_c = (uint32_t)(int32_t)(-128);
+    g_dbg.wx_cmds = 0;
     {
         volatile uint32_t *st = &g_dbg.ble_adv_st0;
         uint32_t           i;

@@ -32,7 +32,9 @@ typedef struct
        temp_c10 == ZK_TEMP_NONE = 没读到 */
     int16_t  bat_mv;      /* 电池毫伏 */
     int8_t   bat_pct;     /* 0..100；-1 = 不知道（只画空电池框） */
-    int16_t  temp_c10;    /* 温度 ×10 */
+    int16_t  temp_c10;    /* **片内**温度 ×10（手机没给天气温度时用它） */
+    uint8_t  wx_code;     /* 天气码（0 = 不显示；1 晴 2 多云 …，见 weather.h） */
+    int8_t   env_temp_c;  /* 手机下发的**天气温度**（℃）；-128 = 没收到过 */
 } zkgui_info_t;
 
 #define ZK_TEMP_NONE  ((int16_t)(-32768))   /* "温度没读到" */
