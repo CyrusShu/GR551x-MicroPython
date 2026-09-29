@@ -57,10 +57,14 @@
 >
 > **④ 图片预览**（都是拿 `tools/gui_preview.py` 直接跑固件那套画法出来的）
 >
+> * `docs/preview/preview-header-weather.png` —— **只看表头那 27 行**，放大 4 倍（多云 26℃）
+> * `docs/preview/preview-header-weather-thunder.png` —— 同上，雷阵雨 30℃
 > * `docs/preview/preview-calendar-weather.png` —— 多云 26℃
 > * `docs/preview/preview-calendar-weather-thunder.png` —— 雷阵雨 30℃
 > * `docs/preview/preview-weather-icons.png` —— 9 个图标（放大 6 倍）
 > * `docs/preview/preview-weather-icons-sets.png` —— 四套方案对比（选型证据）
+>
+> 表头怎么单独裁出来放大：`python3 tools/header_zoom.py 1 <unix秒> /tmp/hdr.png 8 3970 264 0 2 26`
 >
 > **⑤ 自测与镜像**
 >
