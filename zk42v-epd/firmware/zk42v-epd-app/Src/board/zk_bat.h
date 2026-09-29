@@ -39,7 +39,9 @@ void     zk_bat_trigger(void);         /* 让下一次 zk_bat_poll() 跳过限�
                                           （BLE 命令 0x72 用它来"扫电压/挑电量图标"） */
 
 int      zk_bat_mv(void);              /* 电池毫伏（1.28V 参考那条路）；-1 = 还没读到 */
-int      zk_bat_pct(void);             /* 0..100（按 3.0V=0% / 4.2V=100%）；-1 = 无效 */
+int      zk_bat_pct(void);             /* 0..100（按 **CR2450** 的分段曲线：3.0V=100% …
+                                          2.5V=0%）；-1 = 无效。表在 zk_bat.c 里，
+                                          tools/bat_sheet.py 会把它抠出来画对照图 */
 int      zk_bat_temp_c10(void);        /* 温度 ×10（26.4℃ -> 264）；INT16_MIN = 无效 */
 
 uint32_t zk_bat_reads(void);           /* 成功读了几次 */

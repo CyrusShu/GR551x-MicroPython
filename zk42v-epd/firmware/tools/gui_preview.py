@@ -38,7 +38,8 @@ C_RED = (190, 0, 0)          # 墨水屏的红没这么鲜艳，预览里压暗�
 def build(tmpdir):
     exe = os.path.join(tmpdir, 'gui_preview')
     extra = os.environ.get('ZK_CC_FLAGS', '').split()      # 想试编译期开关时用
-    cmd = ['cc', '-std=gnu99', '-O1', '-Wall', '-I', IMG] + extra + [
+    board = os.path.join(FW, 'zk42v-epd-app', 'Src', 'board')   # zk_bat_curve.h 在那儿
+    cmd = ['cc', '-std=gnu99', '-O1', '-Wall', '-I', IMG, '-I', board] + extra + [
            os.path.join(HERE, 'gui_preview.c'),
            os.path.join(IMG, 'zkgui.c'),
            os.path.join(IMG, 'lunar.c'),

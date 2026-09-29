@@ -21,6 +21,7 @@
 #include "gr55xx_sys.h"                      /* sys_adc_trim_get / adc_trim_info_t */
 #include "gr55xx_hal_adc_vbat_api.h"         /* hal_adc_vbat_init/read */
 #include "gr55xx_hal_adc_temp_api.h"         /* hal_adc_temp_init/read */
+#include "zk_bat_curve.h"                    /* CR2450 的电量曲线（唯一真相） */
 
 /* VBAT 那一路的内部换算系数：ADC 输入 = 电池 / (27/7)。
    SDK 的 vbat api 里也是这个常数（见 projects/peripheral/adc/adc_temp_vbat 那份源码）。 */
@@ -189,21 +190,8 @@ int zk_bat_pct(void)
     {
         return -1;
     }
-    /* 锂电很粗的线性近似：3.0V -> 0%，4.2V -> 100%。
-       我们只是画个图标，不做电量计。 */
-    {
-        int pct = (mv - 3000) * 100 / 1200;
-
-        if (pct < 0)
-        {
-            pct = 0;
-        }
-        if (pct > 100)
-        {
-            pct = 100;
-        }
-        return pct;
-    }
+    /* CR2450 的电量曲线在 Src/board/zk_bat_curve.h（主机预览、对照图脚本共用同一张表） */
+    return zk_bat_curve_pct(mv);
 }
 
 int zk_bat_temp_c10(void)

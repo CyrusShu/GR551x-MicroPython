@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "zkgui.h"
+#include "zk_bat_curve.h"    /* 电量曲线：跟固件 zk_bat_pct() 共用同一张表 */
 
 #define GUARD 32
 
@@ -59,7 +60,7 @@ int main(int argc, char **argv)
 
         if (mv > 1000)                               /* 毫伏；0/负数 = 没读到 */
         {
-            int pct = (mv - 3000) * 100 / 1200;      /* 跟固件 zk_bat_pct() 一致 */
+            int pct = zk_bat_curve_pct(mv);          /* CR2450 的曲线，跟固件同一个函数 */
 
             info.bat_mv  = (int16_t)mv;
             info.bat_pct = (int8_t)(pct < 0 ? 0 : (pct > 100 ? 100 : pct));

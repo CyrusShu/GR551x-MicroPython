@@ -55,6 +55,8 @@ FILES = [
     ("outputs/firmware/tools/test_weather.py",                              "firmware/tools/test_weather.py"),
     ("outputs/firmware/tools/wx_sheet.py",                                  "firmware/tools/wx_sheet.py"),
     ("outputs/firmware/tools/header_zoom.py",                               "firmware/tools/header_zoom.py"),
+    ("outputs/firmware/zk42v-epd-app/Src/board/zk_bat_curve.h",               "firmware/zk42v-epd-app/Src/board/zk_bat_curve.h"),
+    ("outputs/firmware/tools/test_bat.py",                                    "firmware/tools/test_bat.py"),
     ("outputs/firmware/tools/bat_sheet.py",                                 "firmware/tools/bat_sheet.py"),
     ("outputs/firmware/docs/preview/preview-battery-levels.png",            "firmware/docs/preview/preview-battery-levels.png"),
     ("outputs/firmware/tools/weather_img.py",                               "firmware/tools/weather_img.py"),
