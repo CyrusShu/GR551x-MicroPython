@@ -177,3 +177,30 @@ build 29 改成：用系统里的**冬青黑体简体中文**在 15px 下栅格�
 
 > 方法可以复用：**放大局部 → 逐行/逐列统计墨迹 → 用"整行全暗"的横线（黑条、
 > 边框）定标 → 换算成面板像素**。三次改版（build 31→33）都是这么量的。
+
+### 5.3 字的出处：样板用的就是原厂源码里那两套 u8g2 字库（2026-09-29）
+
+用户一句"**节气的字比普通字粗、初九的九非常纤细**"，直接把方向指对了 ——
+我们一直拿系统字体（Hiragino / Arial Bold）栅格化去"仿"样板，而样板那一页的
+**字库就在原厂源码里**：`work/github/epd-nrf5-user/GUI/fonts.c`
+
+```
+u8g2_font_helvB14_tn      数字 9x13   ← 日号（样板上量到 13.6px）
+u8g2_font_helvB18_tn      数字 12x18  ← 没用在日历页
+u8g2_font_wqy12_t_lunar   16x16 细体  ← 农历 / 节气 / 干支 / 生肖
+u8g2_font_wqy9_t_lunar    11x12 更细  ← 表头那种小字
+```
+
+u8g2 字体格式（对着他们 `u8g2_font.c` 解出来的，记下来免得下次再摸）：
+
+* 头 23 字节：`glyph_cnt / bbx / bits_per_0 / bits_per_1 / bits_per_char_{w,h,x,y,dx} /
+  max_w / max_h / x_off / y_off / ascent / descent / … / start_pos_unicode(2B)`
+* unicode 查找表：每条 4 字节（**累计偏移** 2B + 该段最后一个码点 2B），
+  偏移从查找表起点开始累加；ASCII 段从第 23 字节开始
+* 字形数据是位流，**低位在前**（`u8g2_font_decode_get_unsigned_bits` 是 `val >>= bit_pos`）
+* RLE：一组 `(a 个 0, b 个 1)` 后面跟 1 bit —— **是 1 就用同一组再画一遍**（不是重新读），
+  是 0 才换行。这一点最容易写错（我第一版就按"重新读一组"写的，解出来全是噪点）
+
+工具：`firmware/tools/gen_vendor_font.py`（抽字形 → `tools/vendor_font.py`），
+`gen_font.py` 优先用原厂字形。顺带发现原厂字库里**24 个节气名 + 干支 + 生肖都在**
+（已抽出 58 个字），所以"节气替换农历那行"随时能做。

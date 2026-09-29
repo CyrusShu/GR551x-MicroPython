@@ -423,91 +423,11 @@ static int text_cjk_width(const char *s, int scale)
     return (n > 0) ? (n * 17 - 1) * scale : 0;
 }
 
-/* ---------------------------------------------------------------- 小字（12x12）
+/* ---------------------------------------------------------------- 数字
  *
- * 月历格子里那行农历专门用这套小字。为什么要两套字：
- * 样板（社区第 14 号那版）里"今天"是**一个大红圆包住日号和农历两个字**；
- * 我们原来格子里的农历是 16x16，两个字 33px 宽 —— 39px 的行高里，圆的下半部分
- * 弦长根本容不下 33px，只能把圆缩到"只套日号"。换成 12x12（两个字 25px）之后，
- * 圆能做到半径 21，数字和农历都进得去，格子也跟着松快。
- */
-static void draw_cjk_s(uint8_t *buf, int x, int y, int idx, int scale, int color)
-{
-    const uint8_t *g;
-    int cy, cx;
-
-    if (idx < 0 || idx >= ZK_CJK_S_NUM)
-    {
-        return;
-    }
-    g = zk_font_cjk_s[idx];
-
-    for (cy = 0; cy < ZK_FONT_CJK_S_H; cy++)
-    {
-        for (cx = 0; cx < ZK_FONT_CJK_S_W; cx++)
-        {
-            if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
-            {
-                fill_rect(buf, x + cx * scale, y + cy * scale, scale, scale, color);
-            }
-        }
-    }
-}
-
-static int draw_text_cjk_s(uint8_t *buf, int x, int y, const char *s, int scale, int color)
-{
-    const uint8_t *p = (const uint8_t *)s;
-
-    while (*p)
-    {
-        uint32_t cp = 0;
-        int      i;
-
-        if (p[0] < 0x80) { p++; x += (ZK_FONT_CJK_S_W + 1) * scale; continue; }
-        if ((p[0] & 0xE0) == 0xC0)
-        {
-            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
-            p += 2;
-        }
-        else
-        {
-            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) |
-                 (p[2] & 0x3F);
-            p += 3;
-        }
-
-        for (i = 0; i < ZK_CJK_S_NUM; i++)
-        {
-            if (zk_cjk_s_cp[i] == cp)
-            {
-                draw_cjk_s(buf, x, y, i, scale, color);
-                break;
-            }
-        }
-        x += (ZK_FONT_CJK_S_W + 1) * scale;
-    }
-    return x;
-}
-
-static int text_cjk_s_width(const char *s, int scale)
-{
-    int            n = 0;
-    const uint8_t *p = (const uint8_t *)s;
-
-    while (*p)
-    {
-        if (p[0] < 0x80) { p++; }
-        else if ((p[0] & 0xE0) == 0xC0) { p += 2; }
-        else { p += 3; }
-        n++;
-    }
-    return (n > 0) ? (n * (ZK_FONT_CJK_S_W + 1) - 1) * scale : 0;
-}
-
-/* ---------------------------------------------------------------- 粗体数字
- *
- * 日号和时间用这套（Arial Bold 19px 栅格化的 12x16 点阵，见 tools/cjk_from_ttf.py）。
- * 比 5x7 放大那套更像样板的观感：帽高 14px、笔画 2~3px。
+ * 日号和时间用的数字表来自**原厂固件里的 u8g2_font_helvB14_tn**
+ * （Helvetica Bold，数字 9x13 —— 正好是样板量到的 13.6px 高），见 tools/gen_vendor_font.py。
+ * 每个字形在表里补成 10px 宽、居中对齐，步进就是 10px。
  */
 static int num_idx(char c)
 {
@@ -519,10 +439,6 @@ static int num_idx(char c)
     {
         return 10;
     }
-    if ('.' == c)
-    {
-        return 11;
-    }
     return -1;
 }
 
@@ -530,7 +446,7 @@ static int num_width(const char *s, int scale)
 {
     int n = (int)strlen(s);
 
-    return (n > 0) ? (n * (ZK_FONT_NUM_W + 1) - 1) * scale : 0;
+    return (n > 0) ? (n * ZK_FONT_NUM_W) * scale : 0;
 }
 
 static int draw_num(uint8_t *buf, int x, int y, const char *s, int scale, int color)
@@ -556,14 +472,10 @@ static int draw_num(uint8_t *buf, int x, int y, const char *s, int scale, int co
                 }
             }
         }
-        x += (ZK_FONT_NUM_W + 1) * scale;
+        x += ZK_FONT_NUM_W * scale;
     }
     return x;
 }
-
-/* 星期：0=周日 … 6=周六（跟 zkgui_civil 的 wday 一致） */
-static const uint8_t s_wday_cjk[7] =
-    { CJK_RI, CJK_YI, CJK_ER, CJK_SAN, CJK_SI, CJK_WU, CJK_LIU };
 
 /* 月历表头：周一开头（跟国内日历、以及 4.2 寸那块屏的做法一致） */
 static const uint8_t s_head_cjk[7] =
@@ -646,7 +558,7 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
    日号 3..17（scale 2 的 5x7 = 14px 高，跟样板的 13.6px 对得上），
    农历 19..35（16x16 原大，墨迹约 13px）。中间留 2px，行底还剩 6px 空。 */
 #define CAL_NUM_Y    3
-#define CAL_LUN_Y    19
+#define CAL_LUN_Y    18
 
 #define CAL_ROW_H_MIN 38                           /* 行距下限（6 行月） */
 #define CAL_ROW_H_MAX 56                           /* 行距上限（4 行月别拉太散） */
@@ -658,7 +570,7 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
  *   这一段平分给 (行数-1) 个间隔。 */
 static int cal_row_h(int rows_used)
 {
-    const int content_h = (CAL_LUN_Y + ZK_FONT_CJK_S_H) - CAL_NUM_Y;  /* 30 */
+    const int content_h = (CAL_LUN_Y + ZK_FONT_CJK_H) - CAL_NUM_Y;    /* 31 */
     const int top       = CAL_GRID_Y + CAL_GRID_PAD;
     int       avail     = ZKGUI_H - CAL_BOTTOM_PAD - content_h - top;
     int       h         = (rows_used > 1) ? (avail / (rows_used - 1)) : avail;
@@ -780,9 +692,9 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
         cal_lunar_month(year, mon, day, mbuf, (int)sizeof(mbuf));
         if (mbuf[0])
         {
-            x = draw_text_cjk_s(buf, x, 7, "农历", 1, C_BLACK);
-            x = draw_text_cjk_s(buf, x + 1, 7, mbuf, 1, C_BLACK);
-            x += 5;
+            x = draw_text_cjk(buf, x, 5, "农历", 1, C_BLACK);
+            x = draw_text_cjk(buf, x + 1, 5, mbuf, 1, C_BLACK);
+            x += 6;
         }
     }
 
@@ -873,17 +785,17 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     {
         /* 今天：红圆把**日号和农历两个字**一起圈住（照样板）。
          *
-         * 半径 22 是量出来的：圆要同时装下
-         *   · 日号 scale 2（10x14，中心在圆心上偏 7px）
-         *   · 农历两个字 29px 宽（14x14 小字）
-         * 农历最外角离圆心 sqrt(14.5² + 13²) ≈ 19.5 —— 取 r=22 还有余量
+         * 半径 23 是量出来的：圆要同时装下
+         *   · 日号（10x13，原厂 helvB14）
+         *   · 农历两个字 33px 宽（16x16 原厂细体）
+         * 农历最外角离圆心 sqrt(16.5² + 15²) ≈ 22.3 —— 取 r=23
          * （上边越界 3px、下边刚好到行底），不会碰上一行的农历、也不会蹭到下一行。 */
-        fill_circle(buf, cx, y0 + 18, (row_h >= 46) ? 25 : 22, C_RED);
+        fill_circle(buf, cx, y0 + 17, (row_h >= 46) ? 25 : 23, C_RED);
         draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, C_WHITE);
         if (lun)
         {
-            lw = text_cjk_s_width(lun, 1);
-            draw_text_cjk_s(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, C_WHITE);
+            lw = text_cjk_width(lun, 1);
+            draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, C_WHITE);
         }
         return;
     }
@@ -892,8 +804,8 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, color);
     if (lun)
     {
-        lw = text_cjk_s_width(lun, 1);
-        draw_text_cjk_s(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
+        lw = text_cjk_width(lun, 1);
+        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
     }
 }
 

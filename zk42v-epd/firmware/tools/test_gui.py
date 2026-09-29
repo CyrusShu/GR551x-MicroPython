@@ -35,7 +35,7 @@ CAL_BOTTOM_PAD = 8
 CAL_COL_W = G.W // 7
 CAL_ROW_H_MIN = 38
 CAL_ROW_H_MAX = 56
-CAL_CONTENT_H = (19 + 14) - 3        # 农历底 - 日号顶 = 30（跟 zkgui.c 一致）
+CAL_CONTENT_H = (18 + 16) - 3        # 农历底 - 日号顶 = 31（跟 zkgui.c 一致）
 
 
 def row_h(rows_used):
@@ -85,7 +85,7 @@ def lunar_ink(rows, col, row, pitch, is_today=False):
     今天那格是红底白字（只在红块里面数，块外那圈白边不算）。"""
     x0 = col * CAL_COL_W
     w = CAL_COL_W
-    y0 = CAL_GRID_Y + CAL_GRID_PAD + row * pitch + 19
+    y0 = CAL_GRID_Y + CAL_GRID_PAD + row * pitch + 18
     if is_today:
         x0 += 4
         w -= 8

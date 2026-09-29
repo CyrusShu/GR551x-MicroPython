@@ -17,7 +17,8 @@
 import math
 import os
 
-from cjk_ascii import CJK_ASCII, CJK_ASCII_S, NUM_ASCII   # 汉字 16x16 / 12x12 + 数字
+from cjk_ascii import CJK_ASCII, CJK_ASCII_S, NUM_ASCII   # 我们栅格化的（补字用）
+from vendor_font import CJK as V_CJK, NUM as V_NUM         # **原厂固件里的 u8g2 字形**
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMGDIR = os.path.join(os.path.dirname(HERE), 'zk42v-epd-app', 'Src', 'img')
@@ -62,8 +63,7 @@ ASCII5x7 = {
 # 顺序的唯一真相在 tools/cjk_from_ttf.py 的 CHARS（cjk_ascii.py 按同样的顺序存），
 # 这里直接用它，免得两处顺序对不上。
 CJK_ORDER = list(CJK_ASCII)
-CJK_ORDER_S = list(CJK_ASCII_S)      # 小字（格子里的农历）
-NUM_ORDER = list(NUM_ASCII)          # 粗体数字：0-9 : .
+NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 
 
 def pack_rows(rows, w):
@@ -83,13 +83,32 @@ def pack_rows(rows, w):
     return out
 
 
+def pad16(g):
+    """把任意尺寸的位图居中补成 16x16（原厂字形里有 15x16 / 16x15 这种）"""
+    h = len(g)
+    w = max(len(r) for r in g)
+    oy = (16 - h) // 2
+    ox = (16 - w) // 2
+    out = []
+    for y in range(16):
+        if y < oy or y >= oy + h:
+            out.append('.' * 16)
+        else:
+            row = g[y - oy]
+            out.append('.' * ox + row + '.' * (16 - ox - len(row)))
+    return out
+
+
 def cjk_bitmap(ch):
-    """16x16 点阵：直接取 cjk_ascii.py 里那份（真黑体栅格化的结果）"""
-    if ch not in CJK_ASCII:
-        raise KeyError('cjk_ascii.py 里没有 %s —— 跑一遍 tools/cjk_from_ttf.py' % ch)
-    g = CJK_ASCII[ch]
-    assert len(g) == 16 and all(len(r) == 16 for r in g), '字形 %s 不是 16x16' % ch
-    return g
+    """16x16 点阵：**优先用原厂 u8g2 字库里的字形**（跟样板同源、笔画细），
+    原厂没有的（目前只有"农/历"）才退回我们栅格化的那份。"""
+    if ch in V_CJK:
+        return pad16(V_CJK[ch])
+    if ch in CJK_ASCII:
+        g = CJK_ASCII[ch]
+        assert len(g) == 16 and all(len(r) == 16 for r in g), '字形 %s 不是 16x16' % ch
+        return g
+    raise KeyError('没有 %s 的字形' % ch)
 
 
 def gen_font():
@@ -145,37 +164,24 @@ def gen_font():
           % (', '.join('0x%02X' % v for v in rows[24:32]), ch))
     a('};')
     a('')
-    # ---- 粗体数字（12x16）：日号 / 时间 ----
-    a('/* 日号和时间用的粗体数字（Arial Bold 19px 栅格化，见 tools/cjk_from_ttf.py）。')
-    a('   样板上的日号就是这种粗黑数字：帽高 14px、笔画 2~3px。 */')
-    a('#define ZK_FONT_NUM_W   12')
-    a('#define ZK_FONT_NUM_H   16')
+    # ---- 数字（10x13）：日号 / 时间 ----
+    a('/* 日号和时间用的数字：**原厂固件里的 u8g2_font_helvB14_tn**（Helvetica Bold，')
+    a('   数字 9x13 —— 正好是样板量到的 13.6px 高）。见 tools/gen_vendor_font.py。 */')
+    a('#define ZK_FONT_NUM_W   10')
+    a('#define ZK_FONT_NUM_H   13')
     a('#define ZK_NUM_LEN      %d' % len(NUM_ORDER))
     a('static const uint8_t zk_font_num[ZK_NUM_LEN][ZK_FONT_NUM_H * 2] = {')
     for ch in NUM_ORDER:
-        rows = pack_rows(NUM_ASCII[ch], 12)
-        assert len(rows) == 32, len(rows)          # 16 行 x 2 字节
-        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:16]))
+        g = V_NUM[ch]
+        w = max(len(r) for r in g)
+        ox = (10 - w) // 2
+        rows = ['.' * ox + r + '.' * (10 - ox - len(r)) for r in g]
+        rows += ['.' * 10] * (13 - len(rows))
+        packed = pack_rows(rows, 10)
+        assert len(packed) == 26, len(packed)      # 13 行 x 2 字节
+        a('    { %s,' % ', '.join('0x%02X' % v for v in packed[:13]))
         a('      %s },   /* %s */'
-          % (', '.join('0x%02X' % v for v in rows[16:32]), ch))
-    a('};')
-    a('')
-    # ---- 小字（12x12）：月历格子里那行农历 ----
-    a('/* 中文小字 14x14（月历格子里的农历 + 表头的"农历X月"）。数据见 tools/cjk_ascii.py 的')
-    a('   CJK_ASCII_S —— 用它是为了"今天"那个红圆能同时圈住日号和农历两个字。 */')
-    a('#define ZK_FONT_CJK_S_W  14')
-    a('#define ZK_FONT_CJK_S_H  14')
-    a('#define ZK_CJK_S_NUM     %d' % len(CJK_ORDER_S))
-    a('static const uint32_t zk_cjk_s_cp[ZK_CJK_S_NUM] = {')
-    a('    ' + ', '.join('0x%04X' % ord(c) for c in CJK_ORDER_S) + ',')
-    a('};')
-    a('static const uint8_t zk_font_cjk_s[ZK_CJK_S_NUM][ZK_FONT_CJK_S_H * 2] = {')
-    for ch in CJK_ORDER_S:
-        rows = pack_rows(CJK_ASCII_S[ch], 14)
-        assert len(rows) == 28, len(rows)          # 14 行 x 2 字节
-        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:14]))
-        a('      %s },   /* %s */'
-          % (', '.join('0x%02X' % v for v in rows[14:28]), ch))
+          % (', '.join('0x%02X' % v for v in packed[13:26]), ch))
     a('};')
     a('')
     a('#endif /* __ZK_GUI_FONT_H__ */')

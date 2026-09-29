@@ -42,6 +42,8 @@ FILES = [
     ("outputs/firmware/tools/gen_lunar.py",             "firmware/tools/gen_lunar.py"),
     ("outputs/firmware/tools/cjk_from_ttf.py",          "firmware/tools/cjk_from_ttf.py"),
     ("outputs/firmware/tools/cjk_ascii.py",             "firmware/tools/cjk_ascii.py"),
+    ("outputs/firmware/tools/gen_vendor_font.py",       "firmware/tools/gen_vendor_font.py"),
+    ("outputs/firmware/tools/vendor_font.py",           "firmware/tools/vendor_font.py"),
     ("outputs/firmware/tools/gui_preview.c",            "firmware/tools/gui_preview.c"),
     ("outputs/firmware/tools/gui_preview.py",           "firmware/tools/gui_preview.py"),
     ("outputs/firmware/tools/test_gui.py",              "firmware/tools/test_gui.py"),
