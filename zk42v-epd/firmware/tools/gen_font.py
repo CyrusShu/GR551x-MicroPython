@@ -17,7 +17,7 @@
 import math
 import os
 
-from cjk_ascii import CJK_ASCII      # 16x16 汉字点阵（见 tools/cjk_from_ttf.py）
+from cjk_ascii import CJK_ASCII, CJK_ASCII_S   # 16x16 / 12x12 汉字点阵
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMGDIR = os.path.join(os.path.dirname(HERE), 'zk42v-epd-app', 'Src', 'img')
@@ -62,6 +62,7 @@ ASCII5x7 = {
 # 顺序的唯一真相在 tools/cjk_from_ttf.py 的 CHARS（cjk_ascii.py 按同样的顺序存），
 # 这里直接用它，免得两处顺序对不上。
 CJK_ORDER = list(CJK_ASCII)
+CJK_ORDER_S = list(CJK_ASCII_S)      # 小字（格子里的农历）
 
 
 def pack_rows(rows, w):
@@ -141,6 +142,24 @@ def gen_font():
         a('      %s,' % ', '.join('0x%02X' % v for v in rows[16:24]))
         a('      %s },   /* %s */'
           % (', '.join('0x%02X' % v for v in rows[24:32]), ch))
+    a('};')
+    a('')
+    # ---- 小字（12x12）：月历格子里那行农历 ----
+    a('/* 中文小字 12x12（月历格子里的农历那行）。数据见 tools/cjk_ascii.py 的')
+    a('   CJK_ASCII_S —— 用它是为了"今天"那个红圆能同时圈住日号和农历两个字。 */')
+    a('#define ZK_FONT_CJK_S_W  12')
+    a('#define ZK_FONT_CJK_S_H  12')
+    a('#define ZK_CJK_S_NUM     %d' % len(CJK_ORDER_S))
+    a('static const uint32_t zk_cjk_s_cp[ZK_CJK_S_NUM] = {')
+    a('    ' + ', '.join('0x%04X' % ord(c) for c in CJK_ORDER_S) + ',')
+    a('};')
+    a('static const uint8_t zk_font_cjk_s[ZK_CJK_S_NUM][ZK_FONT_CJK_S_H * 2] = {')
+    for ch in CJK_ORDER_S:
+        rows = pack_rows(CJK_ASCII_S[ch], 12)
+        assert len(rows) == 24, len(rows)          # 12 行 x 2 字节
+        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:12]))
+        a('      %s },   /* %s */'
+          % (', '.join('0x%02X' % v for v in rows[12:24]), ch))
     a('};')
     a('')
     a('#endif /* __ZK_GUI_FONT_H__ */')

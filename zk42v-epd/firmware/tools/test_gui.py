@@ -25,13 +25,19 @@ sys.path.insert(0, HERE)
 
 import gui_preview as G   # noqa: E402
 
-# 版式常量（跟 zkgui.c 里那组一致）
-CAL_HDR_H = 40
-CAL_WD_Y = 41
-CAL_WD_H = 21
-CAL_GRID_Y = 64
-CAL_COL_W = G.W // 7                      # 57
-CAL_ROW_H = (G.H - CAL_GRID_Y) // 6       # 39
+# 版式常量（跟 zkgui.c 里那组一致；数值是照样板量出来的，见 build 32 的说明）
+CAL_HDR_H = 26
+CAL_WD_Y = 26
+CAL_WD_H = 22
+CAL_GRID_Y = 48
+CAL_GRID_PAD = 6
+CAL_COL_W = G.W // 7                                          # 57
+CAL_ROW_H = (G.H - CAL_GRID_Y - CAL_GRID_PAD) // 6            # 41
+
+
+def cell_xy(col, row):
+    """格子的左上角（含格子区上边距）"""
+    return col * CAL_COL_W, CAL_GRID_Y + CAL_GRID_PAD + row * CAL_ROW_H
 
 BLACK = bytes(G.C_BLACK)
 WHITE = bytes(G.C_WHITE)
@@ -55,8 +61,7 @@ def count(rows, color, x0=0, y0=0, x1=G.W, y1=G.H):
 
 def cell_ink(rows, col, row):
     """某个格子里有多少"有内容"的像素（黑或红都算）"""
-    x0 = col * CAL_COL_W
-    y0 = CAL_GRID_Y + row * CAL_ROW_H
+    x0, y0 = cell_xy(col, row)
     return sum(1 for y in range(y0, min(y0 + CAL_ROW_H, G.H))
                for x in range(x0, min(x0 + CAL_COL_W, G.W))
                if at(rows, x, y) in (BLACK, RED))
@@ -69,7 +74,7 @@ def lunar_ink(rows, col, row, is_today=False):
     今天那格是红底白字（只在红块里面数，块外那圈白边不算）。"""
     x0 = col * CAL_COL_W
     w = CAL_COL_W
-    y0 = CAL_GRID_Y + row * CAL_ROW_H + 22
+    y0 = CAL_GRID_Y + CAL_GRID_PAD + row * CAL_ROW_H + 19
     if is_today:
         x0 += 4
         w -= 8
@@ -87,8 +92,7 @@ def today_cell(rows):
     判据：日号那一小块里红像素特别多（红圆 ≈ 700 个），别的格子最多只有红色的数字笔画。"""
     for row in range(6):
         for col in range(7):
-            x0 = col * CAL_COL_W
-            y0 = CAL_GRID_Y + row * CAL_ROW_H
+            x0, y0 = cell_xy(col, row)
             if count(rows, RED, x0 + 6, y0 + 1, x0 + CAL_COL_W - 6, y0 + 22) > 300:
                 return (col, row)
     return None
@@ -169,13 +173,13 @@ def main():
         worst = (0, None)
         for m in range(60):
             rows, _ = render(2, TS + m * 60)
-            # 时钟页表盘：圆心 (200,148) 半径 76，粗细 4 —— 外面多给 6px 余量
+            # 时钟页表盘：圆心 (200,140) 半径 80，粗细 4 —— 外面多给 6px 余量
             bad = 0
             for y in range(G.H):
                 for x in range(G.W):
                     if 40 <= y < 230 and at(rows, x, y) == BLACK:
-                        dx, dy = x - 200, y - 148
-                        if dx * dx + dy * dy > 84 * 84:
+                        dx, dy = x - 200, y - 140
+                        if dx * dx + dy * dy > 86 * 86:
                             bad += 1
             if bad > worst[0]:
                 worst = (bad, m)

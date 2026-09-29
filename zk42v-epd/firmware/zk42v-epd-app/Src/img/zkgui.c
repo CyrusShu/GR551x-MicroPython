@@ -423,6 +423,87 @@ static int text_cjk_width(const char *s, int scale)
     return (n > 0) ? (n * 17 - 1) * scale : 0;
 }
 
+/* ---------------------------------------------------------------- 小字（12x12）
+ *
+ * 月历格子里那行农历专门用这套小字。为什么要两套字：
+ * 样板（社区第 14 号那版）里"今天"是**一个大红圆包住日号和农历两个字**；
+ * 我们原来格子里的农历是 16x16，两个字 33px 宽 —— 39px 的行高里，圆的下半部分
+ * 弦长根本容不下 33px，只能把圆缩到"只套日号"。换成 12x12（两个字 25px）之后，
+ * 圆能做到半径 21，数字和农历都进得去，格子也跟着松快。
+ */
+static void draw_cjk_s(uint8_t *buf, int x, int y, int idx, int scale, int color)
+{
+    const uint8_t *g;
+    int cy, cx;
+
+    if (idx < 0 || idx >= ZK_CJK_S_NUM)
+    {
+        return;
+    }
+    g = zk_font_cjk_s[idx];
+
+    for (cy = 0; cy < ZK_FONT_CJK_S_H; cy++)
+    {
+        for (cx = 0; cx < ZK_FONT_CJK_S_W; cx++)
+        {
+            if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
+            {
+                fill_rect(buf, x + cx * scale, y + cy * scale, scale, scale, color);
+            }
+        }
+    }
+}
+
+static int draw_text_cjk_s(uint8_t *buf, int x, int y, const char *s, int scale, int color)
+{
+    const uint8_t *p = (const uint8_t *)s;
+
+    while (*p)
+    {
+        uint32_t cp = 0;
+        int      i;
+
+        if (p[0] < 0x80) { p++; x += (ZK_FONT_CJK_S_W + 1) * scale; continue; }
+        if ((p[0] & 0xE0) == 0xC0)
+        {
+            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+            p += 2;
+        }
+        else
+        {
+            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) |
+                 (p[2] & 0x3F);
+            p += 3;
+        }
+
+        for (i = 0; i < ZK_CJK_S_NUM; i++)
+        {
+            if (zk_cjk_s_cp[i] == cp)
+            {
+                draw_cjk_s(buf, x, y, i, scale, color);
+                break;
+            }
+        }
+        x += (ZK_FONT_CJK_S_W + 1) * scale;
+    }
+    return x;
+}
+
+static int text_cjk_s_width(const char *s, int scale)
+{
+    int            n = 0;
+    const uint8_t *p = (const uint8_t *)s;
+
+    while (*p)
+    {
+        if (p[0] < 0x80) { p++; }
+        else if ((p[0] & 0xE0) == 0xC0) { p += 2; }
+        else { p += 3; }
+        n++;
+    }
+    return (n > 0) ? (n * (ZK_FONT_CJK_S_W + 1) - 1) * scale : 0;
+}
+
 /* 星期：0=周日 … 6=周六（跟 zkgui_civil 的 wday 一致） */
 static const uint8_t s_wday_cjk[7] =
     { CJK_RI, CJK_YI, CJK_ER, CJK_SAN, CJK_SI, CJK_WU, CJK_LIU };
@@ -492,12 +573,24 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
  * 农历那一行的开关（0x70 的 bit2）保留：关掉就不画每格的农历小字。
  */
 
-#define CAL_HDR_H    40                            /* 顶部黑条 */
-#define CAL_WD_Y     41                            /* 星期条 */
-#define CAL_WD_H     21
-#define CAL_GRID_Y   64
+/* 版式数值是**照着样板量出来的**（见 docs/feature-backlog.md 里的量测笔记）：
+   样板（社区第 14 号那版）：表头 ~29px、黑条 21.6px、格子从 51.6 开始、
+   行距 48.7px（5 行月）/ 约 43px（6 行月）、日号高 13.6px、农历高 ~14px、
+   今天那个红圆直径 48px（把日号和农历两个字都圈住）。
+   我们按 6 行排：表头 26 + 黑条 22 + 格子 252 → 行距 42。 */
+#define CAL_HDR_H    26                            /* 表头（白底） */
+#define CAL_WD_Y     26                            /* 黑星期条 */
+#define CAL_WD_H     22
+#define CAL_GRID_Y   48                            /* 格子区从黑条下沿开始 */
+#define CAL_GRID_PAD 6                             /* 第一行日号离黑条再留 6px */
 #define CAL_COL_W    (ZKGUI_W / 7)                 /* 57 */
-#define CAL_ROW_H    ((ZKGUI_H - CAL_GRID_Y) / 6)  /* 39 */
+#define CAL_ROW_H    ((ZKGUI_H - CAL_GRID_Y - CAL_GRID_PAD) / 6)  /* 41 */
+
+/* 格子里那两行的位置（相对行的上沿）：
+   日号 3..17（scale 2 的 5x7 = 14px 高，跟样板的 13.6px 对得上），
+   农历 19..35（16x16 原大，墨迹约 13px）。中间留 2px，行底还剩 6px 空。 */
+#define CAL_NUM_Y    3
+#define CAL_LUN_Y    19
 
 /* 某一天的农历日名（"初八"/"廿三"/"三十"）；算不出来返回 NULL */
 static const char *cal_lunar_day(int year, int mon, int day)
@@ -579,44 +672,45 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
 
     fill_rect(buf, 0, 0, ZKGUI_W, CAL_HDR_H - 1, C_WHITE);
 
-    /* 左：2026年09月（红）—— 数字 5x7 放大 2 倍，年月用 16x16 汉字 */
+    /* 左：2026年09月（红）—— 数字 scale 2（14px 高，样板年月是 ~24px，
+       但那是在 29px 高的表头里；我们压到 26px 后取 14px 更稳） */
     s[0] = (char)('0' + (year / 1000) % 10);
     s[1] = (char)('0' + (year / 100) % 10);
     s[2] = (char)('0' + (year / 10) % 10);
     s[3] = (char)('0' + year % 10);
     s[4] = 0;
     x = 6;
-    draw_text5(buf, x, 13, s, 2, C_RED);
+    draw_text5(buf, x, 6, s, 2, C_RED);
     x += text5_width(s, 2) + 2;
-    draw_cjk(buf, x, 12, CJK_YEAR, 1, C_RED);
+    draw_cjk(buf, x, 5, CJK_YEAR, 1, C_RED);
     x += 17 + 2;
     s[0] = (char)('0' + (mon / 10) % 10);
     s[1] = (char)('0' + mon % 10);
     s[2] = 0;
-    draw_text5(buf, x, 13, s, 2, C_RED);
+    draw_text5(buf, x, 6, s, 2, C_RED);
     x += text5_width(s, 2) + 2;
-    draw_cjk(buf, x, 12, CJK_YUE, 1, C_RED);
-    x += 17 + 6;
+    draw_cjk(buf, x, 5, CJK_YUE, 1, C_RED);
+    x += 17 + 5;
 
-    /* 中：农历八月（黑）。关掉农历时这一条也不画。 */
+    /* 中：农历八月（黑）—— 用**小一号**的 12x12 字（样板里表头农历就比年月小一档） */
     if (with_lunar && s_lunar_on)
     {
         cal_lunar_month(year, mon, day, mbuf, (int)sizeof(mbuf));
         if (mbuf[0])
         {
-            x = draw_text_cjk(buf, x, 12, "农历", 1, C_BLACK);
-            x = draw_text_cjk(buf, x + 1, 12, mbuf, 1, C_BLACK);
-            x += 6;
+            x = draw_text_cjk_s(buf, x, 7, "农历", 1, C_BLACK);
+            x = draw_text_cjk_s(buf, x + 1, 7, mbuf, 1, C_BLACK);
+            x += 5;
         }
     }
 
-    /* 中右：生肖年（红）。甲子纪年：鼠=0 … 马=6 …，就是 (年-4) mod 12 */
+    /* 中右：生肖年（红） */
     zi = (int)(((year - 4) % 12 + 12) % 12);
-    draw_cjk(buf, x, 12, 23 + zi, 1, C_RED);
-    draw_cjk(buf, x + 17, 12, CJK_YEAR, 1, C_RED);
+    draw_cjk(buf, x, 5, 23 + zi, 1, C_RED);
+    draw_cjk(buf, x + 17, 5, CJK_YEAR, 1, C_RED);
 
-    /* 右上：电池 + 电压 / 温度（照社区那版的两行小字） */
-    n = ZKGUI_W - 6;                       /* 右边界 */
+    /* 右上：电池 + 电压 / 温度（两行小字，照样板挤在右上角） */
+    n = ZKGUI_W - 6;
     if (info->bat_mv >= 0)
     {
         int mv = info->bat_mv;
@@ -628,39 +722,34 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
         s[4] = 'V';
         s[5] = 0;
         x = n - text5_width(s, 1);
-        draw_battery(buf, x - 30, 4, info->bat_pct);
-        draw_text5(buf, x, 7, s, 1, C_BLACK);
+        draw_battery(buf, x - 29, 2, info->bat_pct);
+        draw_text5(buf, x, 3, s, 1, C_BLACK);
     }
     if (info->temp_c10 != ZK_TEMP_NONE)
     {
         int t  = info->temp_c10;
         int av = (t < 0) ? -t : t;
-        int nch = 0;
 
-        /* "26.4C"：整数部分 + 小数点 + 一位小数 + C */
         s[0] = (char)('0' + (av / 100) % 10);
         s[1] = (char)('0' + (av / 10) % 10);
         s[2] = '.';
         s[3] = (char)('0' + av % 10);
         s[4] = 'C';
         s[5] = 0;
-        nch = 5;
-        if (av < 100)                      /* 不到 10 度：掐掉前导零 */
+        if (av < 100)
         {
             s[0] = s[1];
             s[1] = s[2];
             s[2] = s[3];
             s[3] = 'C';
             s[4] = 0;
-            nch = 4;
         }
-        (void)nch;
         x = n - text5_width(s, 1);
         if (t < 0)
         {
-            draw_text5(buf, x - 7, 21, "-", 1, C_BLACK);
+            draw_text5(buf, x - 7, 14, "-", 1, C_BLACK);
         }
-        draw_text5(buf, x, 21, s, 1, C_BLACK);
+        draw_text5(buf, x, 14, s, 1, C_BLACK);
     }
 
     /* 表头下面一条黑线 == 星期条的上边框 */
@@ -673,7 +762,7 @@ static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
                      int is_today, int weekend)
 {
     const int x0 = col * CAL_COL_W;
-    const int y0 = CAL_GRID_Y + row * CAL_ROW_H;
+    const int y0 = CAL_GRID_Y + CAL_GRID_PAD + row * CAL_ROW_H;
     const int cx = x0 + CAL_COL_W / 2;
     const char *lun;
     char  s[4];
@@ -695,35 +784,34 @@ static void cal_cell(uint8_t *buf, int col, int row, int year, int mon, int d,
         s[1] = (char)('0' + d % 10);
         s[2] = 0;
     }
-    tw = text5_width(s, 3);
+    tw = text5_width(s, 2);
     lun = s_lunar_on ? cal_lunar_day(year, mon, d) : NULL;
 
     if (is_today)
     {
-        /* 今天：一个**红实心圆**套住日号（白字），农历那行写在圆外面、用红色。
+        /* 今天：红圆把**日号和农历两个字**一起圈住（照样板）。
          *
-         * 为什么不用"圆里同时放日号和农历"（社区那版就是那样）：我们的农历字是
-         * 16x16 点阵、两个字 33px 宽，而行高只有 39px —— 圆在底部那一段的弦长
-         * 根本容不下 33px，字会戳出圆外面。所以圆只套日号（半径 13，正好包住
-         * 放 3 倍的 15x21），农历放圆下方，红字白底，一眼还是"今天"。 */
-        /* 半径 15：要能装下放大 3 倍的日号（15x21）。半径再小的话，
-           数字的白笔画会被圆吃掉，远看就是一团红（试过 r=13，真的糊）。 */
-        fill_circle(buf, cx, y0 + 11, 15, C_RED);
-        draw_text5(buf, cx - tw / 2, y0 + 1, s, 3, C_WHITE);
+         * 半径 22 是量出来的：圆要同时装下
+         *   · 日号 scale 2（10x14，中心在圆心上偏 7px）
+         *   · 农历两个字 33px 宽（16x16 原大）
+         * 农历最外角离圆心 sqrt(16.5² + 15²) ≈ 22.3 —— 取 r=22：圆正好落在本行里
+         * （上边越界 3px、下边刚好到行底），不会碰上一行的农历、也不会蹭到下一行。 */
+        fill_circle(buf, cx, y0 + 18, 22, C_RED);
+        draw_text5(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 2, C_WHITE);
         if (lun)
         {
             lw = text_cjk_width(lun, 1);
-            draw_text_cjk(buf, cx - lw / 2, y0 + 22, lun, 1, C_RED);
+            draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, C_WHITE);
         }
         return;
     }
 
     color = weekend ? C_RED : C_BLACK;
-    draw_text5(buf, cx - tw / 2, y0 + 1, s, 3, color);
+    draw_text5(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 2, color);
     if (lun)
     {
         lw = text_cjk_width(lun, 1);
-        draw_text_cjk(buf, cx - lw / 2, y0 + 22, lun, 1, color);
+        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
     }
 }
 
@@ -786,7 +874,7 @@ static void draw_clock(uint8_t *buf, int year, int mon, int day, int wday,
     /* 跟日历页用同一个表头（2026年09月 / 农历八月 / 生肖 / 电池），一套东西 */
     draw_header(buf, year, mon, day, info, 1);
 
-    draw_dial(buf, ZKGUI_W / 2, 148, 76, hour, min);
+    draw_dial(buf, ZKGUI_W / 2, 140, 80, hour, min);
 
     fill_rect(buf, 100, 236, 200, 52, C_BLACK);
     s[0] = (char)('0' + hour / 10);
