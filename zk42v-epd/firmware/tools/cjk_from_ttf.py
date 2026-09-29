@@ -42,15 +42,17 @@ CHARS = ['日', '一', '二', '三', '四', '五', '六', '月',
 # 我们原来用 16x16 的字，两个字 33px 宽，39px 的行高里圆的弦长根本放不下，
 # 只能把圆缩小到"只套日号"。换成 12x12 之后两个字 25px，圆能做到半径 21，
 # 数字和农历都能进圆里，格子也跟着松快。
-# 月历格子里的农历（初/十/廿 + 数字）之外，表头那行"农历X月"也用这套小字
-CHARS_S = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '初', '廿',
-           '农', '历', '月', '冬', '腊', '正', '闰']
+# 月历格子里的农历日名（初一..三十）：**这套要 1px 笔画**。
+# 为什么：样板上农历那行的笔画量出来只有 ~1 面板像素（照片里 2px / 2.13），
+# 字高也只有 9~10px；用 13px 的 wqy/Hiragino 都是 2px 笔画，显粗。
+# 11px + 阈值 100 正好是 1px 且不缺笔（初/九/廿/十 逐个放大核过）。
+CHARS_S = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '初', '廿']
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, 'cjk_ascii.py')
 
-SIZE_S = 13         # 小字：13px 画进 14x14 格子（11px 时"农/历"糊成一团）
-THR_S = 105
+SIZE_S = 11         # 小字（农历日名）：11px，笔画 1px
+THR_S = 100
 
 # 数字：**单独一套**，用 Arial Bold —— 样板上的日号就是这种粗黑数字（帽高约 14px、
 # 笔画 2~3px）。我们原来的 5x7 点阵放大 2 倍虽然也是 14px，但形状是方块拼的，
@@ -78,14 +80,14 @@ def raster(ch):
     return [[1 if img.getpixel((x, y)) >= THR else 0
              for x in range(CROP, CROP + 16)] for y in range(CROP, CROP + 16)]
 
-def raster_s(ch, size=13, canvas=28, crop=7, thr=105, dy=-1):
-    """小字版：画在 28x28 里、裁中间 14x14"""
+def raster_s(ch, size=11, canvas=28, crop=8, thr=100, dy=-1):
+    """小字版：画在 28x28 里、裁中间 12x12"""
     font = ImageFont.truetype(FONT, size)
     img = Image.new('L', (canvas, canvas), 0)
     ImageDraw.Draw(img).text((canvas / 2, canvas / 2 + dy), ch,
                              font=font, fill=255, anchor='mm')
     return [[1 if img.getpixel((x, y)) >= thr else 0
-             for x in range(crop, crop + 14)] for y in range(crop, crop + 14)]
+             for x in range(crop, crop + 12)] for y in range(crop, crop + 12)]
 
 
 def main():
@@ -131,8 +133,8 @@ def main():
             out.append("        '%s'," % ''.join('#' if b else '.' for b in row))
         out.append("    ],")
         ink = sum(sum(r) for r in g)
-        edge = sum(1 for y in range(14) for x in range(14)
-                   if g[y][x] and (x in (0, 13) or y in (0, 13)))
+        edge = sum(1 for y in range(12) for x in range(12)
+                   if g[y][x] and (x in (0, 11) or y in (0, 11)))
         print("  [小] %s  墨=%3d  贴边=%2d" % (ch, ink, edge))
     out.append("}")
     out.append("")

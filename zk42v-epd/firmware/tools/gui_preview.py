@@ -7,7 +7,7 @@
     python3 tools/gui_preview.py 2 1758972000 /tmp/clock.png   # 时钟模式
 
 做法：拿宿主机 cc 把 tools/gui_preview.c + Src/img/zkgui.c 编成一个小程序，
-（zkgui.c 画农历要调 lunar.c，所以这两个源文件都要进编译命令行）
+（zkgui.c 画农历/节气要调 lunar.c 和 jieqi.c，所以这几个源文件都要进编译命令行）
 跑出来 30000 字节的三色缓冲（前后各带 32 字节哨兵），在这里
   · 先检查哨兵有没有被写坏（越界写是屏上根本看不出来的 bug）
   · 再按"黑白面 bit=1 白 / 红面 bit=1 红"映射成 RGB，写 PNG
@@ -40,7 +40,8 @@ def build(tmpdir):
     cmd = ['cc', '-std=gnu99', '-O1', '-Wall', '-I', IMG,
            os.path.join(HERE, 'gui_preview.c'),
            os.path.join(IMG, 'zkgui.c'),
-           os.path.join(IMG, 'lunar.c'), '-o', exe]
+           os.path.join(IMG, 'lunar.c'),
+           os.path.join(IMG, 'jieqi.c'), '-o', exe]
     subprocess.run(cmd, check=True)
     return exe
 

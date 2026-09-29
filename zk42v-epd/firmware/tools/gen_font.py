@@ -62,7 +62,42 @@ ASCII5x7 = {
 # 生成时的顺序 = C 里的索引顺序（zkgui.c 里有对应的 CJK_xxx 常量）。
 # 顺序的唯一真相在 tools/cjk_from_ttf.py 的 CHARS（cjk_ascii.py 按同样的顺序存），
 # 这里直接用它，免得两处顺序对不上。
-CJK_ORDER = list(CJK_ASCII)
+# 页面用到的全部汉字，顺序 = C 里的索引顺序（zkgui.c 的 CJK_xxx 常量依赖它，
+# **改顺序必须同步改 zkgui.c**）。前 35 个是原来那套（月历/星期/农历/生肖），
+# 最后那串是 24 个节气用到的字（立秋/处暑/惊蛰/清明…），原厂字库里都有。
+CJK_ORDER = [
+    '日', '一', '二', '三', '四', '五', '六', '月',
+    '七', '八', '九', '十', '冬', '腊', '正', '初', '廿', '闰',
+    '年', '星', '期', '农', '历',
+    '鼠', '牛', '虎', '兔', '龙', '蛇', '马', '羊', '猴', '鸡', '狗', '猪',
+    '冬',
+    '分',
+    '处',
+    '夏',
+    '大',
+    '寒',
+    '小',
+    '惊',
+    '春',
+    '暑',
+    '水',
+    '清',
+    '满',
+    '白',
+    '秋',
+    '种',
+    '立',
+    '至',
+    '芒',
+    '蛰',
+    '谷',
+    '降',
+    '雨',
+    '雪',
+    '霜',
+    '露',
+]
+CJK_ORDER_S = list(CJK_ASCII_S)      # 农历日名的细字（12x12，1px）
 NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 
 
@@ -182,6 +217,24 @@ def gen_font():
         a('    { %s,' % ', '.join('0x%02X' % v for v in packed[:13]))
         a('      %s },   /* %s */'
           % (', '.join('0x%02X' % v for v in packed[13:26]), ch))
+    a('};')
+    a('')
+    # ---- 农历日名的细字（12x12、1px 笔画）----
+    a('/* 农历日名（初一..三十）用的**细字**：12x12、笔画 1px —— 样板上农历那行就是')
+    a('   这么细（量出来 ~1 面板像素）。数据来自 tools/cjk_from_ttf.py 的 CHARS_S。 */')
+    a('#define ZK_FONT_CJK_S_W  12')
+    a('#define ZK_FONT_CJK_S_H  12')
+    a('#define ZK_CJK_S_NUM     %d' % len(CJK_ORDER_S))
+    a('static const uint32_t zk_cjk_s_cp[ZK_CJK_S_NUM] = {')
+    a('    ' + ', '.join('0x%04X' % ord(c) for c in CJK_ORDER_S) + ',')
+    a('};')
+    a('static const uint8_t zk_font_cjk_s[ZK_CJK_S_NUM][ZK_FONT_CJK_S_H * 2] = {')
+    for ch in CJK_ORDER_S:
+        rows = pack_rows(CJK_ASCII_S[ch], 12)
+        assert len(rows) == 24, len(rows)
+        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:12]))
+        a('      %s },   /* %s */'
+          % (', '.join('0x%02X' % v for v in rows[12:24]), ch))
     a('};')
     a('')
     a('#endif /* __ZK_GUI_FONT_H__ */')
