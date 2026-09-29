@@ -19,8 +19,11 @@
 #define ZK_DBG_ADDR   0x3001F000UL
 #define ZK_DBG_MAGIC  0x5A4B3401UL      /* 'Z''K''4' + 版本 1 */
 
-/* 固件构造号：改代码时手动 +1，状态块里能看到 */
-#define ZK_BUILD_ID   31u
+/* 固件构造号：改代码时手动 +1，状态块里能看到。
+   ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
+   跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
+   build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
+#define ZK_BUILD_ID   42u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
