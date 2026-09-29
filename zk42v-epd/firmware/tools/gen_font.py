@@ -161,21 +161,21 @@ def gen_font():
     a('};')
     a('')
     # ---- 小字（12x12）：月历格子里那行农历 ----
-    a('/* 中文小字 12x12（月历格子里的农历那行）。数据见 tools/cjk_ascii.py 的')
+    a('/* 中文小字 14x14（月历格子里的农历 + 表头的"农历X月"）。数据见 tools/cjk_ascii.py 的')
     a('   CJK_ASCII_S —— 用它是为了"今天"那个红圆能同时圈住日号和农历两个字。 */')
-    a('#define ZK_FONT_CJK_S_W  12')
-    a('#define ZK_FONT_CJK_S_H  12')
+    a('#define ZK_FONT_CJK_S_W  14')
+    a('#define ZK_FONT_CJK_S_H  14')
     a('#define ZK_CJK_S_NUM     %d' % len(CJK_ORDER_S))
     a('static const uint32_t zk_cjk_s_cp[ZK_CJK_S_NUM] = {')
     a('    ' + ', '.join('0x%04X' % ord(c) for c in CJK_ORDER_S) + ',')
     a('};')
     a('static const uint8_t zk_font_cjk_s[ZK_CJK_S_NUM][ZK_FONT_CJK_S_H * 2] = {')
     for ch in CJK_ORDER_S:
-        rows = pack_rows(CJK_ASCII_S[ch], 12)
-        assert len(rows) == 24, len(rows)          # 12 行 x 2 字节
-        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:12]))
+        rows = pack_rows(CJK_ASCII_S[ch], 14)
+        assert len(rows) == 28, len(rows)          # 14 行 x 2 字节
+        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:14]))
         a('      %s },   /* %s */'
-          % (', '.join('0x%02X' % v for v in rows[12:24]), ch))
+          % (', '.join('0x%02X' % v for v in rows[14:28]), ch))
     a('};')
     a('')
     a('#endif /* __ZK_GUI_FONT_H__ */')

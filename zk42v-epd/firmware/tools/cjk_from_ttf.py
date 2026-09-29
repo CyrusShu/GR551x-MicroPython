@@ -49,8 +49,8 @@ CHARS_S = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十',
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, 'cjk_ascii.py')
 
-SIZE_S = 11         # 小字：11px 画进 12x12 格子
-THR_S = 100
+SIZE_S = 13         # 小字：13px 画进 14x14 格子（11px 时"农/历"糊成一团）
+THR_S = 105
 
 # 数字：**单独一套**，用 Arial Bold —— 样板上的日号就是这种粗黑数字（帽高约 14px、
 # 笔画 2~3px）。我们原来的 5x7 点阵放大 2 倍虽然也是 14px，但形状是方块拼的，
@@ -78,14 +78,14 @@ def raster(ch):
     return [[1 if img.getpixel((x, y)) >= THR else 0
              for x in range(CROP, CROP + 16)] for y in range(CROP, CROP + 16)]
 
-def raster_s(ch, size=16, canvas=24, crop=6, thr=100, dy=-1):
-    """小字版：画在 24x24 里、裁中间 12x12"""
+def raster_s(ch, size=13, canvas=28, crop=7, thr=105, dy=-1):
+    """小字版：画在 28x28 里、裁中间 14x14"""
     font = ImageFont.truetype(FONT, size)
     img = Image.new('L', (canvas, canvas), 0)
     ImageDraw.Draw(img).text((canvas / 2, canvas / 2 + dy), ch,
                              font=font, fill=255, anchor='mm')
     return [[1 if img.getpixel((x, y)) >= thr else 0
-             for x in range(crop, crop + 12)] for y in range(crop, crop + 12)]
+             for x in range(crop, crop + 14)] for y in range(crop, crop + 14)]
 
 
 def main():
@@ -131,8 +131,8 @@ def main():
             out.append("        '%s'," % ''.join('#' if b else '.' for b in row))
         out.append("    ],")
         ink = sum(sum(r) for r in g)
-        edge = sum(1 for y in range(12) for x in range(12)
-                   if g[y][x] and (x in (0, 11) or y in (0, 11)))
+        edge = sum(1 for y in range(14) for x in range(14)
+                   if g[y][x] and (x in (0, 13) or y in (0, 13)))
         print("  [小] %s  墨=%3d  贴边=%2d" % (ch, ink, edge))
     out.append("}")
     out.append("")

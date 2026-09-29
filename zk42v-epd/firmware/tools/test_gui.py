@@ -35,7 +35,7 @@ CAL_BOTTOM_PAD = 8
 CAL_COL_W = G.W // 7
 CAL_ROW_H_MIN = 38
 CAL_ROW_H_MAX = 56
-CAL_CONTENT_H = (19 + 16) - 3        # 农历底 - 日号顶 = 32（跟 zkgui.c 一致）
+CAL_CONTENT_H = (19 + 14) - 3        # 农历底 - 日号顶 = 30（跟 zkgui.c 一致）
 
 
 def row_h(rows_used):

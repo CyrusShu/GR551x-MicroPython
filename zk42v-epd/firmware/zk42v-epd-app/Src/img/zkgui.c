@@ -658,7 +658,7 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
  *   这一段平分给 (行数-1) 个间隔。 */
 static int cal_row_h(int rows_used)
 {
-    const int content_h = (CAL_LUN_Y + ZK_FONT_CJK_H) - CAL_NUM_Y;   /* 32 */
+    const int content_h = (CAL_LUN_Y + ZK_FONT_CJK_S_H) - CAL_NUM_Y;  /* 30 */
     const int top       = CAL_GRID_Y + CAL_GRID_PAD;
     int       avail     = ZKGUI_H - CAL_BOTTOM_PAD - content_h - top;
     int       h         = (rows_used > 1) ? (avail / (rows_used - 1)) : avail;
@@ -875,15 +875,15 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
          *
          * 半径 22 是量出来的：圆要同时装下
          *   · 日号 scale 2（10x14，中心在圆心上偏 7px）
-         *   · 农历两个字 33px 宽（16x16 原大）
-         * 农历最外角离圆心 sqrt(16.5² + 15²) ≈ 22.3 —— 取 r=22：圆正好落在本行里
+         *   · 农历两个字 29px 宽（14x14 小字）
+         * 农历最外角离圆心 sqrt(14.5² + 13²) ≈ 19.5 —— 取 r=22 还有余量
          * （上边越界 3px、下边刚好到行底），不会碰上一行的农历、也不会蹭到下一行。 */
         fill_circle(buf, cx, y0 + 18, (row_h >= 46) ? 25 : 22, C_RED);
         draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, C_WHITE);
         if (lun)
         {
-            lw = text_cjk_width(lun, 1);
-            draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, C_WHITE);
+            lw = text_cjk_s_width(lun, 1);
+            draw_text_cjk_s(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, C_WHITE);
         }
         return;
     }
@@ -892,8 +892,8 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, color);
     if (lun)
     {
-        lw = text_cjk_width(lun, 1);
-        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
+        lw = text_cjk_s_width(lun, 1);
+        draw_text_cjk_s(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
     }
 }
 
