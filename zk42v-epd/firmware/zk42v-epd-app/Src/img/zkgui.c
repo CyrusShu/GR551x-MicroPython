@@ -424,85 +424,6 @@ static int text_cjk_width(const char *s, int scale)
     return (n > 0) ? (n * 17 - 1) * scale : 0;
 }
 
-/* ---------------------------------------------------------------- 农历细字（12x12）
- *
- * 格子里那行农历日名（初一..三十）专门用这套：**笔画只有 1px**。
- * 样板上这一行量出来就是 ~1 面板像素（照片里 2px ÷ 2.13），字高 9~10px；
- * 用 13px 的字库（文泉驿/黑体）都是 2px 笔画，显粗。11px 栅格化 + 阈值 100
- * 正好 1px 又不缺笔（初/九/廿/十 逐个放大核过）。
- */
-static void draw_cjk_s(uint8_t *buf, int x, int y, int idx, int scale, int color)
-{
-    const uint8_t *g;
-    int cy, cx;
-
-    if (idx < 0 || idx >= ZK_CJK_S_NUM)
-    {
-        return;
-    }
-    g = zk_font_cjk_s[idx];
-
-    for (cy = 0; cy < ZK_FONT_CJK_S_H; cy++)
-    {
-        for (cx = 0; cx < ZK_FONT_CJK_S_W; cx++)
-        {
-            if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
-            {
-                fill_rect(buf, x + cx * scale, y + cy * scale, scale, scale, color);
-            }
-        }
-    }
-}
-
-static int draw_text_cjk_s(uint8_t *buf, int x, int y, const char *s, int scale, int color)
-{
-    const uint8_t *p = (const uint8_t *)s;
-
-    while (*p)
-    {
-        uint32_t cp = 0;
-        int      i;
-
-        if (p[0] < 0x80) { p++; x += (ZK_FONT_CJK_S_W + 1) * scale; continue; }
-        if ((p[0] & 0xE0) == 0xC0)
-        {
-            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
-            p += 2;
-        }
-        else
-        {
-            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) |
-                 (p[2] & 0x3F);
-            p += 3;
-        }
-        for (i = 0; i < ZK_CJK_S_NUM; i++)
-        {
-            if (zk_cjk_s_cp[i] == cp)
-            {
-                draw_cjk_s(buf, x, y, i, scale, color);
-                break;
-            }
-        }
-        x += (ZK_FONT_CJK_S_W + 1) * scale;
-    }
-    return x;
-}
-
-static int text_cjk_s_width(const char *s, int scale)
-{
-    int            n = 0;
-    const uint8_t *p = (const uint8_t *)s;
-
-    while (*p)
-    {
-        if (p[0] < 0x80) { p++; }
-        else if ((p[0] & 0xE0) == 0xC0) { p += 2; }
-        else { p += 3; }
-        n++;
-    }
-    return (n > 0) ? (n * (ZK_FONT_CJK_S_W + 1) - 1) * scale : 0;
-}
-
 /* ---------------------------------------------------------------- 数字
  *
  * 日号和时间用的数字表来自**原厂固件里的 u8g2_font_helvB14_tn**
@@ -556,6 +477,10 @@ static int draw_num(uint8_t *buf, int x, int y, const char *s, int scale, int co
     }
     return x;
 }
+
+/* 星期：0=周日 … 6=周六（跟 zkgui_civil 的 wday 一致）—— 表头"星期X"用 */
+static const uint8_t s_wday_cjk2[7] =
+    { CJK_RI, CJK_YI, CJK_ER, CJK_SAN, CJK_SI, CJK_WU, CJK_LIU };
 
 /* 月历表头：周一开头（跟国内日历、以及 4.2 寸那块屏的做法一致） */
 static const uint8_t s_head_cjk[7] =
@@ -650,7 +575,7 @@ static void draw_dial(uint8_t *buf, int cx, int cy, int r, int hour, int min)
  *   这一段平分给 (行数-1) 个间隔。 */
 static int cal_row_h(int rows_used)
 {
-    const int content_h = (CAL_LUN_Y + ZK_FONT_CJK_S_H) - CAL_NUM_Y;  /* 27 */
+    const int content_h = (CAL_LUN_Y + ZK_FONT_CJK_H) - CAL_NUM_Y;    /* 31 */
     const int top       = CAL_GRID_Y + CAL_GRID_PAD;
     int       avail     = ZKGUI_H - CAL_BOTTOM_PAD - content_h - top;
     int       h         = (rows_used > 1) ? (avail / (rows_used - 1)) : avail;
@@ -737,7 +662,7 @@ static void draw_battery(uint8_t *buf, int x, int y, int pct)
  * 生肖年红色；右上角放电池图标 + 电压 + 温度（社区那版最显眼的特征）。
  * 星期几交给下面的星期条表达（一~日 那一行），表头这里不重复。
  */
-static void draw_header(uint8_t *buf, int year, int mon, int day,
+static void draw_header(uint8_t *buf, int year, int mon, int day, int wday,
                         const zkgui_info_t *info, int with_lunar)
 {
     char  s[12];
@@ -782,6 +707,12 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
     zi = (int)(((year - 4) % 12 + 12) % 12);
     draw_cjk(buf, x, 5, 23 + zi, 1, C_RED);
     draw_cjk(buf, x + 17, 5, CJK_YEAR, 1, C_RED);
+    x += 17 + 17 + 6;
+
+    /* 再右：星期（黑）—— 马年后面那块空着也是空着 */
+    draw_cjk(buf, x, 5, CJK_XING, 1, C_BLACK);
+    draw_cjk(buf, x + 17, 5, CJK_QI2, 1, C_BLACK);
+    draw_cjk(buf, x + 34, 5, s_wday_cjk2[wday], 1, C_BLACK);
 
     /* 右上：电池 + 电压 / 温度（两行小字，照样板挤在右上角） */
     n = ZKGUI_W - 6;
@@ -878,7 +809,7 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
          * 半径按"能装下日号 + 两个字"算：今天那行文字最宽 25px（农历细字），
          * 最外角离圆心 sqrt(12.5² + 12²) ≈ 17.3 —— r=22 余量很足；
          * 行距大的月份（≥46px）用 r=25，跟样板的 48px 圆更接近。 */
-        fill_circle(buf, cx, y0 + 17, (row_h >= 46) ? 25 : 22, C_RED);
+        fill_circle(buf, cx, y0 + 17, (row_h >= 46) ? 25 : 23, C_RED);
         draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, C_WHITE);
         color = C_WHITE;
     }
@@ -897,9 +828,9 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     }
     else if (lun)
     {
-        /* 农历日名：12x12 的 **1px 细字**（样板量出来就是 ~1 面板像素） */
-        lw = text_cjk_s_width(lun, 1);
-        draw_text_cjk_s(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
+        /* 农历日名：16x16 的文泉驿（原厂 wqy12，笔画 2px）—— 实物上比 1px 细字清楚 */
+        lw = text_cjk_width(lun, 1);
+        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, lun, 1, color);
     }
 }
 
@@ -912,7 +843,7 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
     (void)hour;
     (void)min;
 
-    draw_header(buf, year, mon, day, info, 1);
+    draw_header(buf, year, mon, day, wday, info, 1);
 
     /* 星期条（照社区第 14 号那版）：整条**黑底白字**，六/日那两列是**红底白字** */
     fill_rect(buf, 0, CAL_WD_Y, ZKGUI_W, CAL_WD_H, C_BLACK);
@@ -965,7 +896,7 @@ static void draw_clock(uint8_t *buf, int year, int mon, int day, int wday,
     int  tw;
 
     /* 跟日历页用同一个表头（2026年09月 / 农历八月 / 生肖 / 电池），一套东西 */
-    draw_header(buf, year, mon, day, info, 1);
+    draw_header(buf, year, mon, day, wday, info, 1);
 
     draw_dial(buf, ZKGUI_W / 2, 140, 80, hour, min);
 

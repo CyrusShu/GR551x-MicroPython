@@ -19,7 +19,6 @@ import os
 
 from cjk_ascii import CJK_ASCII, CJK_ASCII_S, NUM_ASCII   # 我们栅格化的（补字用）
 from vendor_font import CJK as V_CJK, NUM as V_NUM         # **原厂固件里的 u8g2 字形**
-from wqy_font import LUNAR as WQY_LUNAR                    # 文泉驿点阵宋体 9pt（1px 细字）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMGDIR = os.path.join(os.path.dirname(HERE), 'zk42v-epd-app', 'Src', 'img')
@@ -98,7 +97,6 @@ CJK_ORDER = [
     '霜',
     '露',
 ]
-CJK_ORDER_S = list(WQY_LUNAR)        # 农历日名的细字：文泉驿点阵宋体 9pt（1px）
 NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 
 
@@ -218,30 +216,6 @@ def gen_font():
         a('    { %s,' % ', '.join('0x%02X' % v for v in packed[:13]))
         a('      %s },   /* %s */'
           % (', '.join('0x%02X' % v for v in packed[13:26]), ch))
-    a('};')
-    a('')
-    # ---- 农历日名的细字（12x12、1px 笔画）----
-    a('/* 农历日名（初一..三十）用的**细字**：**文泉驿点阵宋体 9pt**（11x11 -> 补到 12x12，')
-    a('   笔画 1px）。样板上农历那行就是这么细（量出来 ~1 面板像素）；原厂自带的 u8g2')
-    a('   文泉驿子集最小也是 12px/2px 笔画，所以这一套单独从 wqy-bitmapsong 里抽。')
-    a('   数据见 tools/wqy_font.py（生成器 tools/gen_wqy_bitmap.py）。 */')
-    a('#define ZK_FONT_CJK_S_W  12')
-    a('#define ZK_FONT_CJK_S_H  12')
-    a('#define ZK_CJK_S_NUM     %d' % len(CJK_ORDER_S))
-    a('static const uint32_t zk_cjk_s_cp[ZK_CJK_S_NUM] = {')
-    a('    ' + ', '.join('0x%04X' % ord(c) for c in CJK_ORDER_S) + ',')
-    a('};')
-    a('static const uint8_t zk_font_cjk_s[ZK_CJK_S_NUM][ZK_FONT_CJK_S_H * 2] = {')
-    for ch in CJK_ORDER_S:
-        g = WQY_LUNAR[ch]
-        w = max(len(r) for r in g)
-        rows = [r + '.' * (12 - w) for r in g]          # 11x11 -> 12x12（左上对齐）
-        rows += ['.' * 12] * (12 - len(rows))
-        rows = pack_rows(rows, 12)
-        assert len(rows) == 24, len(rows)
-        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:12]))
-        a('      %s },   /* %s */'
-          % (', '.join('0x%02X' % v for v in rows[12:24]), ch))
     a('};')
     a('')
     a('#endif /* __ZK_GUI_FONT_H__ */')
