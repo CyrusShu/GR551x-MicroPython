@@ -28,6 +28,7 @@ DEFAULT_ROOT = "/Users/mac/Documents/Codex/2026-09-15/a"
 # (源文件相对 root 的路径, 在本仓库里的目标路径)
 FILES = [
     # ---- 固件：源码 / 构建 / 打包器 -------------------------------------------------
+    ("outputs/HANDOFF.md",                              "docs/HANDOFF.md"),
     ("outputs/firmware/README.md",                      "firmware/README.md"),
     ("outputs/firmware/build.sh",                       "firmware/build.sh"),
     ("outputs/firmware/tools/fwpack.py",                "firmware/tools/fwpack.py"),
