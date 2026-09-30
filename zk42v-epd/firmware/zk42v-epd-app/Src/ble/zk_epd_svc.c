@@ -854,6 +854,18 @@ void zk_epd_svc_init(void)
 {
     sdk_err_t err;
 
+    /* build 46：**开机默认就是日历模式**（以前是 0 = 图片模式）。
+       为什么：这块价签是当"电子日历"用的，装电池/上电之后就该等着显示日历，
+       而不是停在"图片模式"等手机来推图。改完的行为：
+         · 上电 → 模式 = 日历（状态块里也这么记），屏上还是上一次的画面（墨水屏不掉电就不变）；
+         · 手机连上一点「日历模式」/「时钟模式」→ 立刻按对应页面重画（本来就是这个流程）；
+         · 只要有人用网页**推图**（WRITE_IMAGE/CLEAR），模式会自动切回"图片"
+           （下面 case 里那两处 s_mode = ZKGUI_MODE_PICTURE），不会被日历盖回来。
+       ⚠ 注意：时间还没同步过的时候（s_ts_ms == 0）不会自动画 ——
+       也就是说"装电池就自己显示日历"还差一步：得把时间也存进 flash（见 README 的待办）。 */
+    s_mode = ZKGUI_MODE_CALENDAR;
+    g_dbg.ble_gui_mode = s_mode;
+
     s_start_hdl = 0;                  /* 0 = PRF_INVALID_HANDLE："让栈自己分配" */
     s_end_hdl   = 0;
     memset(&s_db, 0, sizeof(s_db));
