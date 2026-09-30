@@ -353,9 +353,57 @@ void epd_refresh_ex(uint8_t ctrl, int with_temp)
         epd_cmd(0x18); epd_data(0x80);
         epd_cmd(0x1A); epd_data(0x55);
     }
+
+    /* 只负责"发激活 + 等忙"。**真假判据和重试在 epd_flush_frame() 里** ——
+     * build 47 的教训：只重发激活没用（3 次全被屏忽略，BUSY 合计才 1.4 秒），
+     * 得整轮重来（复位+初始化+写图+激活）。 */
     epd_cmd(0x22); epd_data(ctrl);
     epd_cmd(0x20);
     epd_wait_busy(30000);
+}
+
+/* ------------------------------------------------------------------
+ * 一整套「写图 + 刷新」，带**整轮重试**（build 48，2026-09-30）
+ *
+ * 实机证据（outputs/pyocd/status-20260930-*.log）：
+ *   11:04:04  7073 ms  BUSY  1632 次(≈0.3s)  ← 假刷，屏没变
+ *   12:38:33  7187 ms  BUSY  2397 次(≈0.5s)  ← 假刷，屏没变
+ *   11:05:44 24360 ms  BUSY 84907 次(≈17s)   ← 真刷
+ *   13:30:18  8752 ms  BUSY  7093 次(≈1.4s)  ← build 47 的"重发激活"3 次，全被忽略
+ * 规律：**一次同步里第一轮永远是假刷，紧接着的第二轮才真刷**
+ *       （用户看到的就是"发两条命令（时间+天气）才刷得动屏，只发一条永远不刷"）。
+ *
+ * 所以这里照抄那个能工作的场景：激活后按 BUSY 差值判真假（忙够 1 秒 = 5000 次轮询），
+ * **没真刷就断电、缓 600ms、整轮重来**（重新上电 + 复位 + 初始化 + 写图 + 激活），最多 3 轮。
+ * 返回：第几轮成功的（1..3）；0 = 三轮都没真刷（状态块会记成 panel_state=3）。
+ * ------------------------------------------------------------------ */
+int epd_flush_frame(const uint8_t *buf, uint8_t ctrl, int with_temp)
+{
+    int pass;
+
+    for (pass = 1; pass <= EPD_FLUSH_TRIES; pass++)
+    {
+        uint32_t p0 = g_dbg.busy_polls;
+
+        epd_gpio_init();                 /* 上电（含 P1_8/AUX） */
+        epd_reset();                     /* 硬复位 + 软复位 0x12 */
+        epd_init_sequence();             /* 面板参数 + 一次"打底"激活 */
+        if (buf != 0)
+        {
+            epd_write_image(buf);        /* 两半：0x24 黑白面 + 0x26 红面 */
+        }
+        epd_refresh_ex(ctrl, with_temp); /* 0x22/0x20 + 等 BUSY；with_temp=1 时先写 0x18/0x1A */
+
+        if ((g_dbg.busy_polls - p0) >= 5000u)   /* 5000 × 200us ≈ 1 秒 = 真刷 */
+        {
+            return pass;
+        }
+
+        /* 假刷：把电断掉，让下一轮变成和"第二条命令"一样的场景 */
+        epd_pins_release();
+        epd_delay_ms(600);
+    }
+    return 0;
 }
 
 void epd_pins_release(void)

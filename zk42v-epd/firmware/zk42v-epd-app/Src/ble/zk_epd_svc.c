@@ -111,6 +111,8 @@ static uint8_t  s_panel_inited;      /* 屏的初始化序列跑过没有 */
 static uint8_t  s_gpio_ready;        /* 屏那 7 根脚现在是不是我们占着 */
 static uint8_t  s_need_init;
 static uint8_t  s_need_refresh;
+static uint8_t  s_refresh_ctrl = 0xC7;   /* 0x22 的控制字；0x75 可改（0xC7 全刷 / 0xD7 带温度） */
+static uint8_t  s_refresh_temp = 0;      /* 1 = 刷新前先写 0x18/0x1A 温度 */
 static uint8_t  s_need_sleep;
 static uint8_t  s_need_cfg;          /* 该发「配置」那条通知了（见下面为什么不立刻发） */
 static uint32_t s_wr_seen;           /* 这一条连接里收到第几块 WRITE_IMAGE（用来认老格式） */
@@ -628,6 +630,20 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 {
                     s_mode = ZKGUI_MODE_CALENDAR;
                 }
+
+                /* build 50：**可选把天气一起带上**（一条命令 = 只画一页、只刷一次）
+                 *   20 <utc4> <tz> <mode> [wx] [temp]
+                 * 为什么：以前时间、天气是两条命令，每条都触发一次"画图 + 刷新"，
+                 * 一次同步要闪两次（各 17 秒）；合并之后只闪一次。
+                 * 向后兼容：老客户端（网页、以及没更新的基站）只发 6 字节，行为不变。 */
+                if (len > 7u)
+                {
+                    s_wx_code     = (d[7] <= ZK_WX_MAX) ? d[7] : 0u;
+                    s_env_temp_c  = (len > 8u) ? (int8_t)d[8] : (int8_t)(-128);
+                    g_dbg.wx_code    = s_wx_code;
+                    g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
+                    g_dbg.wx_cmds++;
+                }
                 /* 用 64 位单调时基：低 32 位每 49.7 天绕一次，绕的时候
                    "现在几点"会跳掉（build 29 就是这么每 4.5 分钟自刷一次的） */
                 s_ts_ms    = zk_tick_ms64();
@@ -655,6 +671,35 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             if (ZKGUI_MODE_PICTURE != s_mode)
             {
                 s_need_gui = 1;
+            }
+            break;
+
+        /* 0x75 SET_REFRESH_CTRL：**局刷实验开关**（build 49）
+         *   75 <ctrl> [temp]   ctrl = 0x22 那个控制字：
+         *                     0xC7 = 现在用的全刷；0xD7 = 原厂第二条路（带温度）
+         *                     temp = 1 时先写 0x18/0x1A（温度传感器）。
+         *   为什么要有它：`03/04` 那条"原始命令"通道只把字节透传给面板，
+         *   **不经过 epd_flush_frame() 的整轮重试**，冷面板上第一次激活会被屏忽略
+         *   （13:54 实测：`raw "03 22 | 04 C7 | 03 20"` 完全不闪）。
+         *   这条则走**能工作的那条路径**（build 48 的写图+刷新整轮重试），
+         *   于是可以干净地 A/B 对比 C7 / D7 到底闪多久、忙多久。
+         *   发完立刻重画一页（s_need_gui=1），不需要额外的刷新命令。 */
+        case 0x75:
+            if (len >= 2u)
+            {
+                s_refresh_ctrl = d[1];
+            }
+            s_refresh_temp = (len >= 3u) ? d[2] : 0u;
+            s_need_gui     = 1;
+            {
+                uint8_t nb[20];
+                uint8_t *q = nb;
+
+                memcpy(q, "rc=", 3); q += 3;
+                q = zk_put_u32(q, s_refresh_ctrl);
+                memcpy(q, " t=", 3); q += 3;
+                q = zk_put_u32(q, s_refresh_temp);
+                zk_notify(nb, (uint16_t)(q - nb));
             }
             break;
 
@@ -992,24 +1037,9 @@ void zk_epd_svc_poll(uint32_t now_ms)
     {
         uint32_t t0 = zk_tick_ms();
         uint32_t p0 = g_dbg.busy_polls;
+        int      pass;
 
         s_need_refresh = 0;
-        if (!zk_panel_ensure_init())
-        {
-            g_dbg.ble_panel_state = 3;                   /* 3 = 出错 */
-            return;
-        }
-
-        /* 到这里脚是攥着的（ensure_init 或上一次 INIT 留下的），直接写图。
-           万一没有（比如客户端没发 INIT 就推图，而我们刚被断开重置过），
-           就先补一次初始化。 */
-        if (!s_gpio_ready)
-        {
-            epd_gpio_init();
-            epd_reset();
-            epd_init_sequence();
-            s_gpio_ready = 1;
-        }
 
         /* 画面选项（反色/旋转）在写屏这一步统一生效 —— 网页推的图和固件画的
            日历/时钟页都走这里，两条路不用各写一遍。
@@ -1021,20 +1051,28 @@ void zk_epd_svc_poll(uint32_t now_ms)
         {
             g_dbg.ble_opt_frames++;
         }
-        epd_write_image((const uint8_t *)ZK_IMG_BUF);
+
+        /* **写图 + 刷新整轮重试**（build 48）：地址、复位、初始化、写图、激活
+           全在 epd_flush_frame() 里；BUSY 没忙够 1 秒（= 屏没真刷）就断电重来，
+           最多 3 轮。为什么不是只重发激活：build 47 那么干过，3 次全被屏忽略
+           （status 13:30:18：BUSY 合计才 1.4 秒），屏上什么都没变。
+           返回 0 表示三轮都没真刷 —— 状态块记成 panel_state=3，一眼能看出来。 */
+        pass = epd_flush_frame((const uint8_t *)ZK_IMG_BUF, s_refresh_ctrl, (int)s_refresh_temp);
+
         zk_opt_transform((uint8_t *)ZK_IMG_BUF, ZK42V_EPD_ROW_BYTES,
                          ZK42V_EPD_HEIGHT, s_opt);
-        epd_refresh_ex(0xC7, 0);
 
         /* 这一轮屏到底忙了多久 —— 全刷时是几万次轮询（17 秒以上）。
-           要是只有几百次，说明屏压根没做全刷（build 22 就是 2277 次）。 */
+           要是只有几百/几千次，说明屏压根没做全刷。 */
         g_dbg.ble_busy_delta = g_dbg.busy_polls - p0;
 
+        /* 三轮都没真刷的话，panel_state 会是 3、busy_delta 会很小 —— 这两个字段
+           已经够定位（新加字段要动状态块布局 + status 工具的偏移表，不值得）。 */
         epd_pins_release();
         s_gpio_ready = 0;
         s_panel_inited = 0;                              /* 脚放开了 = 初始化状态作废 */
 
-        g_dbg.ble_panel_state = 2;                       /* 2 = 刷完一帧 */
+        g_dbg.ble_panel_state = (pass > 0) ? 2 : 3;      /* 2 = 刷完一帧  3 = 没刷成 */
         g_dbg.ble_panel_ms = zk_tick_ms() - t0;
     }
 

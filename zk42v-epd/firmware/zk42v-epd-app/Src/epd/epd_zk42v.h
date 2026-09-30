@@ -40,6 +40,12 @@ void epd_refresh(void);
  * 三种都试一遍，看屏认哪一条。 */
 void epd_refresh_ex(uint8_t ctrl, int with_temp);
 
+/* 一整套「写图 + 刷新」，内部**整轮重试**（build 48）：
+   没真刷（BUSY 忙不够 1 秒）就断电重来，最多 EPD_FLUSH_TRIES 轮。
+   buf 传 0 表示只刷新、不重写图。返回第几轮成功；0 = 全失败。 */
+#define EPD_FLUSH_TRIES   3
+int  epd_flush_frame(const uint8_t *buf, uint8_t ctrl, int with_temp);
+
 /* 让屏进深度睡眠（CMD 0x10=0x01）—— 测试阶段用不到 */
 void epd_deep_sleep(void);
 
