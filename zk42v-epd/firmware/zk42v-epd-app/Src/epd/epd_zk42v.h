@@ -46,6 +46,17 @@ void epd_refresh_ex(uint8_t ctrl, int with_temp);
 #define EPD_FLUSH_TRIES   3
 int  epd_flush_frame(const uint8_t *buf, uint8_t ctrl, int with_temp);
 
+/* 原厂那条**快刷**路径（build 51）：0x18/0x1A 写温度 → 0x22=0xD7 → 0x20，
+   然后**按温度档位查表等 0.16~0.64 秒**，全程不轮询 BUSY、不重试。
+   出处：原厂 func 0x0100FE84（反汇编 + 表 0x0100D8A0 = 64/48/16/24/16/32 × 10000 tick）。 */
+/* drv = 快刷的"驱动强度"字节（就是 0x1A 那个值）。构建 53 起可调：
+   qbsg 社区给的语义是 **01~0F = 局刷；10~F0 = 关红局刷 + 校准黑局刷，越大颜色越深**。 */
+void epd_refresh_fast(uint8_t drv);
+
+/* 只对指定矩形做**局刷**（build 52 调试用）：x 是"字节列"(0~49，×8 = 像素列)，y 是行(0~299)。
+   先设局部窗口(0x90) → partial in(0x91) → 写图 → D7 快刷 → partial out(0x92)。 */
+void epd_refresh_fast_window(uint8_t drv, int x0, int y0, int x1, int y1);
+
 /* 让屏进深度睡眠（CMD 0x10=0x01）—— 测试阶段用不到 */
 void epd_deep_sleep(void);
 

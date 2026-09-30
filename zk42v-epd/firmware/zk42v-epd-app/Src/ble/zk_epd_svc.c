@@ -113,6 +113,10 @@ static uint8_t  s_need_init;
 static uint8_t  s_need_refresh;
 static uint8_t  s_refresh_ctrl = 0xC7;   /* 0x22 的控制字；0x75 可改（0xC7 全刷 / 0xD7 带温度） */
 static uint8_t  s_refresh_temp = 0;      /* 1 = 刷新前先写 0x18/0x1A 温度 */
+static uint8_t  s_fast_refresh = 0;      /* 0x76：1 = 走原厂那条"短延时快刷"（D7 + 查表延时） */
+static uint8_t  s_partial_on = 0;        /* 0x77：1 = 只刷下面这个矩形 */
+static uint8_t  s_drv = 0x55;            /* 0x78：快刷驱动强度（0x1A 的值），默认照抄原厂 0x55 */
+static uint8_t  s_px0, s_py0, s_px1, s_py1;   /* 局刷窗口：x 是"字节列"(0~49)，y 是行(0~299) */
 static uint8_t  s_need_sleep;
 static uint8_t  s_need_cfg;          /* 该发「配置」那条通知了（见下面为什么不立刻发） */
 static uint32_t s_wr_seen;           /* 这一条连接里收到第几块 WRITE_IMAGE（用来认老格式） */
@@ -137,6 +141,10 @@ static uint8_t  s_opt;               /* 画面选项位 ZK_OPT_xxx（命令 0x70
 /* 天气（手机经 0x71 下发）：这块板子上没有天气/温度传感器，天气只能从外面来 */
 static uint8_t  s_wx_code;           /* 0 = 不显示 */
 static int8_t   s_env_temp_c = (int8_t)(-128);   /* -128 = 还没收到过 */
+/* build 54：天气温度的**十分之一度**（例如 346 = 34.6℃）。
+   为什么要有它：0x71 原来只能带**整度**（int8），"不要四舍五入"就得走这条。
+   ZK_TEMP_NONE = 没有；有值时表头按"一位小数"画（复用片内温度那条画法）。 */
+static int16_t  s_env_temp_c10 = ZK_TEMP_NONE;
 static uint8_t  s_bat_notify;        /* 0x72 之后：下一次 poll 把刚读到的电池值回报给网页 */
 static int8_t   s_tz_h;              /* 网页给的时区（小时）；只用来回报/记账，见 SET_TIME */
 
@@ -566,13 +574,27 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             if (len >= 2u)
             {
                 s_wx_code = (d[1] <= ZK_WX_MAX) ? d[1] : 0u;
-                if (len >= 3u)
+                /* build 54：**优先**认 4 字节版（带一位小数）：71 <code> <t_hi> <t_lo>
+                   t 是 int16 的**十分之一度**（34.6℃ → 346 = 0x01 0x5A）。
+                   3 字节的老格式照旧（整度），网页不受影响。 */
+                if (len >= 4u)
+                {
+                    int16_t t10 = (int16_t)(((uint16_t)d[2] << 8) | (uint16_t)d[3]);
+
+                    s_env_temp_c10 = t10;
+                    /* 兼容字段（状态块/通知里还在用它）：按"四舍五入到整度"填，
+                       但显示优先用 c10，所以屏上不会再被舍入。 */
+                    s_env_temp_c   = (int8_t)((t10 >= 0) ? ((t10 + 5) / 10) : ((t10 - 5) / 10));
+                }
+                else if (len >= 3u)
                 {
                     s_env_temp_c = (int8_t)d[2];
+                    s_env_temp_c10 = ZK_TEMP_NONE;
                 }
                 else
                 {
                     s_env_temp_c = (int8_t)(-128);
+                    s_env_temp_c10 = ZK_TEMP_NONE;
                 }
                 g_dbg.wx_code    = s_wx_code;
                 g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
@@ -639,7 +661,18 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 if (len > 7u)
                 {
                     s_wx_code     = (d[7] <= ZK_WX_MAX) ? d[7] : 0u;
-                    s_env_temp_c  = (len > 8u) ? (int8_t)d[8] : (int8_t)(-128);
+                    if (len > 9u)            /* build 54：带一位小数（int16 十分之一度） */
+                    {
+                        int16_t t10 = (int16_t)(((uint16_t)d[8] << 8) | (uint16_t)d[9]);
+
+                        s_env_temp_c10 = t10;
+                        s_env_temp_c   = (int8_t)((t10 >= 0) ? ((t10 + 5) / 10) : ((t10 - 5) / 10));
+                    }
+                    else
+                    {
+                        s_env_temp_c   = (len > 8u) ? (int8_t)d[8] : (int8_t)(-128);
+                        s_env_temp_c10 = ZK_TEMP_NONE;
+                    }
                     g_dbg.wx_code    = s_wx_code;
                     g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
                     g_dbg.wx_cmds++;
@@ -701,6 +734,50 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 q = zk_put_u32(q, s_refresh_temp);
                 zk_notify(nb, (uint16_t)(q - nb));
             }
+            break;
+
+        /* 0x76 SET_FAST_REFRESH：**快刷开关**（build 51）
+         *   76 00 = 关（走 0xC7 全刷 + 整轮重试）
+         *   76 01 = 开（走原厂那条：0x18/0x1A + 0x22=0xD7 + 0x20，等 0.16~0.64 秒，
+         *            **不轮询 BUSY、不重试**）
+         * 依据：原厂 func 0x0100FE84 + 表 0x0100D8A0（见 epd_zk42v.c 的 epd_refresh_fast）。 */
+        case 0x76:
+            s_fast_refresh = (len >= 2u) ? d[1] : 1u;
+            s_need_gui     = 1;
+            break;
+
+        /* 0x77 SET_PARTIAL：**只刷一个矩形**（build 52，实验用）
+         *   77 <x0> <y0> <x1> <y1>   x = 字节列 0~49（×8 = 像素列），y = 行 0~299
+         *   77                        = 取消局刷（回整屏）
+         * 走的是原厂那条快刷（D7 + 0.64s），外面套局部窗口 0x90/0x91/0x92。 */
+        case 0x77:
+            if (len >= 5u)
+            {
+                s_px0 = d[1]; s_py0 = d[2]; s_px1 = d[3]; s_py1 = d[4];
+                s_partial_on   = 1;
+                s_fast_refresh = 1;
+            }
+            else
+            {
+                s_partial_on   = 0;
+                s_fast_refresh = 0;
+            }
+            s_need_gui = 1;
+            break;
+
+        /* 0x78 SET_DRIVE：**快刷驱动强度**（build 53，局刷参数扫描）
+         *   78 <param>   param 写进面板的 0x1A（就是原厂快刷里那个固定 0x55）
+         * qbsg 社区给的语义（原话）：
+         *   "局刷，以 16 进制输入 01 到 0f。关闭红色局刷并且校准黑色局刷，输入 10 到 f0。
+         *    越大颜色越深"
+         * 我们同步重画一页走快刷路径（不轮询 BUSY，等 0.64s）。 */
+        case 0x78:
+            if (len >= 2u)
+            {
+                s_drv          = d[1];
+                s_fast_refresh = 1;
+            }
+            s_need_gui = 1;
             break;
 
         case 0x91:      /* SYS_RESET */
@@ -1001,9 +1078,20 @@ void zk_epd_svc_poll(uint32_t now_ms)
             info.mode    = s_mode;
             info.bat_mv  = (int16_t)zk_bat_mv();
             info.bat_pct = (int8_t)zk_bat_pct();
-            info.temp_c10 = (int16_t)zk_bat_temp_c10();
+            /* build 54：**天气温度有位小数就用它**（不当整度画）——
+               用户明确要求"温度不要四舍五入"。表头那条"带一位小数"的画法本来就有
+               （片内温度在用），这里复用：把 c10 填天气值、env_temp_c 置 -128 让它走小数分支。 */
+            if (s_env_temp_c10 != ZK_TEMP_NONE)
+            {
+                info.temp_c10   = s_env_temp_c10;
+                info.env_temp_c = (int8_t)(-128);
+            }
+            else
+            {
+                info.temp_c10   = (int16_t)zk_bat_temp_c10();
+                info.env_temp_c = s_env_temp_c;
+            }
             info.wx_code  = s_wx_code;
-            info.env_temp_c = s_env_temp_c;
             zkgui_draw((uint8_t *)ZK_IMG_BUF, &info);
 
             s_need_refresh = 1;                /* 交给下面的刷新分支去写屏 */
@@ -1057,7 +1145,36 @@ void zk_epd_svc_poll(uint32_t now_ms)
            最多 3 轮。为什么不是只重发激活：build 47 那么干过，3 次全被屏忽略
            （status 13:30:18：BUSY 合计才 1.4 秒），屏上什么都没变。
            返回 0 表示三轮都没真刷 —— 状态块记成 panel_state=3，一眼能看出来。 */
-        pass = epd_flush_frame((const uint8_t *)ZK_IMG_BUF, s_refresh_ctrl, (int)s_refresh_temp);
+        if (s_partial_on)
+        {
+            /* 局刷指定矩形（build 52）：设局部窗口 → partial in → 写图 → D7 快刷 → partial out。
+               x 传的是"字节列"，这里 ×8 换算成像素列。 */
+            epd_gpio_init();
+            epd_reset();
+            epd_init_sequence();
+            epd_write_image((const uint8_t *)ZK_IMG_BUF);
+            epd_refresh_fast_window(s_drv, (int)s_px0 * 8, (int)s_py0,
+                                    (int)s_px1 * 8 + 7, (int)s_py1);
+            pass = 1;
+        }
+        else if (s_fast_refresh)
+        {
+            /* 原厂快刷路径（build 51）：复位 → 初始化 → 写图 → D7 + 短延时。
+               **不轮询 BUSY、不重试** —— 原厂就是这么干的（见 epd_refresh_fast 的注释）。
+               上一版把这条路塞进"BUSY 没忙够就整轮重来"，反而把它判成失败、连做 3 轮，
+               结果 172 秒 + 画面错 —— 所以这里必须完全照原厂语义走。 */
+            epd_gpio_init();
+            epd_reset();
+            epd_init_sequence();
+            epd_write_image((const uint8_t *)ZK_IMG_BUF);
+            epd_refresh_fast(s_drv);
+            pass = 1;
+        }
+        else
+        {
+            pass = epd_flush_frame((const uint8_t *)ZK_IMG_BUF, s_refresh_ctrl,
+                                   (int)s_refresh_temp);
+        }
 
         zk_opt_transform((uint8_t *)ZK_IMG_BUF, ZK42V_EPD_ROW_BYTES,
                          ZK42V_EPD_HEIGHT, s_opt);

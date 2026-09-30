@@ -427,6 +427,66 @@ void epd_refresh(void)
     epd_refresh_ex(0xC7, 0);
 }
 
+/* 原厂那条**快刷**路径（build 51）。
+ * ------------------------------------------------------------------
+ * 反汇编依据（work 里的 app.asm）：
+ *   func 0x0100FE4E:  0x18→0x80 ; 0x1A→0x55 ; 0x22→0xD7 ; 0x20
+ *   func 0x0100FE84:  调上面那条 → 读一个寄存器取低 3 位当档位 →
+ *                     查表 0x0100D8A0（64/48/16/24/16/32/0/0）→ ×10000 tick
+ *                     → **轮询内部计时器等够这段时间**（0.16~0.64 秒），
+ *                     **完全不看 BUSY**（这点跟 0xC7 全刷的 17 秒 BUSY 完全不同）。
+ *
+ * 结论：原厂这条不是"带温度的全刷"，而是"按温度补偿的**短延时快刷**"。
+ * 我们上次拿它做过实验，但因为塞进了 build 48 的"BUSY 不够 1 秒就整轮重来"，
+ * 反被判成假刷、连做 3 轮，结果 172 秒 + 画面错。所以这里严格照原厂：
+ * 不看 BUSY、不重试，只等一个保守的 640ms（表里最大的那一档）。 */
+void epd_refresh_fast(uint8_t drv)
+{
+    epd_gpio_init();
+    epd_cmd(0x18); epd_data(0x80);      /* 内部温度传感器使能 */
+    epd_cmd(0x1A); epd_data(drv);       /* 写温度值/驱动强度（原厂固定 0x55；这里可调） */
+    epd_cmd(0x22); epd_data(0xD7);      /* 更新控制 2：原厂第二条路 */
+    epd_cmd(0x20);                      /* 激活 */
+    epd_delay_ms(640);                  /* 原厂按档位等 0.16~0.64 秒，这里取上限 */
+}
+
+/* 局部窗口 + 快刷（build 52，实验用）。
+ *
+ * UC8176/SSD1680 家族的做法：
+ *   0x90 <8 个坐标字节> <1 个扫描标志>   = 设局部窗口（x 以像素列计、y 以行计）
+ *   0x91                                = partial in（进入局部模式）
+ *   （然后在窗口内写图数据）
+ *   0x18/0x1A + 0x22=0xD7 + 0x20        = 快刷激活（跟整屏快刷同一条）
+ *   0x92                                = partial out（退出局部模式）
+ *
+ * 参数单位：x 用**像素列**（0~399）、y 用行（0~299）—— 调用方负责换算
+ * （固件里 x 用"字节列"更省事，所以传进来前 ×8）。 */
+void epd_refresh_fast_window(uint8_t drv, int x0, int y0, int x1, int y1)
+{
+    epd_gpio_init();
+
+    epd_cmd(0x90);
+    epd_data((uint8_t)(x0 & 0xFF));
+    epd_data((uint8_t)((x0 >> 8) & 0xFF));
+    epd_data((uint8_t)(x1 & 0xFF));
+    epd_data((uint8_t)((x1 >> 8) & 0xFF));
+    epd_data((uint8_t)(y0 & 0xFF));
+    epd_data((uint8_t)((y0 >> 8) & 0xFF));
+    epd_data((uint8_t)(y1 & 0xFF));
+    epd_data((uint8_t)((y1 >> 8) & 0xFF));
+    epd_data(0x01);                     /* 扫描方向标志（原厂/常见实现都写 1） */
+
+    epd_cmd(0x91);                      /* partial in */
+
+    epd_cmd(0x18); epd_data(0x80);
+    epd_cmd(0x1A); epd_data(drv);
+    epd_cmd(0x22); epd_data(0xD7);
+    epd_cmd(0x20);
+    epd_delay_ms(640);
+
+    epd_cmd(0x92);                      /* partial out */
+}
+
 void epd_deep_sleep(void)
 {
     epd_cmd(0x10);
