@@ -215,6 +215,7 @@ python3 tools/bat_sheet.py                 # 电池图标随电压的对照图
 | 53/54 | `78` 驱动强度实验、天气温度**一位小数**（按十分之一度下发） |
 | **59** | **毫秒时基换成 AON 定时器**（低功耗时钟域，与 CPU 主频无关）：开机用 DWT 标定频率 + 与 `sys_lpclk_get()` 交叉核对 + 回退链。修掉"日历每 ~8 小时跨一天" |
 | **60** | **基站推天气时把时间一起带上**：`0x20` 模式字节 `0` = 保持当前页；状态块加"校时命令/只对表"两个计数 |
+| **61** | **表头汉字换成细笔画**（用户提的）：年月/农历/生肖/星期条改用文泉驿点阵宋体 12pt 的 **1px** 字形，跟天气文字、农历日名同一字重；节气仍用原厂 2px（刻意留的层次） |
 
 > **里程碑标签**（跟 build 40 的 `zk42v-ui-v1` 一个规矩）：
 > `zk42v-time-v1` = **时间这条线收口**（build 59 + 60），完整说明见
@@ -235,6 +236,11 @@ python3 tools/bat_sheet.py                 # 电池图标随电压的对照图
    （`tools/gen_wqy_bitmap.py`）· TTF 栅格化兜底（`tools/cjk_from_ttf.py`，要 Pillow，
    venv 在 `/tmp/zkvenv`）。汇总生成 `tools/gen_font.py` → `Src/img/zkgui_font.h`；
    **`CJK_ORDER` 的顺序就是 C 里的索引，改顺序必须同步改 `zkgui.c` 的 `CJK_xxx`**。
+   **build 61 起**：`CJK_ORDER` 前 35 个（表头年月/农历/生肖 + 星期条）走**文泉驿
+   点阵宋体 12pt 的 1px 细字**（`gen_font.py` 的 `THIN_SET`，数据在 `wqy_font.py` 的
+   `CJK16`），跟天气文字/农历日名同字重；后面 24 个节气字仍用原厂 2px。
+   想再加"细字"就把字名加进 `gen_wqy_bitmap.py` 的 `WANT16` 再跑
+   `gen_wqy_bitmap.py` →（重建 zkgui_font.h 就 `bash build.sh`）。
 5. **农历/节气**表和算法来自**原厂固件**（`tools/gen_lunar.py` / `gen_jieqi.py`），
    有锚点自测（2025-08-07 立秋、08-23 处暑 等）。
 6. **网页发的时间必须带对时区**：SET_TIME = UTC 秒 + 时区小时（有符号）。

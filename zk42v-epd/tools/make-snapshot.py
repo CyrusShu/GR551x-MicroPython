@@ -79,6 +79,11 @@ FILES = [
     ("outputs/firmware/tools/test_tick.py",             "firmware/tools/test_tick.py"),
     ("outputs/firmware/docs/feature-backlog.md",        "firmware/docs/feature-backlog.md"),
     ("outputs/firmware/docs/milestone-time-v1.md",      "firmware/docs/milestone-time-v1.md"),
+    # build 61：表头细笔画字体的 A/B 对照 + 61 个字模的总表（给以后换字体时对账用）
+    ("outputs/firmware/docs/preview/preview-header-font-ab.png",
+                                                        "firmware/docs/preview/preview-header-font-ab.png"),
+    ("outputs/firmware/docs/preview/preview-cjk-glyphs.png",
+                                                        "firmware/docs/preview/preview-cjk-glyphs.png"),
     ("outputs/firmware/docs/preview/preview-calendar.png", "firmware/docs/preview/preview-calendar.png"),
     ("outputs/firmware/docs/preview/preview-clock.png",  "firmware/docs/preview/preview-clock.png"),
     ("outputs/firmware/zk42v-epd-app/GCC/Makefile",     "firmware/zk42v-epd-app/GCC/Makefile"),
