@@ -269,6 +269,30 @@ def main():
               count(jun_memo, BLACK, 0, G.H - 70, G.W, G.H) >
               count(jun_plain, BLACK, 0, G.H - 70, G.W, G.H) + 300)
 
+        # 5f) build 70：**生日当天**换成红方底 + 红底白字；**生日一过就不画**
+        #     （用户提的两条）。时间点自己算，别手写 epoch —— 我手算错过一次。
+        def ts_of(y, m, d):
+            return int(datetime.datetime(y, m, d, 10, 0,
+                                         tzinfo=datetime.timezone.utc).timestamp())
+
+        bd_rows, _  = render(1, ts_of(2026, 10, 5), 0, 3970, 264, 2, 26, '深圳',
+                             '10-05', '付婧文生日快乐!')
+        aft_rows, _ = render(1, ts_of(2026, 10, 6), 0, 3970, 264, 2, 26, '深圳',
+                             '10-05', '付婧文生日快乐!')
+        aft_plain, _ = render(1, ts_of(2026, 10, 6), 0, 3970, 264, 2, 26, '深圳')
+        cell5 = count(bd_rows, RED, 0, y5 - 8, CAL_COL_W, y5 + 47)
+        cell5_plain = count(oct_rows, RED, 0, y5 - 8, CAL_COL_W, y5 + 47)
+        check('5f: 生日当天那格是**红方底**（红像素 %d -> %d）' % (cell5_plain, cell5),
+              cell5 > cell5_plain + 1500)
+        gx0, gy0 = 4, CAL_GRID_Y + CAL_GRID_PAD + (p_oct - 26) // 2
+        gx1, gy1 = gx0 + CAL_COL_W * 3 - 4, gy0 + 26
+        g_red   = count(bd_rows, RED, gx0, gy0, gx1, gy1)
+        g_white = count(bd_rows, WHITE, gx0, gy0, gx1, gy1)
+        check('5f: 生日当天祝福语是**红底白字**（红 %d / 白 %d）' % (g_red, g_white),
+              g_red > 2500 and g_white > 300)
+        check('5f: **生日一过就不再画**（10-06 那版跟完全不带纪念日的图一样）',
+              aft_rows == aft_plain)
+
         # 5b) 选项 0x08 = 节气加粗（同样的字错开 1px 再画一遍）：节气那格的墨要变多
         rows_bold, _ = render(1, TS, 0x08)
         tcell = want[23]                      # 2026-09-23 是秋分

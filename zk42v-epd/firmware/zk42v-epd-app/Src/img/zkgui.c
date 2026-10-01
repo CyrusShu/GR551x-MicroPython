@@ -495,6 +495,62 @@ static int draw_text_small(uint8_t *buf, int x, int y, const char *s, int color)
     return x;
 }
 
+/* build 70：表头里**加粗**的字（用户："马年八月的马和八能加粗吗"）。
+   不是描边加粗，是直接取**原厂 u8g2 wqy12 的 2px 字形**（跟星期条同一套来源）。
+   目前只有生肖 + 农历月份那几个字要粗，所以查的是 zk_thick_cp 这张小表。 */
+static int draw_text_thick(uint8_t *buf, int x, int y, const char *s, int color)
+{
+    const uint8_t *p = (const uint8_t *)s;
+
+    while (*p)
+    {
+        uint32_t cp = 0;
+        int      i;
+
+        if (p[0] < 0x80)
+        {
+            p++;
+            x += 17;
+            continue;
+        }
+        if ((p[0] & 0xE0) == 0xC0)
+        {
+            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+            p += 2;
+        }
+        else
+        {
+            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) |
+                 (p[2] & 0x3F);
+            p += 3;
+        }
+        for (i = 0; i < ZK_THICK_NUM; i++)
+        {
+            const uint8_t *g;
+            int            cy, cx;
+
+            if (zk_thick_cp[i] != cp)
+            {
+                continue;
+            }
+            g = zk_font_thick[i];
+            for (cy = 0; cy < ZK_FONT_CJK_H; cy++)
+            {
+                for (cx = 0; cx < ZK_FONT_CJK_W; cx++)
+                {
+                    if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
+                    {
+                        fill_rect(buf, x + cx, y + cy, 1, 1, color);
+                    }
+                }
+            }
+            break;
+        }
+        x += 17;
+    }
+    return x;
+}
+
 static int text_cjk_width(const char *s, int scale)
 {
     int            n = 0;
@@ -1045,7 +1101,7 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
         };
         int zi = (int)(((year - 4) % 12 + 12) % 12);
 
-        x = draw_text_cjk(buf, x, 5, s_shengxiao[zi], 1, C_RED);
+        x = draw_text_thick(buf, x, 5, s_shengxiao[zi], C_RED);   /* build 70：加粗 */
         x = draw_text_small(buf, x, 7, "年", C_BLACK);
         x += 4;
     }
@@ -1061,7 +1117,7 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
 
             memcpy(head, mbuf, (size_t)(n - 3));
             head[n - 3] = 0;
-            x = draw_text_cjk(buf, x, 5, head, 1, C_RED);
+            x = draw_text_thick(buf, x, 5, head, C_RED);          /* build 70：加粗 */
         }
         x = draw_text_small(buf, x, 7, mbuf + (n - 3), C_BLACK);
         x += 3;
@@ -1121,7 +1177,7 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
 /* 一个格子：日号（5x7 放大 3 倍）+ 下面一行农历（16x16 原大）。
    今天那格整块红底、白字 —— 比画个红圈稳（圆形会被行高切掉）。 */
 static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mon,
-                     int d, int is_today, int weekend)
+                     int d, int is_today, int weekend, int is_bday)
 {
     const int x0 = col * CAL_COL_W;
     const int y0 = CAL_GRID_Y + CAL_GRID_PAD + row * row_h;
@@ -1162,11 +1218,23 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     /* ---- 日号 ---- */
     if (is_today)
     {
-        /* 今天：红圆把日号和下面那行字一起圈住（照样板）。
+        /* 今天：红底把日号和下面那行字一起圈住（照样板）。
          * 半径按"能装下日号 + 两个字"算：今天那行文字最宽 25px（农历细字），
          * 最外角离圆心 sqrt(12.5² + 12²) ≈ 17.3 —— r=22 余量很足；
-         * 行距大的月份（≥46px）用 r=25，跟样板的 48px 圆更接近。 */
-        fill_circle(buf, cx, y0 + 17, (row_h >= 46) ? 25 : 23, C_RED);
+         * 行距大的月份（≥46px）用 r=25，跟样板的 48px 圆更接近。
+         *
+         * build 70（用户提的）：**纪念日当天用红方底**（圆换成方），
+         * 尺寸跟那个圆一样（直径 2r+1）—— 一眼就能跟"普通今天"区分开。 */
+        const int r = (row_h >= 46) ? 25 : 23;
+
+        if (is_bday)
+        {
+            fill_rect(buf, cx - r, y0 + 17 - r, 2 * r + 1, 2 * r + 1, C_RED);
+        }
+        else
+        {
+            fill_circle(buf, cx, y0 + 17, r, C_RED);
+        }
         draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, C_WHITE);
         color = C_WHITE;
     }
@@ -1244,7 +1312,8 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
         row = 0;
         for (d = 1; d <= dim; d++)
         {
-            cal_cell(buf, col, row, row_h, year, mon, d, (d == day), (col >= 5));
+            cal_cell(buf, col, row, row_h, year, mon, d, (d == day), (col >= 5),
+                     (d == info->memo_day && mon == info->memo_mon && info->memo_day >= 1));
             col++;
             if (col > 6)
             {
@@ -1260,7 +1329,11 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
                 first_col * CAL_COL_W（1 号在第几列，前面就有几列是空的）。
            放不下时不硬塞：先退到最后一行右边的空白；再放不下就只留 ① 的框
            （宁可只圈日子，也不把字压到日号上）。 */
-        if (info->memo_day >= 1 && info->memo_mon == mon &&
+        /* build 70：**生日当天之前才提醒，生日一过就不画了**（用户提的）——
+           `day <= memo_day`：今天还没到/正好是那天 → 画；过了 → 整块不画
+           （日历只显示当月，所以别的月份本来就不会画；明年这个月又会亮）。
+           ⚠ 时间还没同步过（day = 0）时也算"还没到"，会画。 */
+        if (info->memo_day >= 1 && info->memo_mon == mon && day <= info->memo_day &&
             info->memo != 0 && info->memo[0] != 0 && info->memo_day <= dim)
         {
             const int mday = info->memo_day;
@@ -1270,9 +1343,15 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
             const int my0  = CAL_GRID_Y + CAL_GRID_PAD + mrow * row_h;
             const int tw   = text_cjk_width(info->memo, 1);
             const int bh   = 26;                /* 祝福语那个框的高度 */
+            const int is_bday_today = (mon == info->memo_mon && day == mday);
             int       bx = -1, by = -1, bw = 0;
 
-            stroke_rect(buf, mx0 + 3, my0 - 4, CAL_COL_W - 6, 44, 2, C_BLACK);
+            /* ① 那天那格：**当天**已经被红方底占了（见 cal_cell），不用再套黑框；
+                  平时（不是今天）套 2px 黑框。 */
+            if (!is_bday_today)
+            {
+                stroke_rect(buf, mx0 + 3, my0 - 4, CAL_COL_W - 6, 44, 2, C_BLACK);
+            }
 
             if (first_col * CAL_COL_W >= tw + 18)            /* ① 1 号左边那片空白 */
             {
@@ -1294,8 +1373,18 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
             }
             if (bx >= 0)
             {
-                stroke_rect(buf, bx, by, bw, bh, 2, C_BLACK);
-                draw_text_cjk(buf, bx + (bw - tw) / 2, by + 5, info->memo, 1, C_BLACK);
+                /* build 70（用户提的）：**生日当天**祝福语用**红底白字**，
+                   平时用黑框黑字 —— 当天一眼就能看出"就是今天"。 */
+                if (is_bday_today)
+                {
+                    fill_rect(buf, bx, by, bw, bh, C_RED);
+                    draw_text_cjk(buf, bx + (bw - tw) / 2, by + 5, info->memo, 1, C_WHITE);
+                }
+                else
+                {
+                    stroke_rect(buf, bx, by, bw, bh, 2, C_BLACK);
+                    draw_text_cjk(buf, bx + (bw - tw) / 2, by + 5, info->memo, 1, C_BLACK);
+                }
             }
         }
     }

@@ -58,7 +58,7 @@
 //    ⚠ 文案只能用固件字模里有的字（tools/gen_font.py 的 MEMO_CHARS），认不出的会被跳过。
 #define MEMO_MON        10
 #define MEMO_DAY        5
-#define MEMO_TEXT       "付婧文生日快乐！"
+#define MEMO_TEXT       "付婧文生日快乐!"
 #define CMD_SET_MEMO    0x7A
 #define CMD_SET_MEMO_MORE 0x7B   // 续传片段（MTU 只有 23 时一句祝福语要分几次发）
 

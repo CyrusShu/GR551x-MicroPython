@@ -156,6 +156,11 @@ NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 THIN_LIST = CJK_ORDER[:35] + GANZHI_CHARS + CITY_CHARS + MEMO_CHARS
 THIN_SET = set(THIN_LIST)
 
+# build 70：表头里要**加粗**的那两个字（用户："马年八月的马和八能加粗吗"）。
+#   不是描边加粗，是用**原厂那套 2px 字形**（跟星期条 zk_font_week 同一个来源）
+#   —— 内容字（马/八）重、量词字（年/月）轻，跟表头一路建立起来的层次一致。
+THICK_LIST = ZODIAC_CHARS + ['正', '冬', '腊', '闰'] + list('一二三四五六七八九十')
+
 # 星期条那 7 个字**单独一张表**（用原厂 2px 字形）：用户 2026-10-01 反馈
 # "一二三四五六日 太细了" —— 但同一个"五"在表头的农历月名（农历五月）里要跟着细，
 # 所以不能简单地把这几个字从 THIN_SET 里拿掉，得按**用途**分开两张表。
@@ -282,6 +287,26 @@ def gen_font():
     for ch in WEEK_ORDER:
         rows = pack_rows(pad16(V_CJK[ch]), 16)
         assert len(rows) == 32, len(rows)
+        a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:8]))
+        a('      %s,' % ', '.join('0x%02X' % v for v in rows[8:16]))
+        a('      %s,' % ', '.join('0x%02X' % v for v in rows[16:24]))
+        a('      %s },   /* %s */'
+          % (', '.join('0x%02X' % v for v in rows[24:32]), ch))
+    a('};')
+    a('')
+    # ---- build 70：表头里要加粗的字（原厂 2px），按码点查 ----
+    a('/* build 70：表头里**加粗**的那几个字（生肖 + 农历月份用字）：用**原厂 u8g2')
+    a('   wqy12 的 2px 字形**（跟星期条 zk_font_week 同一个来源）。')
+    a('   为什么单独一张表：同一个"八"在别处要跟着表头走细字，只有表头里那个"马/八"')
+    a('   要粗 —— 按用途分表，互不影响。 */')
+    a('#define ZK_THICK_NUM   %d' % len(THICK_LIST))
+    a('static const uint32_t zk_thick_cp[ZK_THICK_NUM] = {')
+    a('    ' + ', '.join('0x%04X' % ord(c) for c in THICK_LIST) + ',')
+    a('};')
+    a('static const uint8_t zk_font_thick[ZK_THICK_NUM][ZK_FONT_CJK_H * 2] = {')
+    for ch in THICK_LIST:
+        rows = pack_rows(pad16(V_CJK[ch]), 16)
+        assert len(rows) == 32, (ch, len(rows))
         a('    { %s,' % ', '.join('0x%02X' % v for v in rows[:8]))
         a('      %s,' % ', '.join('0x%02X' % v for v in rows[8:16]))
         a('      %s,' % ', '.join('0x%02X' % v for v in rows[16:24]))
