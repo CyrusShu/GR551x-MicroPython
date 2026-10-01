@@ -330,23 +330,6 @@ static int text5_width(const char *s, int scale)
     return (n > 0) ? (n * (ZK_FONT5_W + 1) - 1) * scale : 0;
 }
 
-/* 16x16 点阵（每行 2 字节，MSB first）—— 天气文字用 weather.c 里那张表 */
-static void draw_glyph16(uint8_t *buf, int x, int y, const uint8_t *g, int scale, int color)
-{
-    int cy, cx;
-
-    for (cy = 0; cy < ZK_WX_TEXT_H; cy++)
-    {
-        for (cx = 0; cx < ZK_WX_TEXT_W; cx++)
-        {
-            if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
-            {
-                fill_rect(buf, x + cx * scale, y + cy * scale, scale, scale, color);
-            }
-        }
-    }
-}
-
 /* 中文单字（16x16，scale 倍） */
 static void draw_cjk(uint8_t *buf, int x, int y, int idx, int scale, int color)
 {
@@ -434,6 +417,66 @@ static int draw_text_cjk(uint8_t *buf, int x, int y, const char *s, int scale, i
             }
         }
         x += 17 * scale;                       /* 16px 字形 + 1px 间距 */
+    }
+    return x;
+}
+
+/* build 62b：表头"次要信息"的小字（11x11，文泉驿点阵宋体 9pt）——
+   农历月份 / 生肖 / 城市名用。表头一行要塞下
+   年月 | 干支农历月 | 生肖 | 天气 温度 城市，16px 的汉字排不下
+   （用户要求生肖加回来、城市也保留），所以这几项降一号；
+   样板里"农历X月"用的也是小一号的原厂 wqy9。 */
+static int draw_text_small(uint8_t *buf, int x, int y, const char *s, int color)
+{
+    const uint8_t *p = (const uint8_t *)s;
+    const int      stride = (ZK_SMALL_W + 7) / 8;
+
+    while (*p)
+    {
+        uint32_t cp = 0;
+        int      i;
+
+        if (p[0] < 0x80)
+        {
+            p++;
+            x += ZK_SMALL_ADV;
+            continue;
+        }
+        if ((p[0] & 0xE0) == 0xC0)
+        {
+            cp = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+            p += 2;
+        }
+        else
+        {
+            cp = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) |
+                 (p[2] & 0x3F);
+            p += 3;
+        }
+
+        for (i = 0; i < ZK_SMALL_NUM; i++)
+        {
+            const uint8_t *g;
+            int            cy, cx;
+
+            if (zk_small_cp[i] != cp)
+            {
+                continue;
+            }
+            g = zk_font_small[i];
+            for (cy = 0; cy < ZK_SMALL_H; cy++)
+            {
+                for (cx = 0; cx < ZK_SMALL_W; cx++)
+                {
+                    if (g[cy * stride + (cx >> 3)] & (0x80u >> (cx & 7)))
+                    {
+                        fill_rect(buf, x + cx, y + cy, 1, 1, color);
+                    }
+                }
+            }
+            break;
+        }
+        x += ZK_SMALL_ADV;
     }
     return x;
 }
@@ -895,7 +938,8 @@ static int draw_header_city(uint8_t *buf, int x, const zkgui_info_t *info)
         {
             len = 3;
         }
-        if ((x + (n + 1) * 17) > limit || (n * 3 + len) >= (int)sizeof(tmp) - 1)
+        if ((x + (n + 1) * ZK_SMALL_ADV) > limit ||
+            (n * 3 + len) >= (int)sizeof(tmp) - 1)
         {
             break;                          /* 放不下了 */
         }
@@ -908,7 +952,7 @@ static int draw_header_city(uint8_t *buf, int x, const zkgui_info_t *info)
         return x;
     }
     tmp[n * 3] = 0;
-    return draw_text_cjk(buf, x, 5, tmp, 1, C_BLACK);
+    return draw_text_small(buf, x, 7, tmp, C_BLACK);   /* 城市名也用小一号（build 62b） */
 }
 
 static void draw_header(uint8_t *buf, int year, int mon, int day,
@@ -962,13 +1006,28 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
             strcpy(gz, s_tiangan[gi]);
             strcat(gz, s_dizhi[zi2]);
             x = draw_text_cjk(buf, x, 5, gz, 1, C_BLACK);
-            x = draw_text_cjk(buf, x + 1, 5, mbuf, 1, C_BLACK);
-            x += 6;
+            /* 农历月份用**小一号**的字（build 62b）：这样后面才塞得下生肖 + 城市 */
+            x = draw_text_small(buf, x + 1, 7, mbuf, C_BLACK);
+            x += 5;
         }
     }
 
-    /* build 61：**生肖那两个字（马年）撤了** —— 干支（丙午）本来就是生肖，
-       同一件事写两遍；撤掉正好把地方腾给下面要加的城市名（用户同时提的两条）。 */
+    /* 中右：生肖年（红）—— build 62b 按用户要求加回来了，用**小一号**的字
+       （跟农历月份同一个字号，16px 排不下这么多东西）。
+       ⚠ 不受"不画农历"那个开关（0x04）影响 —— 它是生肖，不是农历那行字
+       （2026-10-01 之前也是无条件画的，test_gui 里那条"表头红字不动"就是盯这个）。 */
+    if (with_lunar)
+    {
+        static const char *const s_shengxiao[12] = {
+            "鼠", "牛", "虎", "兔", "龙", "蛇",
+            "马", "羊", "猴", "鸡", "狗", "猪"
+        };
+        int zi = (int)(((year - 4) % 12 + 12) % 12);
+
+        x = draw_text_small(buf, x, 7, s_shengxiao[zi], C_RED);
+        x = draw_text_small(buf, x, 7, "年", C_RED);
+        x += 5;
+    }
 
     /* 再右：天气 = **图标 + 文字**（手机经 BLE 0x71 下发；见 weather.h）。
        图标 20x20（表头 26px 高，上下各留 3px），文字是 16x16 的 1px 点阵，
@@ -996,18 +1055,10 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
         }
         if (tx != 0)
         {
-            int i;
-
-            for (i = 0; tx[i] != 0u; i++)
-            {
-                const uint8_t *g = zk_weather_glyph(tx[i]);
-
-                if (g != 0)
-                {
-                    draw_glyph16(buf, x, 5, g, 1, C_BLACK);
-                }
-                x += 17;                        /* 16px 字形 + 1px 间距 */
-            }
+            /* build 62b：天气文字也用小一号 —— 表头要同时塞下
+               干支 + 农历月 + 生肖 + 天气 + 温度 + 城市名，16px 排不下。
+               字直接从 zk_weather_name() 拿 UTF-8（跟那张 16px 图标表同一套名字）。 */
+            x = draw_text_small(buf, x, 7, zk_weather_name(info->wx_code), C_BLACK);
         }
     }
 

@@ -19,7 +19,17 @@ import os
 
 from cjk_ascii import CJK_ASCII, CJK_ASCII_S, NUM_ASCII   # 我们栅格化的（补字用）
 from vendor_font import CJK as V_CJK, NUM as V_NUM         # **原厂固件里的 u8g2 字形**
-from wqy_font import CJK16 as WQY_CJK16, LUNAR16 as WQY_LUNAR16  # 文泉驿点阵宋体（补字 / 农历细字）
+from wqy_font import CJK16 as WQY_CJK16, LUNAR16 as WQY_LUNAR16
+
+# ⚠ 先有鸡还是先有蛋：gen_wqy_bitmap.py 要 import 本文件的 SMALL_CHARS 才知道该抽哪些
+#   小字，而本文件要 import wqy_font.SMALL —— 第一次生成时那个名字还不存在。
+#   所以这里容错：缺就先给个空的，等 gen_wqy_bitmap.py 写完再重跑本文件就齐了。
+try:
+    from wqy_font import SMALL as WQY_SMALL
+except ImportError:                                  # pragma: no cover
+    WQY_SMALL = {}
+
+ZK_SMALL_H_DEF = 11          # 小字号高（文泉驿点阵宋体 9pt = 11x11）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMGDIR = os.path.join(os.path.dirname(HERE), 'zk42v-epd-app', 'Src', 'img')
@@ -78,6 +88,18 @@ GANZHI_CHARS = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛', '壬', '
 CITY_CHARS = list('深圳广州东莞佛山珠海惠州中山香港澳门北京上海天津重庆杭州'
                   '南京苏州成都武汉西安长沙厦门青岛大连沈阳郑州济南合肥福州'
                   '昆明贵阳南宁南昌太原石家庄海口三亚宁波无锡常州温州绍兴')
+
+# ---- build 62b：表头一行要塞下「年月 | 干支农历月 | 生肖 | 天气 温度 城市」----
+#   16px 的汉字排不下（用户要求把生肖加回来、城市也保留），所以**次要信息降一号**：
+#   农历月 / 生肖 / 城市名用 11px 的小字（文泉驿点阵宋体 9pt），年月和干支保持 16px。
+#   这也是**样板**的做法：gen_vendor_font.py 里那套原厂字库，
+#   "农历X月"用的就是比年月小一号的 u8g2_font_wqy9_t_lunar。
+ZODIAC_CHARS = ['鼠', '牛', '虎', '兔', '龙', '蛇',
+                '马', '羊', '猴', '鸡', '狗', '猪']
+WEATHER_CHARS = list('晴多云阴小雨大雷阵雪雾风')      # 天气文字（"雷阵雨"最长 3 个字）
+SMALL_CHARS = (['正', '冬', '腊', '闰', '年', '月'] +
+               list('一二三四五六七八九十') + ZODIAC_CHARS + WEATHER_CHARS +
+               CITY_CHARS)
 
 # 页面用到的全部汉字，顺序 = C 里的索引顺序（zkgui.c 的 CJK_xxx 常量依赖它，
 # **改顺序必须同步改 zkgui.c**，新增的字只能往后加）。前 35 个是原来那套
@@ -297,6 +319,29 @@ def gen_font():
         a('      %s,' % ', '.join('0x%02X' % v for v in rows[16:24]))
         a('      %s },   /* %s */'
           % (', '.join('0x%02X' % v for v in rows[24:32]), ch))
+    a('};')
+    a('')
+    # ---- build 62b：表头的**小号字**（11x11，文泉驿点阵宋体 9pt）----
+    a('/* 表头里"次要信息"的小字（11x11，笔画 1px）：农历月份 / 生肖 / 城市名。')
+    a('   为什么降一号：表头那一行要塞下 年月 | 干支农历月 | 生肖 | 天气 温度 城市，')
+    a('   16px 的汉字排不下（用户要求生肖加回来、城市也保留）。样板里"农历X月"')
+    a('   用的也是比年月小一号的原厂 wqy9。数据见 tools/wqy_font.py 的 SMALL。 */')
+    a('#define ZK_SMALL_NUM   %d' % len(SMALL_CHARS))
+    a('#define ZK_SMALL_W     11')
+    a('#define ZK_SMALL_H     11')
+    a('#define ZK_SMALL_ADV   12      /* 11px 字形 + 1px 间距 */')
+    a('static const uint32_t zk_small_cp[ZK_SMALL_NUM] = {')
+    a('    ' + ', '.join('0x%04X' % ord(c) for c in SMALL_CHARS) + ',')
+    a('};')
+    a('static const uint8_t zk_font_small[ZK_SMALL_NUM][(ZK_SMALL_W + 7) / 8 * ZK_SMALL_H] = {')
+    for ch in SMALL_CHARS:
+        rows = WQY_SMALL[ch]
+        assert len(rows) == ZK_SMALL_H_DEF, (ch, len(rows))
+        packed = pack_rows(rows, 11)
+        assert len(packed) == ZK_SMALL_H_DEF * 2, (ch, len(packed))
+        a('    { %s,' % ', '.join('0x%02X' % v for v in packed[:11]))
+        a('      %s },   /* %s */'
+          % (', '.join('0x%02X' % v for v in packed[11:22]), ch))
     a('};')
     a('')
     a('#endif /* __ZK_GUI_FONT_H__ */')

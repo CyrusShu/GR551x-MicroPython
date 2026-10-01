@@ -51,6 +51,17 @@ def thin_chars():
 
 WANT16 = thin_chars()
 
+
+def small_chars():
+    """表头里"次要信息"（农历月份 / 生肖 / 城市名）用的 11x11 小字 —— 名单在
+    gen_font.py 的 SMALL_CHARS（唯一真相），从 9pt 的 BDF 里取。"""
+    sys.path.insert(0, HERE)
+    import gen_font
+    return list(gen_font.SMALL_CHARS)
+
+
+WANT_SMALL = small_chars()
+
 # 农历日名的 16px 版：**同一套文泉驿点阵宋体、但用 12pt**（16x16、笔画 1px）。
 # 想让"日历格子里的农历"保持 16px、但比节气（原厂 wqy12，2px 笔画）细一档时用它。
 WANT_L16 = WANT
@@ -176,6 +187,24 @@ def main():
         lines.append('    ],')
         ink = sum(r.count('#') for r in rows)
         print('  %s  16x16 墨=%d' % (ch, ink))
+    lines.append('}')
+    lines.append('')
+    # ---- build 62b：表头的"小号字"（11x11，文泉驿点阵宋体 9pt）----
+    lines.append('# 表头里"次要信息"的小字（农历月份 / 生肖 / 城市名）：文泉驿点阵宋体 9pt，')
+    lines.append('# 11x11、笔画 1px。表头一行要塞下 年月|干支农历月|生肖|天气温度城市，')
+    lines.append('# 16px 排不下，所以这几项降一号（样板里"农历X月"也是小一号的 wqy9）。')
+    lines.append('SMALL = {')
+    for ch in WANT_SMALL:
+        g = font.get(ord(ch))          # ⚠ 9pt 的那份（font）不是 12pt（f12）
+        if g is None:
+            print('  %s 在 9pt 里没有' % ch)
+            continue
+        w, h, xo, yo = g['bbx']
+        rows = rows_of(g, w)
+        lines.append("    '%s': [" % ch)
+        for r in rows:
+            lines.append("        '%s'," % r)
+        lines.append('    ],')
     lines.append('}')
     lines.append('')
 
