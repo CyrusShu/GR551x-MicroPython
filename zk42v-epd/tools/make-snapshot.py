@@ -78,6 +78,7 @@ FILES = [
     ("outputs/firmware/tools/test_opt.py",              "firmware/tools/test_opt.py"),
     ("outputs/firmware/tools/test_tick.py",             "firmware/tools/test_tick.py"),
     ("outputs/firmware/docs/feature-backlog.md",        "firmware/docs/feature-backlog.md"),
+    ("outputs/firmware/docs/milestone-time-v1.md",      "firmware/docs/milestone-time-v1.md"),
     ("outputs/firmware/docs/preview/preview-calendar.png", "firmware/docs/preview/preview-calendar.png"),
     ("outputs/firmware/docs/preview/preview-clock.png",  "firmware/docs/preview/preview-clock.png"),
     ("outputs/firmware/zk42v-epd-app/GCC/Makefile",     "firmware/zk42v-epd-app/GCC/Makefile"),
