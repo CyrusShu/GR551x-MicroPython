@@ -32,6 +32,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <psa/crypto.h>      /* Ed25519 签名（和风 JWT 用；core 3.x 的 mbedTLS 已经打开） */
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <time.h>
@@ -141,8 +142,26 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
      ③ 免费订阅必须用 `devapi.qweather.com`，标准订阅才是 `api.qweather.com`。
    取不到（没 key / TLS 握手失败 / 网络不通）会**自动退回 Open-Meteo**（纯 HTTP，
    一直能用），日志里会写清是哪条路成功 —— 不会因为换了源把价签饿死。 */
-#define QWEATHER_KEY       ""                        /* ← 填这里 */
+#define QWEATHER_KEY       ""                        /* ① API key 方式：填这里（简单，但 key 就是密码）*/
 #define QWEATHER_HOST      "devapi.qweather.com"
+
+/* ⑩ **JWT 方式**（2026-10-01 用户提的：和风支持 JSON Web Token，EdDSA 签名）——
+   比 API key 安全：**私钥只存在设备上**、token 15 分钟就过期；就算 token 被截走，
+   过期就没用了，而 API key 一旦泄露等于永久可用。
+   控制台：dev.qweather.com → 项目管理 → 创建凭据（类型选 JSON Web Token）→
+   拿到 **凭据 ID(kid)** 和 **项目 ID(sub)**，并生成/下载 Ed25519 私钥。
+   私钥怎么变成下面那串十六进制（64 个字符 = 32 字节 seed）：
+       openssl genpkey -algorithm ed25519 -out ed25519.pem
+       # 取私钥 seed（PKCS#8 里最后 32 字节）：
+       openssl pkey -in ed25519.pem -outform DER | tail -c 32 | xxd -p -c 64
+       # 公钥交控制台：openssl pkey -in ed25519.pem -pubout -outform DER | tail -c 32 | xxd -p -c 64
+   ⚠ 填了 JWT 三项就用 JWT（优先于 QWEATHER_KEY）。
+   ⚠ JWT 要拿"现在几点"当 iat/exp，所以**先取时间再签**：这个固件总是先用
+     Open-Meteo(HTTP) 拿到 HTTP Date 头，再签 JWT 去请求和风 ——
+     避免"要签名得先有时间、要时间得先能请求"的鸡生蛋问题。 */
+#define QWEATHER_JWT_KID   ""                        /* 凭据 ID（kid） */
+#define QWEATHER_JWT_SUB   ""                        /* 项目 ID（sub） */
+#define QWEATHER_JWT_HEX   ""                        /* Ed25519 私钥 seed 的 64 个十六进制字符 */
 
 #define MODE_CALENDAR   1
 
@@ -464,6 +483,148 @@ static void applyDateHeader(const String &dateHdr)
     }
 }
 
+
+/* ---------------------------------------------------------------------------
+ *  和风天气的 JWT（EdDSA/Ed25519）—— build-11
+ *  header = {"alg":"EdDSA","kid":"<凭据ID>"}
+ *  payload= {"sub":"<项目ID>","iat":now-30,"exp":now+900}
+ *  token  = b64url(header) + "." + b64url(payload) + "." + b64url(Ed25519 签名)
+ *  请求时带 Authorization: Bearer <token>（不再用 key=）
+ * ------------------------------------------------------------------------- */
+
+static void b64urlEnc(const uint8_t *in, size_t n, char *out)
+{
+    static const char *T =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    size_t i = 0, o = 0;
+
+    while (i + 3 <= n)
+    {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8) | in[i + 2];
+        out[o++] = T[(v >> 18) & 63];
+        out[o++] = T[(v >> 12) & 63];
+        out[o++] = T[(v >> 6) & 63];
+        out[o++] = T[v & 63];
+        i += 3;
+    }
+    if (n - i == 1)
+    {
+        uint32_t v = (uint32_t)in[i] << 16;
+        out[o++] = T[(v >> 18) & 63];
+        out[o++] = T[(v >> 12) & 63];
+    }
+    else if (n - i == 2)
+    {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8);
+        out[o++] = T[(v >> 18) & 63];
+        out[o++] = T[(v >> 12) & 63];
+        out[o++] = T[(v >> 6) & 63];
+    }
+    out[o] = 0;
+}
+
+static int hexToBin(const char *hex, uint8_t *out, int cap)
+{
+    int n = 0;
+
+    while (hex[0] && hex[1] && n < cap)
+    {
+        int hi = (hex[0] >= 'a') ? (hex[0] - 'a' + 10) : ((hex[0] >= 'A') ? (hex[0] - 'A' + 10) : (hex[0] - '0'));
+        int lo = (hex[1] >= 'a') ? (hex[1] - 'a' + 10) : ((hex[1] >= 'A') ? (hex[1] - 'A' + 10) : (hex[1] - '0'));
+        if (hi < 0 || hi > 15 || lo < 0 || lo > 15)
+        {
+            return -1;
+        }
+        out[n++] = (uint8_t)((hi << 4) | lo);
+        hex += 2;
+    }
+    return n;
+}
+
+/* 用 PSA（mbedTLS 3.x 自带）做 Ed25519 签名。实测 core 3.3.11 的预编译库已开 ✓ */
+static bool ed25519Sign(const uint8_t seed[32], const uint8_t *msg, size_t msgLen,
+                        uint8_t sig[64])
+{
+    static bool          inited = false;
+    psa_key_attributes_t attr   = PSA_KEY_ATTRIBUTES_INIT;
+    psa_key_id_t         key    = 0;
+    size_t               siglen = 0;
+    psa_status_t         st;
+
+    if (!inited)
+    {
+        st = psa_crypto_init();
+        if (st != PSA_SUCCESS)
+        {
+            logf("  PSA 初始化失败：%d", (int)st);
+            return false;
+        }
+        inited = true;
+    }
+    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_TWISTED_EDWARDS));
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_MESSAGE);
+    psa_set_key_algorithm(&attr, PSA_ALG_PURE_EDDSA);
+    st = psa_import_key(&attr, seed, 32, &key);
+    if (st != PSA_SUCCESS)
+    {
+        logf("  PSA 导入私钥失败：%d（十六进制串对不对？要 64 个字符）", (int)st);
+        return false;
+    }
+    st = psa_sign_message(key, PSA_ALG_PURE_EDDSA, msg, msgLen, sig, 64, &siglen);
+    psa_destroy_key(key);
+    if (st != PSA_SUCCESS || siglen != 64)
+    {
+        logf("  PSA 签名失败：%d", (int)st);
+        return false;
+    }
+    return true;
+}
+
+/* 签一个 JWT（iat 用"现在"——调用前必须已经有时间，见配置区那段说明） */
+static bool qweatherMakeJwt(String &tokenOut)
+{
+    const int32_t now = epochNow();
+    char          hdr[128];
+    char          pay[192];
+    char          hdrB64[192];
+    char          payB64[288];
+    char          sigB64[128];
+    char          msg[512];
+    uint8_t       seed[32];
+    uint8_t       sig[64];
+
+    if (now <= 0)
+    {
+        logf("  和风 JWT：还没有时间（iat/exp 要它）→ 这次先不用 JWT");
+        return false;
+    }
+    snprintf(hdr, sizeof(hdr), "{\"alg\":\"EdDSA\",\"kid\":\"%s\"}", QWEATHER_JWT_KID);
+    snprintf(pay, sizeof(pay), "{\"sub\":\"%s\",\"iat\":%d,\"exp\":%d}",
+             QWEATHER_JWT_SUB, (int)(now - 30), (int)(now + 900));
+    b64urlEnc((const uint8_t *)hdr, strlen(hdr), hdrB64);
+    b64urlEnc((const uint8_t *)pay, strlen(pay), payB64);
+    snprintf(msg, sizeof(msg), "%s.%s", hdrB64, payB64);
+
+    if (hexToBin(QWEATHER_JWT_HEX, seed, 32) != 32)
+    {
+        logf("  和风 JWT：私钥十六进制串长度不对（要 64 个字符）");
+        return false;
+    }
+    if (!ed25519Sign(seed, (const uint8_t *)msg, strlen(msg), sig))
+    {
+        return false;
+    }
+    b64urlEnc(sig, sizeof(sig), sigB64);
+    tokenOut = String(msg) + "." + sigB64;
+    return true;
+}
+
+static bool qweatherJwtConfigured(void)
+{
+    return (strlen(QWEATHER_JWT_KID) > 0 && strlen(QWEATHER_JWT_SUB) > 0 &&
+            strlen(QWEATHER_JWT_HEX) > 0);
+}
+
 static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
                              String *dateOut)
 {
@@ -479,7 +640,11 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
 
     url  = String("https://") + QWEATHER_HOST + "/v7/weather/now?location="
          + String(LON, 4) + "," + String(LAT, 4)     /* ⚠ 和风是"经度,纬度" */
-         + "&key=" + QWEATHER_KEY + "&lang=zh&unit=m";
+         + "&lang=zh&unit=m";
+    if (!qweatherJwtConfigured())
+    {
+        url += "&key=" + String(QWEATHER_KEY);       /* 没配 JWT 就用 API key */
+    }
 
     if (!https.begin(client, url))
     {
@@ -490,6 +655,16 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
     {
         const char *hdrs[] = {"Date"};
         https.collectHeaders(hdrs, 1);
+    }
+    if (qweatherJwtConfigured())
+    {
+        String jwt;
+        if (!qweatherMakeJwt(jwt))
+        {
+            https.end();
+            return false;
+        }
+        https.addHeader("Authorization", "Bearer " + jwt);
     }
     code = https.GET();
     if (code != 200)
@@ -545,7 +720,7 @@ static bool fetchWeatherAndTime()
     bool   needNet = true;               /* 还要不要跑 Open-Meteo（没天气或者没时间） */
 
     /* ⑨ 先试和风天气（实况；跟手机同一路）。没填 key 就跳过。 */
-    if (strlen(QWEATHER_KEY) > 0)
+    if (qweatherJwtConfigured() || strlen(QWEATHER_KEY) > 0)
     {
         int c = 0, t10 = 0, wind = 0;
 

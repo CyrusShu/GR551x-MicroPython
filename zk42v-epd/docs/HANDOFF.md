@@ -92,6 +92,15 @@
 > 四个坑：和风 `location` 是**经度在前**、响应**总是 gzip**（ESP32 用 ROM 的 tinfl 解，
 > gzip 头尾自己剥）、**只有 HTTPS**（ESP32 得走 TLS）、以及"和风成功后会跳过校时"那个
 > 我自己埋的坑（已抽成 `applyDateHeader()`）。想手动比对各源：`python3 wx-compare.py`。
+>
+> **2026-10-01 再更新：和风认证改用 JWT（EdDSA/Ed25519）**（用户提的）。
+> 密钥在 Mac 上生成（`bash base/qweather-jwt-keygen.sh` —— 打印公钥给控制台、
+> 私钥 seed 给 ESP32，并自检 seed↔公钥一致），**签名在 ESP32 上做**：
+> 这块板子的 mbedTLS 3.6.6 带 PSA/EdDSA，实测能编能链（整机 1,794,199 → 1,813,519 B），
+> `psa_import_key` + `psa_sign_message(PSA_ALG_PURE_EDDSA)`，base64url 自己拼，
+> 没引第三方加密库。⚠ **JWT 要"现在几点"当 iat/exp**，所以固件总是先用
+> Open-Meteo（纯 HTTP）拿 HTTP Date 头，再签 JWT 请求和风 —— 避开鸡生蛋。
+> 填 JWT 三项就优先 JWT → 再退 API key → 再退 Open-Meteo。
 
 * Mac 版 `zk_ble_base.py`：`probe / sync / watch / raw`，坐标已改**深圳公明广场 22.7809,113.8861**。
   `raw` 发原始字节给面板（`03`=命令 `04`=数据）。

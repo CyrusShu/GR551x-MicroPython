@@ -188,6 +188,7 @@ FILES = [
     ("outputs/ble-base/README.md",                      "base/README.md"),
     ("outputs/ble-base/zk_ble_base.py",                 "base/zk_ble_base.py"),
     ("outputs/ble-base/wx-compare.py",                  "base/wx-compare.py"),
+    ("outputs/ble-base/qweather-jwt-keygen.sh",         "base/qweather-jwt-keygen.sh"),
     ("outputs/ble-base/run.sh",                         "base/run.sh"),
     ("outputs/ble-base/setup.sh",                       "base/setup.sh"),
     ("outputs/ble-base/probe-on-air.command",           "base/probe-on-air.command"),
