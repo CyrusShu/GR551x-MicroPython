@@ -63,6 +63,7 @@ DEV_NAME = "ZK42V-EPD"          # 广播里的完整名字（zk_ble.c: ZK_BLE_NA
 CMD_SET_TIME = 0x20             # [0x20, utc_be32, tz_s8, mode]
 CMD_SET_WX = 0x71               # [0x71, code, temp_s8]
 CMD_READ_BAT = 0x72             # 立刻重读电池 + 重画一页
+CMD_SET_CITY = 0x79             # [0x79, utf8 城市名]（build 61：表头温度后面那个）
 
 MODE_KEEP = 0                   # build 60 起的固件认这个：只对表、别动页面
 MODE_CALENDAR = 1
@@ -309,7 +310,21 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
             elif merged:
                 log("  （天气已经并进上一条命令了，不用单独发）", args.log)
 
-            # 3) 顺手读一次电池（价签会回 bat=.. pct=..）
+            # 3) 城市名（build 61）—— 表头温度后面写它。基站知道自己的经纬度，
+            #    所以由基站发；固件只认常见城市名的字模（北京的"京"有、生僻字没有）。
+            #    ⚠ 改 --lat/--lon 时记得把 --city 也改了（这里不做逆地理编码，
+            #      免得多一条外部依赖；城市名就是给屏上看的一个标签）。
+            city = (getattr(args, "city", None) or "").strip()
+            if city:
+                try:
+                    await cli.write_gatt_char(WR_UUID,
+                                              bytes([CMD_SET_CITY]) + city.encode("utf-8"),
+                                              response=True)
+                    log("  → 城市名：" + city, args.log)
+                except Exception as e:
+                    log("  城市名发送失败（不影响）：" + explain(e), args.log)
+
+            # 4) 顺手读一次电池（价签会回 bat=.. pct=..）
             if args.battery:
                 await cli.write_gatt_char(WR_UUID, bytes([CMD_READ_BAT]), response=True)
                 log("  → 已请求读电池（0x72）", args.log)
@@ -451,6 +466,9 @@ def build_parser() -> argparse.ArgumentParser:
     # OSM(Overpass) 里"公明广场"本体 22.7809/113.8861，三个同名条目 + 公明广场地铁站都在 20m 内。
     p.add_argument("--lat", type=float, default=22.7809, help="纬度（默认：深圳公明广场 22.7809）")
     p.add_argument("--lon", type=float, default=113.8861, help="经度（默认：深圳公明广场 113.8861）")
+    p.add_argument("--city", default="深圳",
+                   help="表头温度后面显示的城市名（build 61 起；空串 = 不显示）。"
+                        "换 --lat/--lon 时记得一起改（不做逆地理编码）")
     p.add_argument("--no-weather", action="store_true", help="不发天气，只对时间")
     p.add_argument("--battery", action="store_true", help="顺带发 0x72 读一次电池")
     p.add_argument("--scan", type=float, default=6.0, help="单轮扫描秒数（默认 6）")

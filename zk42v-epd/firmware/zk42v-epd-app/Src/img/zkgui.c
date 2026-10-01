@@ -284,6 +284,10 @@ static int f5_idx(char c)
     {
         return ZK_F5_DOT;
     }
+    if ('\xB0' == c)          /* '°'：build 61 起温度写 26.4℃ */
+    {
+        return ZK_F5_DEG;
+    }
     if ('V' == c)
     {
         return ZK_F5_V;
@@ -581,9 +585,31 @@ static int draw_num(uint8_t *buf, int x, int y, const char *s, int scale, int co
     return x;
 }
 
-/* 月历表头：周一开头（跟国内日历、以及 4.2 寸那块屏的做法一致） */
-static const uint8_t s_head_cjk[7] =
-    { CJK_YI, CJK_ER, CJK_SAN, CJK_SI, CJK_WU, CJK_LIU, CJK_RI };
+/* 星期条那 7 个字单独一张表（zk_font_week，原厂 2px 字形）。
+   build 61：用户说"一二三四五六日 太细了，改回去" —— 但同一个"五"在表头的
+   农历月名（农历五月）里要跟着表头走细字，所以按用途分表，不能只改字重。 */
+static void draw_week(uint8_t *buf, int x, int y, int i, int color)
+{
+    const uint8_t *g;
+    int cy, cx;
+
+    if (i < 0 || i >= ZK_WEEK_NUM)
+    {
+        return;
+    }
+    g = zk_font_week[i];
+
+    for (cy = 0; cy < ZK_FONT_CJK_H; cy++)
+    {
+        for (cx = 0; cx < ZK_FONT_CJK_W; cx++)
+        {
+            if (g[cy * 2 + (cx >> 3)] & (0x80u >> (cx & 7)))
+            {
+                fill_rect(buf, x + cx, y + cy, 1, 1, color);
+            }
+        }
+    }
+}
 
 /* ---------------------------------------------------------------- 表针 */
 
@@ -794,6 +820,7 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
             s[k++] = (char)('0' + (av / 10) % 10);
         }
         s[k++] = (char)('0' + av % 10);
+        s[k++] = '\xB0';                     /* build 61：正经的度数符号 */
         s[k++] = 'C';
         s[k]   = 0;
     }
@@ -807,15 +834,17 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
         s[1] = (char)('0' + (av / 10) % 10);
         s[2] = '.';
         s[3] = (char)('0' + av % 10);
-        s[4] = 'C';
-        s[5] = 0;
+        s[4] = '\xB0';
+        s[5] = 'C';
+        s[6] = 0;
         if (av < 100)                        /* 26.4 -> "26.4C" */
         {
             s[0] = s[1];
             s[1] = s[2];
             s[2] = s[3];
-            s[3] = 'C';
-            s[4] = 0;
+            s[3] = '\xB0';
+            s[4] = 'C';
+            s[5] = 0;
         }
     }
     else
@@ -833,12 +862,61 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
     return x + text5_width(s, CAL_HDR_TEMP_SCALE);
 }
 
+/* build 61：温度后面跟着写"经纬度所在地的城市名"（用户提的）。
+   城市名由基站下发（BLE 命令 0x73），固件只认字模表里有的字
+   （见 tools/gen_font.py 的 CITY_CHARS —— MCU 上没法现栅格化汉字）。
+   右边是电池图标，位置不够就**少画几个字**（宁可写"石家"也别压到电池上）。 */
+static int draw_header_city(uint8_t *buf, int x, const zkgui_info_t *info)
+{
+    const int limit = ZKGUI_W - 6 - 26 - 3;      /* 电池图标(26) 左边再留 3px */
+    const uint8_t *p;
+    char tmp[32];
+    int  n = 0;
+
+    if (info->city == 0 || info->city[0] == 0)
+    {
+        return x;
+    }
+
+    for (p = (const uint8_t *)info->city; *p; )
+    {
+        int len = 1;
+
+        if (p[0] < 0x80)                    /* 城市名本来就该是汉字，ASCII 跳过 */
+        {
+            p++;
+            continue;
+        }
+        if ((p[0] & 0xE0) == 0xC0)
+        {
+            len = 2;
+        }
+        else if ((p[0] & 0xF0) == 0xE0)
+        {
+            len = 3;
+        }
+        if ((x + (n + 1) * 17) > limit || (n * 3 + len) >= (int)sizeof(tmp) - 1)
+        {
+            break;                          /* 放不下了 */
+        }
+        memcpy(tmp + n * 3, p, (size_t)len);
+        n++;
+        p += len;
+    }
+    if (0 == n)
+    {
+        return x;
+    }
+    tmp[n * 3] = 0;
+    return draw_text_cjk(buf, x, 5, tmp, 1, C_BLACK);
+}
+
 static void draw_header(uint8_t *buf, int year, int mon, int day,
                         const zkgui_info_t *info, int with_lunar)
 {
     char  s[12];
     char  mbuf[16];
-    int   x, zi;
+    int   x;
 
     fill_rect(buf, 0, 0, ZKGUI_W, CAL_HDR_H - 1, C_WHITE);
 
@@ -862,23 +940,35 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
     draw_cjk(buf, x, 5, CJK_YUE, 1, C_RED);
     x += 17 + 5;
 
-    /* 中：农历八月（黑）—— 用**小一号**的 12x12 字（样板里表头农历就比年月小一档） */
+    /* 中：干支 + 农历月（黑）—— build 61：把"农历"两个字换成**具体的天干地支**
+       （用户提的）。干支跟生肖是同一套换算：天干 = (year-4)%10、地支 = (year-4)%12，
+       2026 年就是「丙午」（正好是马年）。农历月份那两个字照旧（八月/冬月/腊月…）。 */
     if (with_lunar && s_lunar_on)
     {
         cal_lunar_month(year, mon, day, mbuf, (int)sizeof(mbuf));
         if (mbuf[0])
         {
-            x = draw_text_cjk(buf, x, 5, "农历", 1, C_BLACK);
+            static const char *const s_tiangan[10] = {
+                "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"
+            };
+            static const char *const s_dizhi[12] = {
+                "子", "丑", "寅", "卯", "辰", "巳",
+                "午", "未", "申", "酉", "戌", "亥"
+            };
+            char gz[8];
+            int  gi = (int)(((year - 4) % 10 + 10) % 10);
+            int  zi2 = (int)(((year - 4) % 12 + 12) % 12);
+
+            strcpy(gz, s_tiangan[gi]);
+            strcat(gz, s_dizhi[zi2]);
+            x = draw_text_cjk(buf, x, 5, gz, 1, C_BLACK);
             x = draw_text_cjk(buf, x + 1, 5, mbuf, 1, C_BLACK);
             x += 6;
         }
     }
 
-    /* 中右：生肖年（红） */
-    zi = (int)(((year - 4) % 12 + 12) % 12);
-    draw_cjk(buf, x, 5, 23 + zi, 1, C_RED);
-    draw_cjk(buf, x + 17, 5, CJK_YEAR, 1, C_RED);
-    x += 17 + 17 + 6;
+    /* build 61：**生肖那两个字（马年）撤了** —— 干支（丙午）本来就是生肖，
+       同一件事写两遍；撤掉正好把地方腾给下面要加的城市名（用户同时提的两条）。 */
 
     /* 再右：天气 = **图标 + 文字**（手机经 BLE 0x71 下发；见 weather.h）。
        图标 20x20（表头 26px 高，上下各留 3px），文字是 16x16 的 1px 点阵，
@@ -921,9 +1011,11 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
         }
     }
 
-    /* 再右：温度 —— **手机给的天气温度优先**，没有才退回片内温度。
-       build 43 起从右上角挪到这里，紧跟天气（"多云 26C"是一句话） */
+    /* 再右：温度（build 61 起写"26.4℃"）+ **城市名**（基站下发的经纬度所在地）——
+       手机给的天气温度优先，没有才退回片内温度。
+       build 43 起从右上角挪到这里，紧跟天气（"多云 26.4℃ 深圳"是一句话） */
     x = draw_header_temp(buf, x, info);
+    (void)draw_header_city(buf, x + 3, info);
 
     /* 右上：**只画电池图标**（build 43：不写"3.97V"那几个字了，格子不够好看；
        电量多少直接看图标里那几格）。图标竖直居中，跟左边那行字对齐。 */
@@ -1043,8 +1135,9 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
             fill_rect(buf, x0 + (i == 5 ? 2 : 0), CAL_WD_Y, CAL_COL_W - 2,
                       CAL_WD_H, C_RED);
         }
-        draw_cjk(buf, x0 + (CAL_COL_W - 16) / 2, CAL_WD_Y + 2,
-                 s_head_cjk[i], 1, color);
+        /* build 61：星期条用**原厂 2px 字形**那张表（用户说细字太细了），
+           索引顺序跟 s_head_cjk 一致（一 二 三 四 五 六 日） */
+        draw_week(buf, x0 + (CAL_COL_W - 16) / 2, CAL_WD_Y + 2, i, color);
     }
     fill_rect(buf, 0, CAL_WD_Y + CAL_WD_H, ZKGUI_W, 1, C_BLACK);
 

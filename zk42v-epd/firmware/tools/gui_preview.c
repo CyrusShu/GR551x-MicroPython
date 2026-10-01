@@ -39,6 +39,7 @@ int main(int argc, char **argv)
     info.temp_c10 = ZK_TEMP_NONE;
     info.wx_code  = 0;
     info.env_temp_c = (int8_t)-128;
+    info.city = (argc > 8) ? argv[8] : "";        /* build 61：温度后面那个城市名 */
     if (argc > 6)
     {
         info.wx_code = (uint8_t)atoi(argv[6]);

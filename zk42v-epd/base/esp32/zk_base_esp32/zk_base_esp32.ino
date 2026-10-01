@@ -48,6 +48,10 @@
 #define LAT             22.7809
 #define LON             113.8861
 #define TZ_HOURS        8                 // 北京时间 = UTC+8
+// ②b 表头温度后面那个城市名（build 61 固件起支持）。换 LAT/LON 时记得一起改。
+#define CITY_NAME       "深圳"
+// ⚠ 固件里只有"常见的城市名用字"（tools/gen_font.py 的 CITY_CHARS，每个字 32 字节）。
+#define CMD_SET_CITY    0x79
 
 // ③ 价签：按广播名找（各平台看到的 MAC 不一样，名字最稳）
 #define TAG_NAME        "ZK42V-EPD"
@@ -127,6 +131,7 @@ static int32_t utcEpoch = 0;        // UTC 秒（0 = 还没拿到）
 static bool    tagPresent = false;  // 上一轮扫描有没有看到价签
 static bool    forceTimeSync = true;
 static bool    everSynced = false;  // 开机后至少连过一次（验证链路用）
+static char    citySent[24] = "";   // 上次发出去的城市名（build 61；没变就不重发）
 
 /* ------------------------------ 小工具 ---------------------------------- */
 
@@ -706,6 +711,21 @@ static bool doSync(BLEAdvertisedDevice &dev)
             logf("→ 天气 %s %d℃（单独发）  载荷=%02X %02X %02X",
                  wxName(wxCode), wxTemp, p[0], p[1], p[2]);
         }
+    }
+
+    // ③ 城市名（build 61）：表头温度后面写它。基站知道自己的经纬度（LAT/LON），
+    //    所以由基站发；固件只认常见城市名的字模。城市名没变就不重发。
+    if (strlen(CITY_NAME) > 0 && strcmp(CITY_NAME, citySent) != 0)
+    {
+        uint8_t p[32];
+        size_t  cl = strlen(CITY_NAME);
+        if (cl > sizeof(p) - 1) cl = sizeof(p) - 1;
+        p[0] = CMD_SET_CITY;
+        memcpy(p + 1, CITY_NAME, cl);
+        wr->writeValue(p, (size_t)(cl + 1), true);
+        strncpy(citySent, CITY_NAME, sizeof(citySent) - 1);
+        citySent[sizeof(citySent) - 1] = 0;
+        logf("→ 城市名 %s（温度后面那几个字）", CITY_NAME);
     }
 
     delay(NOTIFY_DWELL_MS);                 // 留点时间把价签的回包收全

@@ -146,6 +146,11 @@ static int8_t   s_env_temp_c = (int8_t)(-128);   /* -128 = 还没收到过 */
    为什么要有它：0x71 原来只能带**整度**（int8），"不要四舍五入"就得走这条。
    ZK_TEMP_NONE = 没有；有值时表头按"一位小数"画（复用片内温度那条画法）。 */
 static int16_t  s_env_temp_c10 = ZK_TEMP_NONE;
+/* build 61：表头温度后面那个**城市名**（"多云 26.4℃ 深圳"）。
+   基站知道自己的经纬度，所以由基站发（命令 0x79 SET_CITY <utf8>）——
+   固件不联网。字模只有 tools/gen_font.py 的 CITY_CHARS 那批字，
+   认不出来的字画不出来（会跳过），所以城市名尽量用常见字。 */
+static char     s_city[24];
 static uint8_t  s_bat_notify;        /* 0x72 之后：下一次 poll 把刚读到的电池值回报给网页 */
 static int8_t   s_tz_h;              /* 网页给的时区（小时）；只用来回报/记账，见 SET_TIME */
 
@@ -726,6 +731,33 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             }
             break;
 
+        /* 0x79 SET_CITY：表头温度后面那个城市名（build 61）
+         *   79 <utf8 城市名>      例：79 E6 B7 B1 E5 9C B3 = "深圳"
+         *   空 payload（只发 79）= 清掉。
+         *   为什么让基站发：它才知道自己的经纬度（Mac 版 --city / ESP32 版 CITY_NAME），
+         *   固件不联网。字模只认 gen_font.py 的 CITY_CHARS 那批字；画不下的字会跳过，
+         *   整段放不下就不画（右边是电池图标，不能压上去）。 */
+        case 0x79:
+            {
+                uint16_t n = (uint16_t)(len - 1u);
+
+                if (n >= (uint16_t)sizeof(s_city))
+                {
+                    n = (uint16_t)sizeof(s_city) - 1u;
+                }
+                if (n > 0u)
+                {
+                    memcpy(s_city, d + 1, n);
+                }
+                s_city[n] = 0;
+                g_dbg.city_cmds++;
+                if (ZKGUI_MODE_PICTURE != s_mode)
+                {
+                    s_need_gui = 1;
+                }
+            }
+            break;
+
         /* 0x75 SET_REFRESH_CTRL：**局刷实验开关**（build 49）
          *   75 <ctrl> [temp]   ctrl = 0x22 那个控制字：
          *                     0xC7 = 现在用的全刷；0xD7 = 原厂第二条路（带温度）
@@ -1116,6 +1148,7 @@ void zk_epd_svc_poll(uint32_t now_ms)
                 info.env_temp_c = s_env_temp_c;
             }
             info.wx_code  = s_wx_code;
+            info.city     = s_city;          /* build 61：温度后面那个城市名（基站 0x79 下发） */
             zkgui_draw((uint8_t *)ZK_IMG_BUF, &info);
 
             s_need_refresh = 1;                /* 交给下面的刷新分支去写屏 */

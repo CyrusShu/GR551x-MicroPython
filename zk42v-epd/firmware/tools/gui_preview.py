@@ -49,12 +49,14 @@ def build(tmpdir):
     return exe
 
 
-def render(exe, mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp_c=-128):
+def render(exe, mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp_c=-128,
+           city=''):
     """opt：选项位，跟固件 zk_opt.h 的 ZK_OPT_xxx 对齐（这里只用到 0x04 = 不画农历）
-       bat_mv / temp_c10：电池毫伏、温度×10（0 = 按"没读到"画，右上角就不显示）"""
+       bat_mv / temp_c10：电池毫伏、温度×10（0 = 按"没读到"画，右上角就不显示）
+       city：build 61 起表头温度后面那个城市名（基站 0x79 下发；空 = 不画）"""
     out = subprocess.run([exe, str(mode), str(ts), str(opt),
                           str(bat_mv), str(temp_c10), str(wx_code),
-                          str(env_temp_c)], check=True,
+                          str(env_temp_c), city], check=True,
                          stdout=subprocess.PIPE).stdout
     assert len(out) == BYTES + 2 * GUARD, len(out)
     head, body, tail = out[:GUARD], out[GUARD:GUARD + BYTES], out[GUARD + BYTES:]
@@ -106,11 +108,12 @@ def main(argv):
     opt      = int(argv[7], 0) if len(argv) > 7 else 0    # 选项位（0x04 不画农历 / 0x08 节气加粗）
     wx_code  = int(argv[8]) if len(argv) > 8 else 0       # 天气码（1 晴 2 多云 … 9 风）
     env_temp = int(argv[9]) if len(argv) > 9 else -128    # 天气温度（℃；-128 = 没收到过）
+    city     = argv[10] if len(argv) > 10 else ''         # 城市名（build 61；空 = 不画）
     ts += tz * 3600
 
     with tempfile.TemporaryDirectory(prefix='zkgui-') as td:
         exe = build(td)
-        body = render(exe, mode, ts, opt, bat_mv, temp_c10, wx_code, env_temp)
+        body = render(exe, mode, ts, opt, bat_mv, temp_c10, wx_code, env_temp, city)
     rows = to_rgb(body)
     write_png(out, rows)
 

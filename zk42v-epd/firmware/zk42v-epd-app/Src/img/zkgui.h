@@ -35,6 +35,8 @@ typedef struct
     int16_t  temp_c10;    /* **片内**温度 ×10（手机没给天气温度时用它） */
     uint8_t  wx_code;     /* 天气码（0 = 不显示；1 晴 2 多云 …，见 weather.h） */
     int8_t   env_temp_c;  /* 手机下发的**天气温度**（℃）；-128 = 没收到过 */
+    const char *city;     /* build 61：经纬度所在地的城市名（UTF-8，基站经 0x73 下发）；
+                             0 或空串 = 不画。字模只认 gen_font.py 里 CITY_CHARS 那批字 */
 } zkgui_info_t;
 
 #define ZK_TEMP_NONE  ((int16_t)(-32768))   /* "温度没读到" */

@@ -251,18 +251,24 @@ def main():
         check('5c: 两边都是 16x16（字号相同，只差笔画）',
               len(LUNAR16['十']) == 16 and len(V_CJK['十']) == 16)
 
-        # 5d) 天气（图标 + 文字）：给了天气码才画，画在表头"马年"后面那一格
-        #     （build 41：表头不再画"星期X"，那格让给天气）
         rows_wx,  _ = render(1, TS, 0, 3970, 264, 2, 26)    # 参数顺序见 gui_preview.render
         rows_wx3, _ = render(1, TS, 0, 3970, 264, 6, 30)    # 雷阵雨（3 个字）
-        xa, xb, ya, yb = 220, 336, 0, 26                    # 表头里天气那块（含右边电池）
-        blk_plain = count(cal_rows, BLACK, xa, ya, xb, yb)
-        blk_wx    = count(rows_wx, BLACK, xa, ya, xb, yb)
-        blk_wx3   = count(rows_wx3, BLACK, xa, ya, xb, yb)
-        check('5d: 天气码=2（多云）时表头多出图标+文字（%d -> %d 黑像素）'
-              % (blk_plain, blk_wx), blk_wx > blk_plain + 150)
-        check('5d: 码=6（雷阵雨，3 个字）比码=2（多云，2 个字）多画一个字（%d vs %d）'
-              % (blk_wx, blk_wx3), blk_wx3 > blk_wx + 80)
+        # 5d) 天气（图标 + 文字）：给了天气码就画在表头（build 61 的版式是
+        #     干支+农历月 | 图标+文字 温度 城市名；温度位置会跟着天气文字长度走）。
+        #     ⚠ 不能再拿"固定窗口里的黑像素数"当判据 —— 表头东西一挪，
+        #       窗里少了别的字，差值就不准了（build 61 就踩到过）。改成数
+        #       **新增的墨**：a 比 b 多出来的黑像素。
+        def new_ink(a, b):
+            return sum(1 for y in range(0, 26) for x in range(0, 400)
+                       if a[y][x * 3:x * 3 + 3] == bytes(BLACK)
+                       and b[y][x * 3:x * 3 + 3] != bytes(BLACK))
+
+        ink_icon = new_ink(rows_wx, cal_rows)      # 多云 vs 完全不给天气
+        ink_3    = new_ink(rows_wx3, rows_wx)      # 雷阵雨 vs 多云（多一个字）
+        check('5d: 天气码=2（多云）时表头多出图标+文字（新增 %d 墨点）' % ink_icon,
+              ink_icon > 150)
+        check('5d: 码=6（雷阵雨，3 个字）比码=2（多云，2 个字）多画一个字（新增 %d 墨点）'
+              % ink_3, ink_3 > 60)
 
         # 6) 换一天，图不一样
         check('6: 换一天画出来的图不一样',
