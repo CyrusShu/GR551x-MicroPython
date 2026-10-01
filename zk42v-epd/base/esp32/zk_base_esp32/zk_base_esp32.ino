@@ -1,5 +1,5 @@
 /* ===========================================================================
- *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-7）
+ *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-8）
  *
  *  干什么：让一块 ESP32 当 BLE central，扫到价签就连上去，把
  *          · 时间（0x20：UTC 秒 + 时区 + 模式）
@@ -746,7 +746,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-7");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-8");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),

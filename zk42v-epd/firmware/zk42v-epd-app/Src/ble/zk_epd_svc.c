@@ -755,6 +755,21 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 {
                     s_need_gui = 1;
                 }
+                /* 回一条通知 "city=深圳" —— 基站日志里能直接看到价签收下了什么
+                   （排"屏上怎么没有城市名"时，这一行能立刻分清是"基站没发"还是"固件没画"） */
+                {
+                    uint8_t  nb[24];
+                    uint8_t *q = nb;
+                    uint16_t k;
+
+                    memcpy(q, "city=", 5);
+                    q += 5;
+                    for (k = 0; s_city[k] != 0 && k < 16u; k++)
+                    {
+                        *q++ = (uint8_t)s_city[k];
+                    }
+                    zk_notify(nb, (uint16_t)(q - nb));
+                }
             }
             break;
 
