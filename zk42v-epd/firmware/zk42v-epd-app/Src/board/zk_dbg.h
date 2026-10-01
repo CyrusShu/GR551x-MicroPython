@@ -23,7 +23,7 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   66u
+#define ZK_BUILD_ID   67u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -101,7 +101,7 @@ typedef struct
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 #define ZK_FLAG_AON_TB       0x0020u   /* build 59：毫秒时基在跑 AON 定时器（不是 CYCCNT） */
 
-#define ZK_DBG_WORDS 115
+#define ZK_DBG_WORDS 116
 
 typedef struct
 {
@@ -289,7 +289,8 @@ typedef struct
     uint32_t set_time_cmds;       /* 112: 收到过多少次 0x20 SET_TIME（含只对表那种） */
     uint32_t time_keep_cnt;       /* 113: 其中"模式=0 保持当前模式"的次数（基站推天气带时间的那些） */
     uint32_t city_cmds;           /* 114: 收到过多少次 0x79 SET_CITY（基站下发的城市名） */
-    uint32_t rsv[ZK_DBG_WORDS - 115];
+    uint32_t memo_cmds;           /* 115: 收到过多少次 0x7A SET_MEMO（纪念日提醒：生日高亮） */
+    uint32_t rsv[ZK_DBG_WORDS - 116];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

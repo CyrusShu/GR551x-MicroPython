@@ -64,6 +64,7 @@ CMD_SET_TIME = 0x20             # [0x20, utc_be32, tz_s8, mode]
 CMD_SET_WX = 0x71               # [0x71, code, temp_s8]
 CMD_READ_BAT = 0x72             # 立刻重读电池 + 重画一页
 CMD_SET_CITY = 0x79             # [0x79, utf8 城市名]（build 61：表头温度后面那个）
+CMD_SET_MEMO = 0x7A             # [0x7A, mon, day, utf8 祝福语]（build 67：纪念日高亮）
 
 MODE_KEEP = 0                   # build 60 起的固件认这个：只对表、别动页面
 MODE_CALENDAR = 1
@@ -324,7 +325,26 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
                 except Exception as e:
                     log("  城市名发送失败（不影响）：" + explain(e), args.log)
 
-            # 4) 顺手读一次电池（价签会回 bat=.. pct=..）
+            # 4) 纪念日提醒（build 67）—— 那天套黑框 + 空白处框出祝福语
+            #    格式：--memo "10-05=付婧文生日快乐！"（生日按月日重复，每年都亮）
+            #    ⚠ 祝福语只能用固件字模里有的字（tools/gen_font.py 的 MEMO_CHARS），
+            #      认不出的字会被静默跳过 —— 要加字就改那张表再重编固件。
+            memo = (getattr(args, "memo", None) or "").strip()
+            if memo and "=" in memo:
+                spec, text = memo.split("=", 1)
+                try:
+                    mm, dd = [int(v) for v in spec.replace("/", "-").split("-")]
+                    payload = bytes([CMD_SET_MEMO, mm & 0xFF, dd & 0xFF]) + text.encode("utf-8")
+                    await cli.write_gatt_char(WR_UUID, payload, response=True)
+                    log("  → 纪念日：%02d-%02d %s（那天套黑框 + 空白处框出这句话）"
+                        % (mm, dd, text), args.log)
+                except Exception as e:
+                    log("  纪念日发送失败（不影响）：" + explain(e), args.log)
+            elif memo == "off":                 # 清掉
+                await cli.write_gatt_char(WR_UUID, bytes([CMD_SET_MEMO]), response=True)
+                log("  → 已清掉纪念日提醒", args.log)
+
+            # 5) 顺手读一次电池（价签会回 bat=.. pct=..）
             if args.battery:
                 await cli.write_gatt_char(WR_UUID, bytes([CMD_READ_BAT]), response=True)
                 log("  → 已请求读电池（0x72）", args.log)
@@ -469,6 +489,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--city", default="深圳",
                    help="表头温度后面显示的城市名（build 61 起；空串 = 不显示）。"
                         "换 --lat/--lon 时记得一起改（不做逆地理编码）")
+    p.add_argument("--memo", default="",
+                   help='纪念日提醒（build 67 起）："10-05=付婧文生日快乐！" = 那天套黑框 + '
+                        '空白处框出这句话（按月日重复）；"off" = 清掉。'
+                        "文案只能用固件字模里有的字（gen_font.py 的 MEMO_CHARS）")
     p.add_argument("--no-weather", action="store_true", help="不发天气，只对时间")
     p.add_argument("--battery", action="store_true", help="顺带发 0x72 读一次电池")
     p.add_argument("--scan", type=float, default=6.0, help="单轮扫描秒数（默认 6）")

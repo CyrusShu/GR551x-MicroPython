@@ -52,11 +52,13 @@ def main(argv):
     wx_code  = int(argv[8]) if len(argv) > 8 else 0
     env_temp = int(argv[9]) if len(argv) > 9 else -128
     city     = argv[10] if len(argv) > 10 else ''
+    memo_s   = argv[11] if len(argv) > 11 else ''
+    memo_t   = argv[12] if len(argv) > 12 else ''
 
     with tempfile.TemporaryDirectory(prefix='zkhdr-') as td:
         exe = G.build(td)
         rows = G.to_rgb(G.render(exe, mode, ts + tz * 3600, opt, bat_mv, temp_c10,
-                                 wx_code, env_temp, city))
+                                 wx_code, env_temp, city, memo_s, memo_t))
     crop = [r[:G.W * 3] for r in rows[:HDR_H]]
     # 每个像素放大成 SCALE x SCALE
     big = []

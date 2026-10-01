@@ -53,6 +53,14 @@
 // ⚠ 固件里只有"常见的城市名用字"（tools/gen_font.py 的 CITY_CHARS，每个字 32 字节）。
 #define CMD_SET_CITY    0x79
 
+// ②c 纪念日提醒（build 67 固件起支持）：那天套黑框 + 在 1 号左边的空白处框出祝福语。
+//    生日是"按月日重复"的，所以每年这个月都会亮。不想用就把 MEMO_DAY 设成 0。
+//    ⚠ 文案只能用固件字模里有的字（tools/gen_font.py 的 MEMO_CHARS），认不出的会被跳过。
+#define MEMO_MON        10
+#define MEMO_DAY        5
+#define MEMO_TEXT       "付婧文生日快乐！"
+#define CMD_SET_MEMO    0x7A
+
 // ③ 价签：按广播名找（各平台看到的 MAC 不一样，名字最稳）
 #define TAG_NAME        "ZK42V-EPD"
 #define TAG_SVC_UUID    "62750001-d828-918d-fb46-b6c11c675aec"
@@ -132,6 +140,7 @@ static bool    tagPresent = false;  // 上一轮扫描有没有看到价签
 static bool    forceTimeSync = true;
 static bool    everSynced = false;  // 开机后至少连过一次（验证链路用）
 static char    citySent[24] = "";   // 上次发出去的城市名（build 61；没变就不重发）
+static bool    memoSent = false;    // 纪念日发过没有（build 67）
 
 /* ------------------------------ 小工具 ---------------------------------- */
 
@@ -728,6 +737,22 @@ static bool doSync(BLEAdvertisedDevice &dev)
         logf("→ 城市名 %s（温度后面那几个字）", CITY_NAME);
     }
 
+    // ③b 纪念日提醒（build 67）：那天套黑框 + 在 1 号左边的空白处框出祝福语。
+    if (MEMO_DAY > 0 && strlen(MEMO_TEXT) > 0 && !memoSent)
+    {
+        uint8_t p[64];
+        size_t  tl = strlen(MEMO_TEXT);
+        if (tl > sizeof(p) - 3) tl = sizeof(p) - 3;
+        p[0] = CMD_SET_MEMO;
+        p[1] = (uint8_t)MEMO_MON;
+        p[2] = (uint8_t)MEMO_DAY;
+        memcpy(p + 3, MEMO_TEXT, tl);
+        wr->writeValue(p, (size_t)(tl + 3), true);
+        memoSent = true;
+        logf("→ 纪念日 %02d-%02d「%s」（那天套黑框 + 空白处框出这句话）",
+             MEMO_MON, MEMO_DAY, MEMO_TEXT);
+    }
+
     delay(NOTIFY_DWELL_MS);                 // 留点时间把价签的回包收全
     client->disconnect();
 
@@ -811,6 +836,7 @@ void loop()
             wxSentCode     = -1;         /* 天气也要重发 */
             wxSentTemp     = -999;
             citySent[0]    = 0;          /* 城市名也要重发（价签掉电后 RAM 里那个没了） */
+            memoSent       = false;      /* 纪念日同理 */
         }
         tagPresent = true;
 

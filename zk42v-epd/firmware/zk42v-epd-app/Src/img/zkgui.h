@@ -37,6 +37,13 @@ typedef struct
     int8_t   env_temp_c;  /* 手机下发的**天气温度**（℃）；-128 = 没收到过 */
     const char *city;     /* build 61：经纬度所在地的城市名（UTF-8，基站经 0x73 下发）；
                              0 或空串 = 不画。字模只认 gen_font.py 里 CITY_CHARS 那批字 */
+    /* build 67：**纪念日提醒**（基站经 0x7A 下发）。memo_day = 0 表示没有。
+       例：memo_mon=10, memo_day=5, memo="付婧文生日快乐！" —— 日历翻到 10 月时，
+       5 号那格套一个黑框，并在 1 号左边那片空白里框出这句话（每年都这样，
+       生日是"按月日重复"的）。字模只认 gen_font.py 的 MEMO_CHARS 那批字。 */
+    int8_t      memo_mon;
+    int8_t      memo_day;
+    const char *memo;
 } zkgui_info_t;
 
 #define ZK_TEMP_NONE  ((int16_t)(-32768))   /* "温度没读到" */

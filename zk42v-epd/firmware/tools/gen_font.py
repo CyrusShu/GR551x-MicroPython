@@ -97,6 +97,13 @@ CITY_CHARS = list('深圳广州东莞佛山珠海惠州中山香港澳门北京�
 ZODIAC_CHARS = ['鼠', '牛', '虎', '兔', '龙', '蛇',
                 '马', '羊', '猴', '鸡', '狗', '猪']
 WEATHER_CHARS = list('晴多云阴小雨大雷阵雪雾风')      # 天气文字（"雷阵雨"最长 3 个字）
+
+# ---- build 67：日历上的**纪念日提醒**（用户：10-05 是付婧文生日，5 号套黑框 +
+#   在 1 号左边那片空白里框一句祝福语）----
+#   ⚠ MCU 上没法现栅格化汉字：**祝福语只能用这张表里的字**。要改文案就往这里加字
+#   （每个字 32 字节），再跑 gen_wqy_bitmap.py + bash build.sh。
+#   下面除了用户这次要的那 8 个字，顺手把常见的生日/纪念日用字也放进来了。
+MEMO_CHARS = list('付婧文生日快乐！周年纪念恭喜欢爸妈老婆儿子女儿宝贝新婚')
 SMALL_CHARS = (['正', '冬', '腊', '闰', '年', '月'] +
                list('一二三四五六七八九十') + ZODIAC_CHARS + WEATHER_CHARS +
                CITY_CHARS + GANZHI_CHARS)      # build 64：干支也降一号，得有小字模
@@ -135,7 +142,7 @@ CJK_ORDER = [
     '雪',
     '霜',
     '露',
-] + GANZHI_CHARS + CITY_CHARS
+] + GANZHI_CHARS + CITY_CHARS + MEMO_CHARS
 LUNAR_ORDER = list(WQY_LUNAR16)      # 农历日名的细字（16x16，1px）
 NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 
@@ -146,7 +153,7 @@ NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 #   · 后面 24 个节气 → **不在这里**，继续用原厂 2px（样板里节气本来就粗）
 #   · 干支 + 城市名用字 → 细（跟表头同一行）
 # 有顺序的版本给生成器用（顺序固定 = 生成结果可复现；set 的迭代顺序跟哈希种子有关）
-THIN_LIST = CJK_ORDER[:35] + GANZHI_CHARS + CITY_CHARS
+THIN_LIST = CJK_ORDER[:35] + GANZHI_CHARS + CITY_CHARS + MEMO_CHARS
 THIN_SET = set(THIN_LIST)
 
 # 星期条那 7 个字**单独一张表**（用原厂 2px 字形）：用户 2026-10-01 反馈

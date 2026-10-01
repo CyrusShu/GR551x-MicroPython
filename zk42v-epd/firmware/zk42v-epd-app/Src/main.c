@@ -542,6 +542,8 @@ int main(void)
     g_dbg.time_keep_cnt = 0;
     /* build 61：基站下发的城市名（命令 0x79）收到了几次 */
     g_dbg.city_cmds = 0;
+    /* build 67：纪念日提醒（命令 0x7A，生日高亮）收到了几次 */
+    g_dbg.memo_cmds = 0;
     {
         volatile uint32_t *st = &g_dbg.ble_adv_st0;
         uint32_t           i;

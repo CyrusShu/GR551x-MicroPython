@@ -151,6 +151,11 @@ static int16_t  s_env_temp_c10 = ZK_TEMP_NONE;
    固件不联网。字模只有 tools/gen_font.py 的 CITY_CHARS 那批字，
    认不出来的字画不出来（会跳过），所以城市名尽量用常见字。 */
 static char     s_city[24];
+/* build 67：**纪念日提醒**（用户要的生日高亮）。基站经 0x7A 发下来：
+   月、日、祝福语。日历翻到那个月时：那天套黑框 + 空白处框出这句话。 */
+static int8_t   s_memo_mon;
+static int8_t   s_memo_day;
+static char     s_memo[40];
 static uint8_t  s_bat_notify;        /* 0x72 之后：下一次 poll 把刚读到的电池值回报给网页 */
 static int8_t   s_tz_h;              /* 网页给的时区（小时）；只用来回报/记账，见 SET_TIME */
 
@@ -773,6 +778,44 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             }
             break;
 
+        /* 0x7A SET_MEMO：**纪念日提醒**（build 67）
+         *   7A <mon> <day> <utf8 祝福语>    例：7A 0A 05 + "付婧文生日快乐！"
+         *   只发 7A（或 day=0）= 清掉。
+         *   画法（Src/img/zkgui.c 的 draw_calendar 末尾）：日历翻到那个月时，
+         *   那天那格套一个黑框，并在"1 号左边那片空白"里框出这句话；
+         *   空白不够就退到最后一行右边，再不够就只圈日子（不压字）。
+         *   生日是"按月日重复"的，所以每年这个月都会亮。
+         *   ⚠ 祝福语只能用字模里有的字（gen_font.py 的 MEMO_CHARS），认不出的会被跳过。 */
+        case 0x7A:
+            if (len >= 3u)
+            {
+                uint16_t n = (uint16_t)(len - 3u);
+
+                s_memo_mon = (int8_t)d[1];
+                s_memo_day = (int8_t)d[2];
+                if (n >= (uint16_t)sizeof(s_memo))
+                {
+                    n = (uint16_t)sizeof(s_memo) - 1u;
+                }
+                if (n > 0u)
+                {
+                    memcpy(s_memo, d + 3, n);
+                }
+                s_memo[n] = 0;
+            }
+            else                                /* 只发 0x7A = 清掉 */
+            {
+                s_memo_mon = 0;
+                s_memo_day = 0;
+                s_memo[0]  = 0;
+            }
+            g_dbg.memo_cmds++;
+            if (ZKGUI_MODE_PICTURE != s_mode)
+            {
+                s_need_gui = 1;
+            }
+            break;
+
         /* 0x75 SET_REFRESH_CTRL：**局刷实验开关**（build 49）
          *   75 <ctrl> [temp]   ctrl = 0x22 那个控制字：
          *                     0xC7 = 现在用的全刷；0xD7 = 原厂第二条路（带温度）
@@ -1164,6 +1207,9 @@ void zk_epd_svc_poll(uint32_t now_ms)
             }
             info.wx_code  = s_wx_code;
             info.city     = s_city;          /* build 61：温度后面那个城市名（基站 0x79 下发） */
+            info.memo_mon = s_memo_mon;      /* build 67：纪念日高亮（基站 0x7A 下发） */
+            info.memo_day = s_memo_day;
+            info.memo     = s_memo;
             zkgui_draw((uint8_t *)ZK_IMG_BUF, &info);
 
             s_need_refresh = 1;                /* 交给下面的刷新分支去写屏 */

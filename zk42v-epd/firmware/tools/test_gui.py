@@ -133,10 +133,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix='zkguitest-') as td:
         exe = G.build(td)
 
-        def render(mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp=-128):
+        def render(mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp=-128,
+                   city='', memo_spec='', memo_text=''):
             body = G.render(exe, mode, ts, opt, bat_mv, temp_c10,
-                            wx_code, env_temp)      # 里面会断言哨兵完好
-            return G.to_rgb(body), body
+                            wx_code, env_temp, city, memo_spec, memo_text)
+            return G.to_rgb(body), body      # G.render 里面会断言哨兵完好
 
         # 1) 哨兵：G.render 里断言，能走到这儿就算过
         cal_rows, cal_buf = render(1, TS)
@@ -231,7 +232,42 @@ def main():
         check('5: 关农历不影响表头的年月（红字一个像素都没动）',
               hdr_red(cal_rows, 0, 110) == hdr_red(rows_off, 0, 110))
         check('5: 关农历也不影响生肖「马」（中段还有 %d 个红像素）'
-              % hdr_red(rows_off, 111, 365), hdr_red(rows_off, 111, 365) > 20)
+             % hdr_red(rows_off, 111, 365), hdr_red(rows_off, 111, 365) > 20)
+
+        # 5e) build 67：**纪念日提醒**（用户要的样子：10-05 付婧文生日）
+        #     ⚠ 得拿 10 月的时刻来测：10-01 是周四 → 1 号左边正好有 3 格空白
+        #     （上面那块 TS 是 9 月，1 号是周二，左边只有 1 格、放不下那句话）。
+        TS_OCT = 1790841600                     # 2026-10-01 08:00 UTC+8
+        oct_rows, _ = render(1, TS_OCT, 0, 3970, 264, 2, 26, '深圳')
+        memo_rows, _ = render(1, TS_OCT, 0, 3970, 264, 2, 26, '深圳',
+                              '10-05', '付婧文生日快乐！')
+        w_oct = month_cells(2026, 10)
+        p_oct = row_h(max(r for (_c, r) in w_oct.values()) + 1)      # 10 月 = 5 行
+        c5, r5 = w_oct[5]                        # 2026-10-05 = 第 2 行第 1 列
+        x5, y5 = cell_xy(c5, r5, p_oct)
+        frame_o = count(oct_rows, BLACK, x5 + 2, y5 - 5, x5 + CAL_COL_W - 2, y5)
+        frame_m = count(memo_rows, BLACK, x5 + 2, y5 - 5, x5 + CAL_COL_W - 2, y5)
+        check('5e: 生日那天（5 号）套上了黑框（框上边 %d -> %d 个黑像素）'
+              % (frame_o, frame_m), frame_m > frame_o + 40)
+        # 1 号左边那片空白：本来是纯白，现在有框 + 字
+        box_o = count(oct_rows, BLACK, 0, CAL_GRID_Y + CAL_GRID_PAD,
+                      CAL_COL_W * 3, CAL_GRID_Y + CAL_GRID_PAD + p_oct)
+        box_m = count(memo_rows, BLACK, 0, CAL_GRID_Y + CAL_GRID_PAD,
+                      CAL_COL_W * 3, CAL_GRID_Y + CAL_GRID_PAD + p_oct)
+        check('5e: 1 号左边那片空白出现「框 + 祝福语」（%d -> %d 个黑像素）'
+              % (box_o, box_m), box_o == 0 and box_m > 400)
+        # 别人的格子一个像素都不该动（除了 5 号那个框）
+        moved = [d for d, (c, r) in w_oct.items() if d != 5
+                 and cell_ink(oct_rows, c, r, p_oct) != cell_ink(memo_rows, c, r, p_oct)]
+        check('5e: 加了纪念日后别的日子一格都没动（动了的：%s）' % moved, not moved)
+        # ① 1 号左边没空白的月份（2026-06-01 是周一）→ 退到最后一行右边，也得有
+        TS_JUN = 1780300800                     # 2026-06-01 08:00 UTC+8
+        jun_plain, _ = render(1, TS_JUN, 0, 3970, 264, 2, 26, '深圳')
+        jun_memo, _ = render(1, TS_JUN, 0, 3970, 264, 2, 26, '深圳',
+                             '06-05', '付婧文生日快乐！')
+        check('5e: 左边没空白的月份（1 号是周一）自动退到最后一行右边',
+              count(jun_memo, BLACK, 0, G.H - 70, G.W, G.H) >
+              count(jun_plain, BLACK, 0, G.H - 70, G.W, G.H) + 300)
 
         # 5b) 选项 0x08 = 节气加粗（同样的字错开 1px 再画一遍）：节气那格的墨要变多
         rows_bold, _ = render(1, TS, 0x08)

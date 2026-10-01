@@ -193,6 +193,20 @@ static void fill_circle(uint8_t *buf, int cx, int cy, int r, int color)
     }
 }
 
+/* 空心矩形（t 像素粗的边框）—— build 67 的纪念日高亮用：
+   给生日那天套个黑框、给祝福语套个黑框 */
+static void stroke_rect(uint8_t *buf, int x, int y, int w, int h, int t, int color)
+{
+    if (w <= 0 || h <= 0)
+    {
+        return;
+    }
+    fill_rect(buf, x, y, w, t, color);                 /* 上 */
+    fill_rect(buf, x, y + h - t, w, t, color);         /* 下 */
+    fill_rect(buf, x, y, t, h, color);                 /* 左 */
+    fill_rect(buf, x + w - t, y, t, h, color);         /* 右 */
+}
+
 /* ---------------------------------------------------------------- 时间换算 */
 
 /* 公历 Y/M/D <- 1970-01-01 起的天数（Howard Hinnant 那套，久经考验） */
@@ -1236,6 +1250,52 @@ static void draw_calendar(uint8_t *buf, int year, int mon, int day, int wday,
             {
                 col = 0;
                 row++;
+            }
+        }
+
+        /* ---------------- build 67：**纪念日提醒**（基站经 0x7A 下发）--------------
+           用户要的样子（10-05 付婧文生日）：
+             ① 5 号那格套一个**黑框**；
+             ② 在"1 号左边那片空白"里**框出**祝福语 —— 那片空白的宽度就是
+                first_col * CAL_COL_W（1 号在第几列，前面就有几列是空的）。
+           放不下时不硬塞：先退到最后一行右边的空白；再放不下就只留 ① 的框
+           （宁可只圈日子，也不把字压到日号上）。 */
+        if (info->memo_day >= 1 && info->memo_mon == mon &&
+            info->memo != 0 && info->memo[0] != 0 && info->memo_day <= dim)
+        {
+            const int mday = info->memo_day;
+            const int mcol = (first_col + mday - 1) % 7;
+            const int mrow = (first_col + mday - 1) / 7;
+            const int mx0  = mcol * CAL_COL_W;
+            const int my0  = CAL_GRID_Y + CAL_GRID_PAD + mrow * row_h;
+            const int tw   = text_cjk_width(info->memo, 1);
+            const int bh   = 26;                /* 祝福语那个框的高度 */
+            int       bx = -1, by = -1, bw = 0;
+
+            stroke_rect(buf, mx0 + 3, my0 - 4, CAL_COL_W - 6, 44, 2, C_BLACK);
+
+            if (first_col * CAL_COL_W >= tw + 18)            /* ① 1 号左边那片空白 */
+            {
+                bw = first_col * CAL_COL_W - 8;
+                bx = 4;
+                by = CAL_GRID_Y + CAL_GRID_PAD + (row_h - bh) / 2;
+            }
+            else
+            {
+                const int last_col = (first_col + dim - 1) % 7;
+                const int tail_w   = (6 - last_col) * CAL_COL_W;   /* 最后一行的右边 */
+
+                if (tail_w >= tw + 18)                       /* ② 退路：最后一行右边 */
+                {
+                    bw = tail_w - 8;
+                    bx = (last_col + 1) * CAL_COL_W + 4;
+                    by = CAL_GRID_Y + CAL_GRID_PAD + row * row_h + (row_h - bh) / 2;
+                }
+            }
+            if (bx >= 0)
+            {
+                stroke_rect(buf, bx, by, bw, bh, 2, C_BLACK);
+                draw_text_cjk(buf, bx + (bw - tw) / 2, by + 5, info->memo, 1, C_BLACK);
             }
         }
     }

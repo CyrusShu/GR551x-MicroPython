@@ -40,6 +40,21 @@ int main(int argc, char **argv)
     info.wx_code  = 0;
     info.env_temp_c = (int8_t)-128;
     info.city = (argc > 8) ? argv[8] : "";        /* build 61：温度后面那个城市名 */
+    /* build 67：纪念日提醒 —— argv[9] 是 "月-日"（例 "10-05"），argv[10] 是祝福语 */
+    info.memo_mon = 0;
+    info.memo_day = 0;
+    info.memo     = "";
+    if (argc > 10)
+    {
+        int mm = 0, dd = 0;
+
+        if (sscanf(argv[9], "%d-%d", &mm, &dd) == 2)
+        {
+            info.memo_mon = (int8_t)mm;
+            info.memo_day = (int8_t)dd;
+            info.memo     = argv[10];
+        }
+    }
     if (argc > 6)
     {
         info.wx_code = (uint8_t)atoi(argv[6]);
