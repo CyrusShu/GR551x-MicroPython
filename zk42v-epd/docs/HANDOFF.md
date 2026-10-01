@@ -13,6 +13,8 @@
      并补上"图片模式下收到 0x20 不重画"的护栏；状态块多两个字：
      `112 set_time_cmds` / `113 time_keep_cnt`（`ZK_DBG_WORDS` 112→114）。
      镜像 `bin_size 130256 / check_sum 0x00CAE9FB`，SHA-256 `94e15e65…`。
+     **2026-10-01 已刷实机**：`build=60`、`flags=0x2C`、时基实测 **0.999 / 0.998**、
+     `BUSY 85017 / 超时 0` ⇒ 时基没回退、刷新也照旧。
    * **Mac 基站**（`outputs/ble-base/zk_ble_base.py`）：`watch` 默认用模式 0；
      时间戳挪到 write 前一刻才取（以前在取天气之前取，白白旧几秒）；
      推天气时自动带上时间。新增 `--keep-mode / --no-keep-mode`。
