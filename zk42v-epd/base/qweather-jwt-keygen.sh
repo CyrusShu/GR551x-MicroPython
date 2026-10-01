@@ -21,22 +21,56 @@ set -euo pipefail
 
 PEM="${1:-qweather-ed25519.pem}"
 
-if ! command -v openssl >/dev/null 2>&1; then
-    echo "找不到 openssl（macOS 自带一个）"; exit 1
+# ⚠ 必须找一个**支持 Ed25519** 的 openssl：
+#   macOS 自带的 /usr/bin/openssl 是 **LibreSSL**，不支持 ed25519
+#   （报错就是 "Algorithm ed25519 not found"）。
+#   而 `bash 脚本.sh` 这种跑法**不会**读你的 zsh 配置 —— PATH 里可能只有 /usr/bin，
+#   于是即使你装了 Homebrew 的 openssl@3 也用不上。所以这里自己按顺序找。
+find_openssl() {
+    local c
+    for c in "${OPENSSL:-}" \
+             /opt/homebrew/bin/openssl \
+             /usr/local/bin/openssl \
+             /opt/homebrew/opt/openssl@3/bin/openssl \
+             /usr/local/opt/openssl@3/bin/openssl \
+             "$(command -v openssl 2>/dev/null || true)" \
+             /usr/bin/openssl; do
+        [ -n "$c" ] && [ -x "$c" ] || continue
+        if "$c" genpkey -algorithm ed25519 -out /dev/null >/dev/null 2>&1; then
+            printf '%s\n' "$c"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ! OPENSSL_BIN="$(find_openssl)"; then
+    echo "找不到支持 Ed25519 的 openssl —— 没法生成 JWT 的密钥。"
+    echo
+    echo "  macOS 自带的 /usr/bin/openssl 是 LibreSSL，**不支持 ed25519**"
+    echo "  （报错 'Algorithm ed25519 not found' 就是它）。装一个再跑："
+    echo
+    echo "      brew install openssl@3"
+    echo
+    echo "  或者手动指定："
+    echo "      OPENSSL=\"/opt/homebrew/opt/openssl@3/bin/openssl\" bash $0"
+    exit 1
 fi
+echo "用的 openssl：$OPENSSL_BIN  （$("$OPENSSL_BIN" version)）"
+
 if [ -e "$PEM" ]; then
     echo "⚠ $PEM 已存在 —— 直接用它（想换新的先删掉或换个文件名）"
 else
-    openssl genpkey -algorithm ed25519 -out "$PEM"
+    "$OPENSSL_BIN" genpkey -algorithm ed25519 -out "$PEM"
     echo "① 私钥已生成：$PEM"
 fi
 chmod 600 "$PEM"
 
 hex_of_last32() { tail -c 32 | xxd -p -c 64; }
 
-PUB_HEX="$(openssl pkey -in "$PEM" -pubout -outform DER | hex_of_last32)"
-SEED_HEX="$(openssl pkey -in "$PEM" -outform DER | hex_of_last32)"
-PUB_B64="$(openssl pkey -in "$PEM" -pubout -outform DER | tail -c 32 | base64)"
+PUB_HEX="$("$OPENSSL_BIN" pkey -in "$PEM" -pubout -outform DER | hex_of_last32)"
+SEED_HEX="$("$OPENSSL_BIN" pkey -in "$PEM" -outform DER | hex_of_last32)"
+PUB_B64="$("$OPENSSL_BIN" pkey -in "$PEM" -pubout -outform DER | tail -c 32 | base64)"
 
 echo
 echo "② 公钥（粘到和风控制台的「凭据」里）："
@@ -48,18 +82,13 @@ echo "     $SEED_HEX"
 echo
 
 # ④ 自检：用 seed 造一个 PKCS#8，再推公钥，必须跟 ② 一样
+# ⚠ 自检只用 shell + openssl + xxd（**不依赖 python3** —— 用 bash 跑脚本时 PATH 里
+#   可能没有 python3，之前就是这么踩的）
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-python3 - "$SEED_HEX" > "$TMP/k.der.hex" <<'PY'
-import sys
-seed = bytes.fromhex(sys.argv[1])
-# PKCS#8 Ed25519 私钥：固定前缀 + 32 字节 seed
-der = bytes.fromhex("302e020100300506032b657004220420") + seed
-sys.stdout.write(der.hex())
-PY
-xxd -r -p "$TMP/k.der.hex" > "$TMP/k.der"
-openssl pkey -inform DER -in "$TMP/k.der" -out "$TMP/k.pem" 2>/dev/null
-CHECK="$(openssl pkey -in "$TMP/k.pem" -pubout -outform DER | hex_of_last32)"
+printf '%s%s' "302e020100300506032b657004220420" "$SEED_HEX" | xxd -r -p > "$TMP/k.der"
+"$OPENSSL_BIN" pkey -inform DER -in "$TMP/k.der" -out "$TMP/k.pem" 2>/dev/null
+CHECK="$("$OPENSSL_BIN" pkey -in "$TMP/k.pem" -pubout -outform DER | hex_of_last32)"
 
 if [ "$CHECK" = "$PUB_HEX" ]; then
     echo "④ 自检通过 ✅ 这串 seed 推出来的公钥跟 ② 完全一致 —— JWT 会签对"

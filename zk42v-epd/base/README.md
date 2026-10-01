@@ -12,6 +12,13 @@ cd /Users/mac/Documents/Codex/2026-09-15/a/outputs/ble-base
 bash qweather-jwt-keygen.sh
 ```
 
+> ⚠ **macOS 的坑**：系统自带的 `/usr/bin/openssl` 是 **LibreSSL**，**不支持 ed25519**
+> （报 `Algorithm ed25519 not found`）。而 `bash 脚本.sh` 不会读你的 zsh 配置，
+> PATH 里常常只有 `/usr/bin` —— 于是明明装了 Homebrew 的 openssl 也用不上。
+> 脚本已经会**自己按绝对路径找一个支持 ed25519 的**（`/opt/homebrew/bin/openssl` 等），
+> 找不到才提示 `brew install openssl@3`；也可以手动指定：
+> `OPENSSL="/opt/homebrew/opt/openssl@3/bin/openssl" bash qweather-jwt-keygen.sh`
+
 它会打印三样东西：
 
 | 输出 | 去哪 |
