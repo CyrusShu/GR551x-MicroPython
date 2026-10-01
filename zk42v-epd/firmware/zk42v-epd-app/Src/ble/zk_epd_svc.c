@@ -156,6 +156,24 @@ static char     s_city[24];
 static int8_t   s_memo_mon;
 static int8_t   s_memo_day;
 static char     s_memo[40];
+
+/* 往纪念日文案后面接一段（build 68）。为什么要"接"：BLE 的 ATT 一次只能发
+   MTU-3 字节，MTU=23 时只有 20 字节 —— 而一句祝福语 24+ 字节，基站只能分几次发。
+   基站用 0x7A 起头（带月日）、0x7B 续传。这里只做"追加 + 截断"，不关心分几段。 */
+static void memo_append(const uint8_t *p, uint16_t n)
+{
+    uint16_t have = (uint16_t)strlen(s_memo);
+
+    if ((uint32_t)have + n >= (uint32_t)sizeof(s_memo))
+    {
+        n = (uint16_t)(sizeof(s_memo) - 1u - have);
+    }
+    if (n > 0u)
+    {
+        memcpy(s_memo + have, p, n);
+    }
+    s_memo[have + n] = 0;
+}
 static uint8_t  s_bat_notify;        /* 0x72 之后：下一次 poll 把刚读到的电池值回报给网页 */
 static int8_t   s_tz_h;              /* 网页给的时区（小时）；只用来回报/记账，见 SET_TIME */
 
@@ -787,32 +805,38 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
          *   生日是"按月日重复"的，所以每年这个月都会亮。
          *   ⚠ 祝福语只能用字模里有的字（gen_font.py 的 MEMO_CHARS），认不出的会被跳过。 */
         case 0x7A:
+            s_memo[0] = 0;                      /* 起头 = 重新开始攒文案 */
             if (len >= 3u)
             {
                 uint16_t n = (uint16_t)(len - 3u);
 
                 s_memo_mon = (int8_t)d[1];
                 s_memo_day = (int8_t)d[2];
-                if (n >= (uint16_t)sizeof(s_memo))
-                {
-                    n = (uint16_t)sizeof(s_memo) - 1u;
-                }
-                if (n > 0u)
-                {
-                    memcpy(s_memo, d + 3, n);
-                }
-                s_memo[n] = 0;
+                memo_append(d + 3, n);
             }
             else                                /* 只发 0x7A = 清掉 */
             {
                 s_memo_mon = 0;
                 s_memo_day = 0;
-                s_memo[0]  = 0;
             }
             g_dbg.memo_cmds++;
             if (ZKGUI_MODE_PICTURE != s_mode)
             {
                 s_need_gui = 1;
+            }
+            break;
+
+        /* 0x7B MEMO_MORE：**纪念日文案的续传段**（build 68）
+         *   7B <utf8 片段>
+         * 为什么要它：ATT 一次只能发 MTU-3 字节（MTU=23 时 = 20），而一句
+         * "付婧文生日快乐！" 是 24 字节 —— 基站按 UTF-8 字符边界切成几段，
+         * 0x7A 起头、0x7B 接着发。实机（ESP32 基站 build-8）就是这么踩到的：
+         * 一条 27 字节的写触发了 Bluedroid 的"长写"，价签不支持 → 卡 40 秒后失败，
+         * 屏上一直没框。分片之后就跟 MTU 无关了。 */
+        case 0x7B:
+            if (len >= 2u && s_memo_day > 0)
+            {
+                memo_append(d + 1, (uint16_t)(len - 1u));
             }
             break;
 

@@ -1,5 +1,5 @@
 /* ===========================================================================
- *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-8）
+ *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-9）
  *
  *  干什么：让一块 ESP32 当 BLE central，扫到价签就连上去，把
  *          · 时间（0x20：UTC 秒 + 时区 + 模式）
@@ -60,6 +60,7 @@
 #define MEMO_DAY        5
 #define MEMO_TEXT       "付婧文生日快乐！"
 #define CMD_SET_MEMO    0x7A
+#define CMD_SET_MEMO_MORE 0x7B   // 续传片段（MTU 只有 23 时一句祝福语要分几次发）
 
 // ③ 价签：按广播名找（各平台看到的 MAC 不一样，名字最稳）
 #define TAG_NAME        "ZK42V-EPD"
@@ -603,6 +604,20 @@ static bool doSync(BLEAdvertisedDevice &dev)
     }
     logf("连上了");
 
+    /* 顺手把 MTU 谈大（build-9）：价签支持到 244（网页那套协议就是靠它推图的），
+       谈大之后一次能发 244 字节，长文案/以后的功能都不用再分片。
+       谈不成也不影响 —— 下面写命令的地方全都按 ≤20 字节分片了。 */
+    if (client->setMTU(247))
+    {
+        logf("MTU 协商后 = %d（一次能发 %d 字节）",
+             (int)client->getMTU(), (int)client->getMTU() - 3);
+    }
+    else
+    {
+        logf("MTU 协商没成功（现在是 %d，写入按 %d 字节分片）",
+             (int)client->getMTU(), (int)client->getMTU() - 3);
+    }
+
     BLERemoteService *svc = client->getService(BLEUUID(SVC_UUID));
     if (svc == nullptr)
     {
@@ -703,6 +718,8 @@ static bool doSync(BLEAdvertisedDevice &dev)
 
     // ② 天气：**没能跟时间合并时**才单独发（例如手里还没有效时间）
     bool sentWx = sendWx && !sentTime;
+    bool wroteCity = false;                 /* 这一轮到底写没写东西（日志别乱说"没写"） */
+    bool wroteMemo = false;
     if (haveWeather)
     {
         if (!sendWx)
@@ -734,23 +751,62 @@ static bool doSync(BLEAdvertisedDevice &dev)
         wr->writeValue(p, (size_t)(cl + 1), true);
         strncpy(citySent, CITY_NAME, sizeof(citySent) - 1);
         citySent[sizeof(citySent) - 1] = 0;
+        wroteCity = true;
         logf("→ 城市名 %s（温度后面那几个字）", CITY_NAME);
     }
 
     // ③b 纪念日提醒（build 67）：那天套黑框 + 在 1 号左边的空白处框出祝福语。
+    //     ⚠ 必须**按 MTU 分片**：ATT 一次只能发 MTU-3 字节，ESP32 默认 MTU=23
+    //     （只有 20 字节），而"付婧文生日快乐！"是 24 字节 —— 一条 27 字节的写会触发
+    //     Bluedroid 的"长写（prepare/execute）"，价签的 GATT 不支持 → 卡 ~40 秒后失败，
+    //     屏上一直不出框（2026-10-01 实机就是这么踩到的）。
+    //     所以：0x7A 起头（带月日）、0x7B 续传，每段都 ≤ 20 字节、按 UTF-8 边界切。
     if (MEMO_DAY > 0 && strlen(MEMO_TEXT) > 0 && !memoSent)
     {
-        uint8_t p[64];
-        size_t  tl = strlen(MEMO_TEXT);
-        if (tl > sizeof(p) - 3) tl = sizeof(p) - 3;
-        p[0] = CMD_SET_MEMO;
-        p[1] = (uint8_t)MEMO_MON;
-        p[2] = (uint8_t)MEMO_DAY;
-        memcpy(p + 3, MEMO_TEXT, tl);
-        wr->writeValue(p, (size_t)(tl + 3), true);
-        memoSent = true;
-        logf("→ 纪念日 %02d-%02d「%s」（那天套黑框 + 空白处框出这句话）",
-             MEMO_MON, MEMO_DAY, MEMO_TEXT);
+        const char *t     = MEMO_TEXT;
+        const size_t total = strlen(t);
+        size_t       off   = 0;
+        const size_t chunk = 15;            /* 一段最多 15 字节文案 = 5 个汉字 */
+        int          parts = 0;
+
+        while (off < total)
+        {
+            size_t n = total - off;
+            uint8_t p[24];
+            size_t  k;
+
+            if (n > chunk) n = chunk;
+            /* 别把汉字切成两半：**看下一段的第一个字节**是不是"续字节"（10xxxxxx）——
+               是的话说明这个位置正切在一个字的中间，往前退到字符边界。
+               （⚠ 不能看本段的最后一个字节：汉字 3 字节，那样会退成 1 字节的碎片段） */
+            while (n > 1 && (off + n) < total &&
+                   ((uint8_t)t[off + n] & 0xC0) == 0x80)
+            {
+                n--;
+            }
+
+            if (off == 0)                   /* 第一段：7A <mon> <day> <文案> */
+            {
+                p[0] = CMD_SET_MEMO;
+                p[1] = (uint8_t)MEMO_MON;
+                p[2] = (uint8_t)MEMO_DAY;
+                k    = 3;
+            }
+            else                            /* 后面几段：7B <文案> */
+            {
+                p[0] = CMD_SET_MEMO_MORE;
+                k    = 1;
+            }
+            memcpy(p + k, t + off, n);
+            wr->writeValue(p, k + n, true);
+            off += n;
+            parts++;
+            delay(20);                      /* 给价签一点时间处理（它跑在协议栈回调里） */
+        }
+        memoSent   = true;
+        wroteMemo  = true;
+        logf("→ 纪念日 %02d-%02d「%s」（%d 段发完：那天套黑框 + 空白处框出这句话）",
+             MEMO_MON, MEMO_DAY, MEMO_TEXT, parts);
     }
 
     delay(NOTIFY_DWELL_MS);                 // 留点时间把价签的回包收全
@@ -758,8 +814,8 @@ static bool doSync(BLEAdvertisedDevice &dev)
 
     forceTimeSync = false;
     logf("已断开。%s",
-         (sentTime || sentWx) ? "价签这时在刷屏，约 16 秒"
-                              : "本轮没写任何命令，价签不会重画");
+         (sentTime || sentWx || wroteCity || wroteMemo) ? "价签这时在刷屏，约 16 秒"
+                                                       : "本轮没写任何命令，价签不会重画");
     return true;
 }
 
@@ -771,7 +827,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-8");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-9");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),
