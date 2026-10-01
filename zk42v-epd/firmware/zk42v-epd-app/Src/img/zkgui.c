@@ -989,53 +989,40 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
     draw_cjk(buf, x, 5, CJK_YUE, 1, C_RED);
     x += 17 + 5;
 
-    /* 中：干支 + 农历月（黑）—— build 61：把"农历"两个字换成**具体的天干地支**
-       （用户提的）。干支跟生肖是同一套换算：天干 = (year-4)%10、地支 = (year-4)%12，
-       2026 年就是「丙午」（正好是马年）。农历月份那两个字照旧（八月/冬月/腊月…）。 */
+    /* 中：**干支 → 生肖 → 农历月** 三段（build 65 按用户要求把「马年」和「八月」
+       换了位置：干支后面紧接生肖，农历月排最后）。
+
+       · 干支（黑，11px 小字）：build 61 把"农历"两个字换成**具体的天干地支**，
+         换算跟生肖同一套：天干 = (year-4)%10、地支 = (year-4)%12 —— 2026 = 丙午。
+       · 生肖（马 16px 红 + 年 11px 黑）、农历月（八 16px 红 + 月 11px 黑）：
+         build 64 定的规矩 = 内容字大号红 + 量词小号黑。
+       · 农历月串形如 "八月"/"冬月"/"闰八月" —— 末 3 字节永远是「月」。
+
+       ⚠ 干支和农历月跟着"不画农历"（0x04）走；生肖不跟（它不是农历那行字，
+         2026-10-01 之前也是无条件画的，test_gui 有条判据盯这个）。 */
+    mbuf[0] = 0;
     if (with_lunar && s_lunar_on)
     {
+        static const char *const s_tiangan[10] = {
+            "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"
+        };
+        static const char *const s_dizhi[12] = {
+            "子", "丑", "寅", "卯", "辰", "巳",
+            "午", "未", "申", "酉", "戌", "亥"
+        };
+        char gz[8];
+        int  gi  = (int)(((year - 4) % 10 + 10) % 10);
+        int  zi2 = (int)(((year - 4) % 12 + 12) % 12);
+
         cal_lunar_month(year, mon, day, mbuf, (int)sizeof(mbuf));
-        if (mbuf[0])
-        {
-            static const char *const s_tiangan[10] = {
-                "甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"
-            };
-            static const char *const s_dizhi[12] = {
-                "子", "丑", "寅", "卯", "辰", "巳",
-                "午", "未", "申", "酉", "戌", "亥"
-            };
-            char gz[8];
-            int  gi = (int)(((year - 4) % 10 + 10) % 10);
-            int  zi2 = (int)(((year - 4) % 12 + 12) % 12);
 
-            strcpy(gz, s_tiangan[gi]);
-            strcat(gz, s_dizhi[zi2]);
-            /* build 64：干支也降一号（用户提的），颜色仍是黑 */
-            x = draw_text_small(buf, x, 7, gz, C_BLACK);
-            /* 农历月份：**末字「月」小号黑**，前面的数字**大号红**
-               （用户 2026-10-01 提的：八月的「八」不用小一号、用红色；月保持小号黑）。
-               mbuf 形如 "八月" / "冬月" / "闰八月" —— 末 3 字节永远是「月」。 */
-            {
-                int n = (int)strlen(mbuf);
-
-                if (n > 3)
-                {
-                    char head[16];
-
-                    memcpy(head, mbuf, (size_t)(n - 3));
-                    head[n - 3] = 0;
-                    x = draw_text_cjk(buf, x, 5, head, 1, C_RED);
-                }
-                x = draw_text_small(buf, x, 7, mbuf + (n - 3), C_BLACK);
-            }
-            x += 5;
-        }
+        strcpy(gz, s_tiangan[gi]);
+        strcat(gz, s_dizhi[zi2]);
+        x = draw_text_small(buf, x, 7, gz, C_BLACK);
+        x += 3;                     /* 换位置后这里拆成了三段，间隔收一点才塞得下城市名 */
     }
 
-    /* 中右：生肖 —— build 64 按用户要求：「马」大号红、「年」小号黑
-       （跟农历月份同一个套路：内容字大号红、量词小号黑）。
-       ⚠ 不受"不画农历"那个开关（0x04）影响 —— 它是生肖，不是农历那行字
-       （2026-10-01 之前也是无条件画的，test_gui 里那条"表头红字不动"就是盯这个）。 */
+    /* 生肖（马年）—— build 65：挪到干支后面、「八月」前面 */
     if (with_lunar)
     {
         static const char *const s_shengxiao[12] = {
@@ -1046,7 +1033,24 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
 
         x = draw_text_cjk(buf, x, 5, s_shengxiao[zi], 1, C_RED);
         x = draw_text_small(buf, x, 7, "年", C_BLACK);
-        x += 5;
+        x += 4;
+    }
+
+    /* 农历月（八月）—— build 65：跟生肖换了位置，排到后面 */
+    if (with_lunar && s_lunar_on && mbuf[0])
+    {
+        int n = (int)strlen(mbuf);
+
+        if (n > 3)
+        {
+            char head[16];
+
+            memcpy(head, mbuf, (size_t)(n - 3));
+            head[n - 3] = 0;
+            x = draw_text_cjk(buf, x, 5, head, 1, C_RED);
+        }
+        x = draw_text_small(buf, x, 7, mbuf + (n - 3), C_BLACK);
+        x += 3;
     }
 
     /* 再右：天气 = **图标 + 文字**（手机经 BLE 0x71 下发；见 weather.h）。
