@@ -34,11 +34,18 @@ bash qweather-jwt-keygen.sh
 
 * **要**：JWT 的 `iat/exp` 用的是"现在几点"，而且 token 15 分钟就过期 ——
   要是让 Mac 签好再传，就得**Mac 常开**；而我们的基站是那台常开的 ESP32。
-* **支持**：ESP32 core 3.3.11 的 mbedTLS 是 **3.6.6**，PSA 里有 EdDSA，
-  预编译库也把 Ed25519 打开了 —— 实测（`work/zkjwt/`）编译+链接通过；
-  接进去之后整个固件从 1,794,199 B 涨到 **1,813,519 B**（就是这段签名代码）。
-  用 `psa_import_key(seed) → psa_sign_message(PSA_ALG_PURE_EDDSA)` 签，
-  base64url 自己拼（`b64urlEnc()`），一行第三方加密库都没引。
+* **⚠ 但**：**ESP32 core 3.3.11 的预编译库里没有 Ed25519** —— 头文件里有
+  `PSA_ALG_PURE_EDDSA` 的定义，但 sdkconfig 里只有 `CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED`
+  （那是 X25519 密钥交换，不是 Ed25519），`libmbedcrypto.a` 里也搜不到 edwards/ed25519
+  符号。实机一跑就是 `PSA 导入私钥失败：-135`（INVALID_ARGUMENT）。
+  **教训：`#include` 有定义 ≠ 实现被编进去；"能编译链接"不等于"运行期支持"。**
+* **所以自带一份 Ed25519**：公有领域的 **TweetNaCl**（`tweetnacl.c/.h`，
+  https://tweetnacl.cr.yp.to/ 20140427 版，放在 sketch 目录里一起编译），
+  只给它加了一个函数 `crypto_sign_seed_keypair()`（用固定 seed 推密钥对，
+  原版只有随机版）。
+  **验证过才敢用**：同一个 seed 推出来的公钥、以及照固件格式签出的签名，
+  与 OpenSSL **逐字节一致**（Ed25519 是确定性签名，这样就等价于"验签通过"）。
+  成本：整机 1,794,199 → **1,806,335 B**（约 +12KB）。
 * **JWT 要用时间**：所以固件**总是先用 Open-Meteo（纯 HTTP）把 HTTP Date 头拿到手**，
   再签 JWT 去请求和风 —— 免得"要签名得先有时间、要时间得先能请求"的鸡生蛋问题。
 

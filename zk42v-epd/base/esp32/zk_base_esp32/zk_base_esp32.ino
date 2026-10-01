@@ -32,7 +32,17 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <psa/crypto.h>      /* Ed25519 签名（和风 JWT 用；core 3.x 的 mbedTLS 已经打开） */
+/* Ed25519 签名（和风 JWT 用）。⚠ 别用 mbedTLS/PSA：实测这块 core 的预编译库里
+   **根本没编进 Ed25519**（sdkconfig 只有 CURVE25519=X25519 密钥交换，没有 PSA EdDSA；
+   libmbedcrypto.a 里也搜不到 edwards 符号）—— 运行时 psa_import_key 直接返回
+   -135 (INVALID_ARGUMENT)。所以自带一份**公有领域**的 TweetNaCl（tweetnacl.c/.h，
+   https://tweetnacl.cr.yp.to/ 20140427 版，我们只加了 crypto_sign_seed_keypair 一个函数）。
+   已用 openssl 对拍验证：同一 seed 推出的公钥、签出的签名与 OpenSSL **逐字节一致**。 */
+extern "C" int crypto_sign_seed_keypair(unsigned char *pk, unsigned char *sk,
+                                        const unsigned char *seed);
+extern "C" int crypto_sign_ed25519_tweet(unsigned char *sm, unsigned long long *smlen,
+                                         const unsigned char *m, unsigned long long n,
+                                         const unsigned char *sk);
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <time.h>
@@ -545,43 +555,43 @@ static int hexToBin(const char *hex, uint8_t *out, int cap)
     return n;
 }
 
-/* 用 PSA（mbedTLS 3.x 自带）做 Ed25519 签名。实测 core 3.3.11 的预编译库已开 ✓ */
+/* TweetNaCl 的 Ed25519 签名（替掉了用不了的 PSA 版本，见文件顶部那段说明）。
+   crypto_sign 的输出是 sig(64) || msg —— 用同一块缓冲，也省得再拷一次。 */
 static bool ed25519Sign(const uint8_t seed[32], const uint8_t *msg, size_t msgLen,
                         uint8_t sig[64])
 {
-    static bool          inited = false;
-    psa_key_attributes_t attr   = PSA_KEY_ATTRIBUTES_INIT;
-    psa_key_id_t         key    = 0;
-    size_t               siglen = 0;
-    psa_status_t         st;
+    static uint8_t pk[32];
+    static uint8_t sk[64];
+    static uint8_t sm[64 + 600];
+    unsigned long long smlen = 0;
 
-    if (!inited)
+    if (msgLen > sizeof(sm) - 64)
     {
-        st = psa_crypto_init();
-        if (st != PSA_SUCCESS)
-        {
-            logf("  PSA 初始化失败：%d", (int)st);
-            return false;
-        }
-        inited = true;
-    }
-    psa_set_key_type(&attr, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_TWISTED_EDWARDS));
-    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_MESSAGE);
-    psa_set_key_algorithm(&attr, PSA_ALG_PURE_EDDSA);
-    st = psa_import_key(&attr, seed, 32, &key);
-    if (st != PSA_SUCCESS)
-    {
-        logf("  PSA 导入私钥失败：%d（十六进制串对不对？要 64 个字符）", (int)st);
+        logf("  Ed25519：待签内容太长（%u 字节）", (unsigned)msgLen);
         return false;
     }
-    st = psa_sign_message(key, PSA_ALG_PURE_EDDSA, msg, msgLen, sig, 64, &siglen);
-    psa_destroy_key(key);
-    if (st != PSA_SUCCESS || siglen != 64)
+    crypto_sign_seed_keypair(pk, sk, seed);          /* seed -> (pk, sk) */
+    memcpy(sm + 64, msg, msgLen);
+    crypto_sign_ed25519_tweet(sm, &smlen, sm + 64, (unsigned long long)msgLen, sk);
+    if (smlen != (unsigned long long)msgLen + 64)
     {
-        logf("  PSA 签名失败：%d", (int)st);
+        logf("  Ed25519 签名失败（smlen=%u）", (unsigned)smlen);
         return false;
     }
+    memcpy(sig, sm, 64);
     return true;
+}
+
+/* TweetNaCl 要求调用方提供 randombytes()（它自己的 keypair 用）。
+   我们用不到随机（密钥对是从固定 seed 推的），但符号得在，否则链接不过。 */
+extern "C" void randombytes(unsigned char *p, unsigned long long n)
+{
+    unsigned long long i;
+
+    for (i = 0; i < n; i++)
+    {
+        p[i] = (unsigned char)(esp_random() & 0xFFu);
+    }
 }
 
 /* 签一个 JWT（iat 用"现在"——调用前必须已经有时间，见配置区那段说明） */

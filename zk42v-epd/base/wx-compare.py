@@ -23,9 +23,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import json
 import os
+import shutil
+import subprocess
+import tempfile
+import time
 import urllib.request
 
 MODELS = [
@@ -82,13 +87,65 @@ def qweather_code(text: str) -> int:
 
 def qweather(key: str, lat: float, lon: float, host: str = "devapi.qweather.com"):
     """注意 location 是**经度,纬度**（跟 Open-Meteo 反着来，踩过一次）"""
-    url = ("https://%s/v7/weather/now?location=%.4f,%.4f&key=%s&lang=zh&unit=m"
-           % (host, lon, lat, key))
-    d = get_json(url)
+    return qweather_url("https://%s/v7/weather/now?location=%.4f,%.4f&key=%s&lang=zh&unit=m"
+                        % (host, lon, lat, key))
+
+
+def qweather_url(url: str, bearer: str = ""):
+    req = urllib.request.Request(url, headers={"User-Agent": "zk42v-wx-compare/1"})
+    if bearer:
+        req.add_header("Authorization", "Bearer " + bearer)
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read()
+        if r.headers.get("Content-Encoding") == "gzip":
+            raw = gzip.decompress(raw)
+    d = json.loads(raw.decode("utf-8", "replace"))
     if str(d.get("code")) != "200":
         raise RuntimeError("和风返回 code=%s（401/403 通常是 key 不对，"
                            "或这个 key 没开通「实时天气 now」）" % d.get("code"))
     return d["now"], d.get("updateTime", "")
+
+
+# ---- 和风 JWT（EdDSA）：在 Mac 上用私钥签一个，用来**不刷机先验通** -----------
+#  ⚠ 跟 keygen 脚本一样的坑：/usr/bin/openssl 是 LibreSSL，不支持 ed25519 ——
+#    所以这里也要自己找一个能干活的 openssl。
+def find_openssl() -> str:
+    for c in (os.environ.get("OPENSSL"), "/opt/homebrew/bin/openssl",
+              "/usr/local/bin/openssl", "/opt/homebrew/opt/openssl@3/bin/openssl",
+              "/usr/local/opt/openssl@3/bin/openssl", shutil.which("openssl"),
+              "/usr/bin/openssl"):
+        if not c or not os.path.exists(c):
+            continue
+        r = subprocess.run([c, "genpkey", "-algorithm", "ed25519", "-out", os.devnull],
+                           capture_output=True)
+        if r.returncode == 0:
+            return c
+    raise RuntimeError("找不到支持 ed25519 的 openssl（brew install openssl@3）")
+
+
+def make_jwt(pem_path: str, kid: str, sub: str) -> str:
+    b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()   # noqa: E731
+    now = int(time.time())
+    hdr = json.dumps({"alg": "EdDSA", "kid": kid}, separators=(",", ":"))
+    pay = json.dumps({"sub": sub, "iat": now - 30, "exp": now + 900},
+                     separators=(",", ":"))
+    signing_input = b64(hdr.encode()) + "." + b64(pay.encode())
+    with tempfile.TemporaryDirectory() as td:
+        m = os.path.join(td, "m"); s = os.path.join(td, "s")
+        open(m, "w").write(signing_input)
+        subprocess.run([find_openssl(), "pkeyutl", "-sign", "-rawin",
+                        "-inkey", pem_path, "-in", m, "-out", s], check=True,
+                       capture_output=True)
+        sig = open(s, "rb").read()
+    return signing_input + "." + b64(sig)
+
+
+def qweather_jwt(pem_path: str, kid: str, sub: str, lat: float, lon: float,
+                 host: str = "devapi.qweather.com"):
+    tok = make_jwt(pem_path, kid, sub)
+    url = ("https://%s/v7/weather/now?location=%.4f,%.4f&lang=zh&unit=m"
+           % (host, lon, lat))
+    return qweather_url(url, bearer=tok)
 
 
 def om(lat: float, lon: float, model: str):
@@ -112,12 +169,35 @@ def main() -> int:
     ap.add_argument("--qweather-host", default=os.environ.get("QWEATHER_HOST",
                                                              "devapi.qweather.com"),
                     help="免费订阅用 devapi.qweather.com；标准订阅用 api.qweather.com")
+    ap.add_argument("--qweather-jwt-key", default="",
+                    help="Ed25519 私钥 PEM（keygen 生成的 ed25519-private.pem）。"
+                         "给了它 + kid + sub 就用 JWT 请求 —— **不刷机先验通**")
+    ap.add_argument("--qweather-kid", default=os.environ.get("QWEATHER_JWT_KID", ""),
+                    help="凭据 ID（控制台建的 JWT 凭据）")
+    ap.add_argument("--qweather-sub", default=os.environ.get("QWEATHER_JWT_SUB", ""),
+                    help="项目 ID（控制台里的项目 ID）")
     args = ap.parse_args()
 
     print("坐标 %.4f, %.4f（跟基站 WX 请求完全一致）" % (args.lat, args.lon))
     print("")
 
-    if args.qweather_key:
+    if args.qweather_jwt_key and args.qweather_kid and args.qweather_sub:
+        try:
+            now, upd = qweather_jwt(args.qweather_jwt_key, args.qweather_kid,
+                                    args.qweather_sub, args.lat, args.lon,
+                                    args.qweather_host)
+            print("★ 和风天气（**JWT 认证**，实况）: %s°C  体感 %s°C  %s  ↦ 固件码 %d"
+                  % (now.get("temp"), now.get("feelsLike"), now.get("text"),
+                     qweather_code(now.get("text"))))
+            print("    观测时刻 %s   更新 %s" % (now.get("obsTime"), upd))
+            print("    ✅ JWT 这套（私钥/kid/sub）是通的 —— ESP32 那边照这个填就行")
+            print("")
+        except Exception as e:
+            print("★ 和风 JWT 取不到：%s" % e)
+            print("    · 401/403 → kid/sub 填错，或控制台没上传这把公钥（要 PEM 文件）")
+            print("    · 还想用 API key 试：--qweather-key")
+            print("")
+    elif args.qweather_key:
         try:
             now, upd = qweather(args.qweather_key, args.lat, args.lon, args.qweather_host)
             print("★ 和风天气（实况，跟手机同一路）: %s°C  体感 %s°C  %s  ↦ 固件码 %d"
@@ -131,7 +211,8 @@ def main() -> int:
             print("★ 和风天气取不到：%s" % e)
             print("")
     else:
-        print("（没给 --qweather-key，跳过和风；填上就能看到「手机那一版」的数）")
+        print("（没给和风凭据，跳过和风：--qweather-jwt-key + --qweather-kid + --qweather-sub，")
+        print("  或者先用 API key：--qweather-key）")
         print("")
 
     print("%-20s %-8s %-10s %-9s %-8s %s" %

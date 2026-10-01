@@ -101,6 +101,17 @@
 > 没引第三方加密库。⚠ **JWT 要"现在几点"当 iat/exp**，所以固件总是先用
 > Open-Meteo（纯 HTTP）拿 HTTP Date 头，再签 JWT 请求和风 —— 避开鸡生蛋。
 > 填 JWT 三项就优先 JWT → 再退 API key → 再退 Open-Meteo。
+>
+> ⚠ **更正（同一天实机打脸）**：我先前写"ESP32 的 mbedTLS 支持 Ed25519、编译链接通过" ——
+> **只对了一半**：头文件里有 `PSA_ALG_PURE_EDDSA` 定义，但**预编译库里没编进实现**
+> （sdkconfig 只有 `CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED` = X25519；libmbedcrypto.a
+> 里没有 edwards 符号）。实机一跑：`PSA 导入私钥失败：-135`（INVALID_ARGUMENT）。
+> **教训：能编译链接 ≠ 运行期支持；要真验过再下结论。**
+> 修法：sketch 里自带一份**公有领域**的 **TweetNaCl**（`tweetnacl.c/.h` + 我们加的
+> `crypto_sign_seed_keypair()`），并在 Mac 上用 openssl **逐字节对拍**验证过
+> （同 seed 的公钥、照固件格式签的签名，与 OpenSSL 完全一致）。
+> 整机 1,794,199 → 1,806,335 B。**keygen 的输出格式没变**（还是 32 字节 seed 的
+> 64 位十六进制），用户只管重新编译上传即可。
 
 * Mac 版 `zk_ble_base.py`：`probe / sync / watch / raw`，坐标已改**深圳公明广场 22.7809,113.8861**。
   `raw` 发原始字节给面板（`03`=命令 `04`=数据）。
