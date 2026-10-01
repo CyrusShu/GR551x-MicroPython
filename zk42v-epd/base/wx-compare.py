@@ -23,7 +23,9 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
+import os
 import urllib.request
 
 MODELS = [
@@ -48,7 +50,45 @@ WMO_TO_TAG = {
 def get_json(url: str, timeout: float = 15.0):
     req = urllib.request.Request(url, headers={"User-Agent": "zk42v-wx-compare/1"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+        raw = r.read()
+        if r.headers.get("Content-Encoding") == "gzip":
+            raw = gzip.decompress(raw)          # 和风天气**总是** gzip（哪怕你写明 identity）
+        return json.loads(raw.decode("utf-8", "replace"))
+
+
+# ---- 和风天气（QWeather）：手机在国内用的就是这一路 ---------------------------
+# 它给的是**实况温度**（观测/融合值），不是模型格点，所以更贴近手机上显示的数。
+def qweather_code(text: str) -> int:
+    """和风的天气文字 -> 固件那 9 个码（1晴 2多云 3阴 4小雨 5大雨 6雷阵雨 7雪 8雾 9风）"""
+    t = text or ""
+    if "雷" in t:
+        return 6
+    if "雪" in t or "冰" in t:
+        return 7
+    if any(k in t for k in ("雾", "霾", "沙", "尘")):
+        return 8
+    if "雨" in t:
+        return 5 if any(k in t for k in ("中雨", "大雨", "暴雨", "强")) else 4
+    if "阴" in t:
+        return 3
+    if any(k in t for k in ("多云", "少云", "晴间")):
+        return 2
+    if "晴" in t:
+        return 1
+    if any(k in t for k in ("风", "台风", "飑")):
+        return 9
+    return 2
+
+
+def qweather(key: str, lat: float, lon: float, host: str = "devapi.qweather.com"):
+    """注意 location 是**经度,纬度**（跟 Open-Meteo 反着来，踩过一次）"""
+    url = ("https://%s/v7/weather/now?location=%.4f,%.4f&key=%s&lang=zh&unit=m"
+           % (host, lon, lat, key))
+    d = get_json(url)
+    if str(d.get("code")) != "200":
+        raise RuntimeError("和风返回 code=%s（401/403 通常是 key 不对，"
+                           "或这个 key 没开通「实时天气 now」）" % d.get("code"))
+    return d["now"], d.get("updateTime", "")
 
 
 def om(lat: float, lon: float, model: str):
@@ -67,10 +107,33 @@ def main() -> int:
     ap.add_argument("--lon", type=float, default=113.8861, help="经度（默认：基站那组）")
     ap.add_argument("--city-code", default="",
                     help="中国天气网城市编号（深圳=101280601），会打印它的实况页链接")
+    ap.add_argument("--qweather-key", default=os.environ.get("QWEATHER_KEY", ""),
+                    help="和风天气的 key（也可以放环境变量 QWEATHER_KEY）。填了就一并对比它")
+    ap.add_argument("--qweather-host", default=os.environ.get("QWEATHER_HOST",
+                                                             "devapi.qweather.com"),
+                    help="免费订阅用 devapi.qweather.com；标准订阅用 api.qweather.com")
     args = ap.parse_args()
 
     print("坐标 %.4f, %.4f（跟基站 WX 请求完全一致）" % (args.lat, args.lon))
     print("")
+
+    if args.qweather_key:
+        try:
+            now, upd = qweather(args.qweather_key, args.lat, args.lon, args.qweather_host)
+            print("★ 和风天气（实况，跟手机同一路）: %s°C  体感 %s°C  %s  ↦ 固件码 %d"
+                  % (now.get("temp"), now.get("feelsLike"), now.get("text"),
+                     qweather_code(now.get("text"))))
+            print("    观测时刻 %s   更新 %s   风 %s km/h   湿度 %s%%"
+                  % (now.get("obsTime"), upd, now.get("windSpeed"), now.get("humidity")))
+            print("    ↑ 想让它成为价签的源：ESP32 里 QWEATHER_KEY 填同一个 key")
+            print("")
+        except Exception as e:
+            print("★ 和风天气取不到：%s" % e)
+            print("")
+    else:
+        print("（没给 --qweather-key，跳过和风；填上就能看到「手机那一版」的数）")
+        print("")
+
     print("%-20s %-8s %-10s %-9s %-8s %s" %
           ("源 / 模型", "温度", "体感", "天气", "风", "时刻"))
     print("-" * 74)

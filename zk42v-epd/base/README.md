@@ -1,5 +1,32 @@
 # Mac 当基站：价签一上电就自己拿到时间 + 天气
 
+## ⚡ 2026-10-01：接了**和风天气**（手机在国内用的就是这一路）
+
+用户："用和风天气。" —— 已接好，**填一个 key 就生效**（免费订阅即可，
+在 dev.qweather.com 注册，创建项目后拿到的 key 直接可用）。
+
+**在哪儿填**：
+
+* ESP32 基站：`zk_base_esp32.ino` 里 `#define QWEATHER_KEY "你的key"`
+  （免费订阅用 `devapi.qweather.com`，标准订阅才改 `QWEATHER_HOST`）
+* Mac 基站：`./run.sh sync --qweather-key 你的key`，或 `export QWEATHER_KEY=...`
+  （`--wx-source qweather` 可以强制只用和风）
+* 只想先看看它报多少：`python3 wx-compare.py --qweather-key 你的key`
+
+**行为**：填了 key → 优先用和风的**实况**（`/v7/weather/now` 的 `temp`，观测/融合值，
+跟手机显示的是同一路数据）；**
+取不到就自动退回 Open-Meteo**（纯 HTTP，一直能用）—— 不会因为换源把价签饿死，
+日志里会写清这次用的是哪条路（`天气源 = **和风天气（实况）** …`）。
+
+**接的时候踩到的四个坑**（都写进代码注释了）：
+
+1. 和风的 `location` 是 **"经度,纬度"**（Open-Meteo 是纬度在前，反的）；
+2. 响应**总是 gzip**（写 `Accept-Encoding: identity` 也照压），ESP32 的 HTTPClient
+   不会解 —— 用 ROM 里自带的 miniz（`tinfl`）解，但 gzip 的头尾要自己剥；
+3. **只有 HTTPS**（纯 HTTP 直接连不通），所以 ESP32 这边得走 TLS；
+4. 顺手修了自己埋的坑：和风成功后我会提前 return，**把校时那段跳过了** ——
+   已抽成 `applyDateHeader()`，两条路都调。
+
 ## ⚡ 2026-10-01：温度跟手机差 3℃ —— 先看这张表（`wx-compare.py`）
 
 用户问："手机 33℃，价签 29.9℃，你给的温度从哪来的？"

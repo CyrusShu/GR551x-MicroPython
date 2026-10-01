@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -135,6 +136,67 @@ def fetch_weather(lat: float, lon: float, timeout: float = 10.0):
     if code in (WX_SUN, WX_CLOUDY) and wind >= 30.0:
         code = WX_WIND
     return code, temp, wmo, wind
+
+
+# ---- 和风天气（QWeather，2026-10-01 接）-------------------------------------
+#  为什么接它：手机（Apple 天气）在国内用的就是这一路（和风/中国气象局实况），
+#  而 Open-Meteo 是**模型格点**，实测同一时刻能差 3~5℃。
+#  和风的 now.temp 是**实况温度**，更贴近手机显示的数。
+#  ⚠ 三个坑（都实测过）：
+#    ① location 是 **"经度,纬度"**（跟 Open-Meteo 反着来）；
+#    ② 响应**总是 gzip**（哪怕你写 Accept-Encoding: identity），得自己解；
+#    ③ 免费订阅必须用 devapi.qweather.com，标准订阅才是 api.qweather.com。
+QW_TEXT_TO_CODE = [
+    ("雷", 6), ("雪", 7), ("冰", 7), ("雾", 8), ("霾", 8), ("沙", 8), ("尘", 8),
+    ("中雨", 5), ("大雨", 5), ("暴雨", 5), ("雨", 4),
+    ("阴", 3), ("多云", 2), ("少云", 2), ("晴间", 2), ("晴", 1),
+    ("风", 9), ("台风", 9),
+]
+
+
+def qweather_text_to_code(text: str) -> int:
+    for key, code in QW_TEXT_TO_CODE:
+        if key in (text or ""):
+            return code
+    return WX_CLOUDY
+
+
+def fetch_weather_qweather(lat: float, lon: float, key: str,
+                           host: str = "devapi.qweather.com", timeout: float = 10.0):
+    """和风天气的**实况**。返回跟 fetch_weather() 一样的 (码, 温度, WMO占位, 风速)。"""
+    url = ("https://%s/v7/weather/now?location=%.4f,%.4f&key=%s&lang=zh&unit=m"
+           % (host, lon, lat, key))
+    req = urllib.request.Request(url, headers={"User-Agent": "zk42v-base/1"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+        if r.headers.get("Content-Encoding") == "gzip":
+            import gzip as _gz
+            raw = _gz.decompress(raw)
+    j = json.loads(raw.decode("utf-8", "replace"))
+    if str(j.get("code")) != "200":
+        raise RuntimeError("和风返回 code=%s（key 不对 / 没开通「实时天气」）" % j.get("code"))
+    now = j["now"]
+    temp = int(round(float(now["temp"])))
+    wind = float(now.get("windSpeed") or 0.0)
+    code = qweather_text_to_code(now.get("text"))
+    if code in (WX_SUN, WX_CLOUDY) and wind >= 30.0:
+        code = WX_WIND
+    return code, temp, None, wind
+
+
+def fetch_weather_any(args, lat: float, lon: float):
+    """按 --wx-source / 有没有 key 决定用谁。返回 (码, 温度, WMO, 风速, 源名)。"""
+    src = (getattr(args, "wx_source", "auto") or "auto").lower()
+    key = (getattr(args, "qweather_key", "") or os.environ.get("QWEATHER_KEY", "")).strip()
+    host = getattr(args, "qweather_host", "devapi.qweather.com")
+
+    if src in ("auto", "qweather") and key:
+        c, t, w, wind = fetch_weather_qweather(lat, lon, key, host)
+        return c, t, w, wind, "和风天气(实况)"
+    if src == "qweather":
+        raise RuntimeError("选了和风天气但没给 key（--qweather-key 或环境变量 QWEATHER_KEY）")
+    c, t, w, wind = fetch_weather(lat, lon)
+    return c, t, w, wind, "Open-Meteo(模型)"
 
 
 def explain(e: Exception) -> str:
@@ -232,7 +294,7 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
     wx_payload = None
     if do_weather and not args.no_weather:
         try:
-            code, temp, wmo, wind = fetch_weather(args.lat, args.lon)
+            code, temp, wmo, wind, wsrc = fetch_weather_any(args, args.lat, args.lon)
             # **不四舍五入**（用户 2026-09-30 要求）：按十分之一度发，面板上显示一位小数
             t10 = max(-32768, min(32767, int(round(temp * 10))))
             # 阈值判定（用户 2026-09-30 拍板）：天气码变了必发；温度变化 ≥1.0℃ 才发；
@@ -248,7 +310,7 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
             else:
                 # 71 <code> <t_hi> <t_lo>：t 是 int16 的"十分之一度"（34.6℃ → 346）
                 wx_payload = bytes([CMD_SET_WX, code, (t10 >> 8) & 0xFF, t10 & 0xFF])
-                log("  · 天气取好了（" + str(args.lat) + "," + str(args.lon) + "）："
+                log("  · 天气取好了[" + wsrc + "]（" + str(args.lat) + "," + str(args.lon) + "）："
                     + WX_NAME.get(code, str(code)) + " " + ("%.1f" % temp) + "℃"
                     + "（Open-Meteo WMO=" + str(wmo) + " 风速=" + str(wind) + "km/h）", args.log)
                 if last_wx is not None:
@@ -493,6 +555,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help='纪念日提醒（build 67 起）："10-05=付婧文生日快乐！" = 那天套黑框 + '
                         '空白处框出这句话（按月日重复）；"off" = 清掉。'
                         "文案只能用固件字模里有的字（gen_font.py 的 MEMO_CHARS）")
+    p.add_argument("--wx-source", default="auto", choices=["auto", "open-meteo", "qweather"],
+                   help="天气用哪个源：auto（有 key 就用和风，没有就 Open-Meteo）/ "
+                        "open-meteo（模型格点，免 key）/ qweather（实况，要 key）")
+    p.add_argument("--qweather-key", default="",
+                   help="和风天气的 key（免费订阅即可；也可以放环境变量 QWEATHER_KEY）。"
+                        "填了 auto 就会自动改用它 —— 它给的是**实况**，最贴近手机上那个数")
+    p.add_argument("--qweather-host", default="devapi.qweather.com",
+                   help="免费订阅 devapi.qweather.com；标准订阅 api.qweather.com")
     p.add_argument("--no-weather", action="store_true", help="不发天气，只对时间")
     p.add_argument("--battery", action="store_true", help="顺带发 0x72 读一次电池")
     p.add_argument("--scan", type=float, default=6.0, help="单轮扫描秒数（默认 6）")

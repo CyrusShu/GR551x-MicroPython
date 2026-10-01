@@ -84,6 +84,15 @@
 
 **2. Mac / ESP32 基站**（新目录 `outputs/ble-base/`，README 在 `esp32/README.md`）：
 
+> **2026-10-01 更新：接了和风天气（用户指定）**。为什么：手机（Apple 天气）在国内用的
+> 就是和风/中国气象局**实况**，而 Open-Meteo 给的是**模型格点** —— 实测同一时刻同一坐标
+> 各家差 5℃（best_match 29.9 / ecmwf 30.8 / 中国气象局 31.7 / icon 32.4 / gfs 35.0，
+> 手机 33）。**填 `QWEATHER_KEY` 就切过去**（ESP32 里那个宏 / Mac `--qweather-key`）；
+> 取不到会自动退回 Open-Meteo（纯 HTTP 一直能用），日志会写用的是哪条。
+> 四个坑：和风 `location` 是**经度在前**、响应**总是 gzip**（ESP32 用 ROM 的 tinfl 解，
+> gzip 头尾自己剥）、**只有 HTTPS**（ESP32 得走 TLS）、以及"和风成功后会跳过校时"那个
+> 我自己埋的坑（已抽成 `applyDateHeader()`）。想手动比对各源：`python3 wx-compare.py`。
+
 * Mac 版 `zk_ble_base.py`：`probe / sync / watch / raw`，坐标已改**深圳公明广场 22.7809,113.8861**。
   `raw` 发原始字节给面板（`03`=命令 `04`=数据）。
 * ESP32 版 `esp32/zk_base_esp32/`：**build-6**，WiFi→Open-Meteo（纯 HTTP，绕开 TLS 吃堆）→

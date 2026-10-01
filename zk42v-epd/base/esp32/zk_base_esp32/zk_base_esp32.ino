@@ -31,11 +31,19 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <time.h>
 #include <math.h>
 #include <esp_heap_caps.h>
+/* ESP32 的 ROM 里自带 miniz（tinfl）。头文件不在标准 include 路径里（不同 core 版本
+   位置还不一样），所以直接声明符号 —— 链接时由 esp32.rom.ld 提供（实测 3.3.11 有）。
+   用它来解和风天气的 gzip 响应：tinfl 认裸 deflate，所以 gzip 头尾要自己剥掉。 */
+extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len,
+                                             const void *pSrc_buf, size_t src_buf_len,
+                                             int flags);
+#define TINFL_DECOMPRESS_FAILED ((size_t)(-1))
 
 /* ------------------------------- 配置 ---------------------------------- */
 
@@ -58,7 +66,7 @@
 //    ⚠ 文案只能用固件字模里有的字（tools/gen_font.py 的 MEMO_CHARS），认不出的会被跳过。
 #define MEMO_MON        10
 #define MEMO_DAY        5
-#define MEMO_TEXT       "付婧文生日快乐!"
+#define MEMO_TEXT       "付婧文生日快乐！"
 #define CMD_SET_MEMO    0x7A
 #define CMD_SET_MEMO_MORE 0x7B   // 续传片段（MTU 只有 23 时一句祝福语要分几次发）
 
@@ -119,6 +127,22 @@
       "gfs_seamless" / "ecmwf_ifs025" = 美国 NOAA / 欧洲中心
    想随时对比几家：跑 outputs/ble-base/wx-compare.py（不用改固件）。 */
 #define WX_MODEL            ""
+
+/* ⑨ **和风天气**（2026-10-01 接，用户："用和风天气"）。
+   为什么：手机（Apple 天气）在国内用的就是这一路（和风/中国气象局**实况**），
+   而 Open-Meteo 给的是**模型格点**，实测同一时刻同坐标能差 3~5℃
+   （那天：Open-Meteo best_match 29.9 / 手机 33）。
+
+   怎么开：把 QWEATHER_KEY 填上（免费订阅的 key 就行，dev.qweather.com 注册）。
+   三个坑（都实测过）：
+     ① location 是 **"经度,纬度"**（跟 Open-Meteo 反着来）；
+     ② 响应**总是 gzip**（写明 Accept-Encoding: identity 也照样压），ESP32 的
+        HTTPClient 不会自己解 —— 这里用 ROM 里的 miniz 手动解（见 gunzipToString）；
+     ③ 免费订阅必须用 `devapi.qweather.com`，标准订阅才是 `api.qweather.com`。
+   取不到（没 key / TLS 握手失败 / 网络不通）会**自动退回 Open-Meteo**（纯 HTTP，
+   一直能用），日志里会写清是哪条路成功 —— 不会因为换了源把价签饿死。 */
+#define QWEATHER_KEY       ""                        /* ← 填这里 */
+#define QWEATHER_HOST      "devapi.qweather.com"
 
 #define MODE_CALENDAR   1
 
@@ -419,8 +443,134 @@ static void dumpNetDiag()
 }
 #endif
 
+/* 和风天气：HTTPS 取 now，解 gzip 后抓 temp/text。成功返回 true 并把结果写进
+   wxCode/wxTemp（十分之一度）。失败返回 false（调用方会退回 Open-Meteo）。 */
+/* 把 HTTP 的 Date 头变成"现在几点的表"（build-10 抽成函数：和风那条路也要用，
+   之前写在 Open-Meteo 后面，和风一成功提前 return 就**跳过校时**了 —— 自己踩的坑）。 */
+static void applyDateHeader(const String &dateHdr)
+{
+    int32_t ep = epochFromHttpDate(dateHdr);
+    if (ep > 0)
+    {
+        utcEpoch = ep;
+        lastEpochMs = millis();            /* 记下这个表是哪一刻的（发的时候要补漂移） */
+        char txt[32];
+        wallClockText(utcEpoch, TZ_HOURS, txt, sizeof(txt));
+        logf("时间（来自 HTTP Date 头）= UTC %d → 屏上应显示 %s", (int)utcEpoch, txt);
+    }
+    else
+    {
+        logf("这次没拿到 Date 头（'%s'），时间保持上一次的值", dateHdr.c_str());
+    }
+}
+
+static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
+                             String *dateOut)
+{
+    WiFiClientSecure client;
+    HTTPClient       https;
+    String           url;
+    String           raw, body, dateHdr;
+    int              code;
+    char             tmp[24];
+
+    client.setInsecure();                 /* 不做证书校验：只取公开天气，省下几 KB 堆 */
+    client.setTimeout(10);
+
+    url  = String("https://") + QWEATHER_HOST + "/v7/weather/now?location="
+         + String(LON, 4) + "," + String(LAT, 4)     /* ⚠ 和风是"经度,纬度" */
+         + "&key=" + QWEATHER_KEY + "&lang=zh&unit=m";
+
+    if (!https.begin(client, url))
+    {
+        logf("  和风：https.begin 失败");
+        return false;
+    }
+    https.setTimeout(10000);
+    {
+        const char *hdrs[] = {"Date"};
+        https.collectHeaders(hdrs, 1);
+    }
+    code = https.GET();
+    if (code != 200)
+    {
+        logf("  和风：HTTP %d（401/403 一般是 key 不对）", code);
+        https.end();
+        return false;
+    }
+    dateHdr = https.header("Date");
+    raw     = https.getString();
+    https.end();
+    if (dateOut != 0)
+    {
+        *dateOut = dateHdr;          /* 和风也带 Date 头 —— 时间可以从这条拿 */
+    }
+
+    if (!gunzipToString(raw, body))
+    {
+        logf("  和风：gzip 解不开（%u 字节）", (unsigned)raw.length());
+        return false;
+    }
+    if (jsonStr(body, "code", tmp, sizeof(tmp)) && strcmp(tmp, "200") != 0)
+    {
+        logf("  和风：返回 code=%s", tmp);
+        return false;
+    }
+    if (!jsonStr(body, "temp", tmp, sizeof(tmp)))
+    {
+        logf("  和风：响应里没有 temp（前 80 字节：%s）", body.substring(0, 80).c_str());
+        return false;
+    }
+    {
+        char txt[24] = {0};
+
+        jsonStr(body, "text", txt, sizeof(txt));
+        *codeOut    = qweatherCodeFromText(txt);
+        *tempT10Out = (int)lroundf(atof(tmp) * 10.0f);
+        *windOut    = 0;
+        jsonStr(body, "windSpeed", tmp, sizeof(tmp));
+        if (tmp[0]) *windOut = (int)lroundf(atof(tmp));
+        logf("  和风实况：%s %.1f℃（风 %d km/h）日期头=%s",
+             txt, atof(tmp), *windOut, dateHdr.c_str());
+    }
+    /* 时间：和风的响应同样带 Date 头，但我们在外面统一从 Open-Meteo 那条路取，
+       这里只把观测时刻记进日志，免得两处各解析一遍 */
+    return true;
+}
+
 static bool fetchWeatherAndTime()
 {
+    String dateHdr;
+    bool   haveWx  = false;
+    bool   needNet = true;               /* 还要不要跑 Open-Meteo（没天气或者没时间） */
+
+    /* ⑨ 先试和风天气（实况；跟手机同一路）。没填 key 就跳过。 */
+    if (strlen(QWEATHER_KEY) > 0)
+    {
+        int c = 0, t10 = 0, wind = 0;
+
+        if (fetchQWeatherNow(&c, &t10, &wind, &dateHdr))
+        {
+            wxCode      = c;
+            wxTemp      = t10;
+            haveWeather = true;
+            haveWx      = true;
+            needNet     = (dateHdr.length() == 0);   /* 时间也从它那儿拿到了就不用再跑一次 */
+            logf("天气源 = **和风天气（实况）** %.1f℃ %s —— 手机同源那一路",
+                 t10 / 10.0, wxName(c));
+        }
+        else
+        {
+            logf("和风没取到 → 退回 Open-Meteo（纯 HTTP，一直能用）");
+        }
+    }
+    if (!needNet)
+    {
+        applyDateHeader(dateHdr);          /* ⚠ 别漏了校时（就是这么踩过一次） */
+        lastFetchOkMs = millis();
+        return true;
+    }
+
     String url = String(WX_USE_TLS ? "https://" : "http://") + WX_HOST
                + String("/v1/forecast?latitude=")
                + String(LAT, 4) + "&longitude=" + String(LON, 4)
@@ -430,7 +580,7 @@ static bool fetchWeatherAndTime()
         url += "&models=" + String(WX_MODEL);      /* ⑧ 换模型（默认空 = best_match） */
     }
 
-    String body, dateHdr;
+    String body;
     bool got = false;
     for (int attempt = 1; attempt <= HTTP_TRIES && !got; attempt++)
     {
@@ -447,9 +597,12 @@ static bool fetchWeatherAndTime()
         int code = http.GET();
         if (code == 200)
         {
-            body    = http.getString();
-            dateHdr = http.header("Date");
-            got     = true;
+            body = http.getString();
+            if (dateHdr.length() == 0)
+            {
+                dateHdr = http.header("Date");
+            }
+            got = true;
         }
         else
         {
@@ -468,19 +621,7 @@ static bool fetchWeatherAndTime()
     }
     logf("天气接口通了（%s，%u 字节）", WX_USE_TLS ? "HTTPS" : "HTTP", (unsigned)body.length());
 
-    int32_t ep = epochFromHttpDate(dateHdr);
-    if (ep > 0)
-    {
-        utcEpoch = ep;
-        lastEpochMs = millis();            /* 记下这个表是哪一刻的（发的时候要补漂移） */
-        char txt[32];
-        wallClockText(utcEpoch, TZ_HOURS, txt, sizeof(txt));
-        logf("时间（来自 HTTP Date 头）= UTC %d → 屏上应显示 %s", (int)utcEpoch, txt);
-    }
-    else
-    {
-        logf("这次没拿到 Date 头（'%s'），时间保持上一次的值", dateHdr.c_str());
-    }
+    applyDateHeader(dateHdr);
 
     // 天气：只抠我们要的两个数（不引第三方 JSON 库），注意别被 current_units 骗了
     float wmoF = -1, tempF = -999;
@@ -504,8 +645,11 @@ static bool fetchWeatherAndTime()
     if (t10 < -32768) t10 = -32768;
     int t = t10 / 10;
     haveWeather = true;
-    wxCode = c;
-    wxTemp = t10;               /* 现在存的是"十分之一度" */
+    if (!haveWx)                /* 和风已经给过天气了就别覆盖它（这条只是兜底） */
+    {
+        wxCode = c;
+        wxTemp = t10;           /* 现在存的是"十分之一度" */
+    }
     lastFetchOkMs = millis();
     logf("（用的是 Open-Meteo 的 %s 模型；换源看 WX_MODEL 那段注释）",
          (strlen(WX_MODEL) > 0) ? WX_MODEL : "best_match");
@@ -972,4 +1116,99 @@ void loop()
     }
 
     delay(POLL_MS);
+}
+/* ---------------------------------------------------------------------------
+ *  和风天气（build-10）：解 gzip + 抓 temp/text
+ * ------------------------------------------------------------------------- */
+
+/* QWeather 的响应是 gzip（**总是**，跟 Accept-Encoding 无关）。ESP32 的 HTTPClient
+   不会解压，而 ROM 里的 tinfl 只认 zlib/裸 deflate —— 所以先手动跳过 gzip 的
+   头（固定 10 字节 + 3 个可选段）和尾（8 字节），再把剩下的裸 deflate 喂给 tinfl。 */
+static bool gunzipToString(const String &raw, String &out)
+{
+    const uint8_t *p = (const uint8_t *)raw.c_str();
+    size_t         n = raw.length();
+
+    if (n < 2 || p[0] != 0x1F || p[1] != 0x8B)
+    {
+        out = raw;                       /* 没压缩：原样用（万一哪天它不压了） */
+        return true;
+    }
+    if (n < 18)
+    {
+        return false;
+    }
+    {
+        const uint8_t flg = p[3];
+        size_t        off = 10;
+
+        if (flg & 0x04)                                        /* FEXTRA */
+        {
+            uint16_t xlen = (uint16_t)(p[off] | (p[off + 1] << 8));
+            off += 2 + xlen;
+        }
+        if (flg & 0x08) { while (off < n && p[off]) off++; off++; }   /* FNAME */
+        if (flg & 0x10) { while (off < n && p[off]) off++; off++; }   /* FCOMMENT */
+        if (flg & 0x02) { off += 2; }                                 /* FHCRC */
+        if (off + 8 > n)
+        {
+            return false;
+        }
+        {
+            static uint8_t buf[2048];
+            size_t got = tinfl_decompress_mem_to_mem(buf, sizeof(buf) - 1,
+                                                     p + off, n - off - 8, 0);
+
+            if (got == TINFL_DECOMPRESS_FAILED)
+            {
+                return false;
+            }
+            buf[got] = 0;
+            out = String((const char *)buf);
+        }
+    }
+    return true;
+}
+
+/* 在 JSON 里抠一个**字符串**字段：先定位 "key"，再取后面引号里的值 */
+static bool jsonStr(const String &body, const char *key, char *out, size_t cap)
+{
+    String pat = String("\"") + key + "\":\"";
+    int    i   = body.indexOf(pat);
+    int    j;
+
+    if (i < 0)
+    {
+        return false;
+    }
+    i += pat.length();
+    j = body.indexOf('"', i);
+    if (j < 0)
+    {
+        return false;
+    }
+    body.substring(i, j).toCharArray(out, cap);
+    return true;
+}
+
+/* 和风的天气文字 -> 固件那 9 个码 */
+static int qweatherCodeFromText(const char *txt)
+{
+    String s = String(txt);
+
+    if (s.indexOf("雷") >= 0) return 6;
+    if (s.indexOf("雪") >= 0 || s.indexOf("冰") >= 0) return 7;
+    if (s.indexOf("雾") >= 0 || s.indexOf("霾") >= 0 ||
+        s.indexOf("沙") >= 0 || s.indexOf("尘") >= 0) return 8;
+    if (s.indexOf("雨") >= 0)
+    {
+        return (s.indexOf("中雨") >= 0 || s.indexOf("大雨") >= 0 ||
+                s.indexOf("暴雨") >= 0 || s.indexOf("强") >= 0) ? 5 : 4;
+    }
+    if (s.indexOf("阴") >= 0) return 3;
+    if (s.indexOf("多云") >= 0 || s.indexOf("少云") >= 0 ||
+        s.indexOf("晴间") >= 0) return 2;
+    if (s.indexOf("晴") >= 0) return 1;
+    if (s.indexOf("风") >= 0 || s.indexOf("台风") >= 0) return 9;
+    return 2;
 }
