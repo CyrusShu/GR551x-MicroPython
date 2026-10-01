@@ -157,7 +157,15 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
    取不到（没 key / TLS 握手失败 / 网络不通）会**自动退回 Open-Meteo**（纯 HTTP，
    一直能用），日志里会写清是哪条路成功 —— 不会因为换了源把价签饿死。 */
 #define QWEATHER_KEY       ""                        /* ① API key 方式：填这里（简单，但 key 就是密码）*/
-#define QWEATHER_HOST      "devapi.qweather.com"
+/* ⚠ **这里必须填你自己的 API Host**（不是 devapi/api！）：
+   和风现在给每个帐号分配**独立唯一的 API Host**（形如 `h2a9cf3mhs.xy.qweatherapi.com`），
+   而且它**本身就是身份认证的一部分**（别人拿到你的凭据、不知道这个域名也调不动）。
+   去哪看：**控制台 → 设置**（不是项目里）。
+   官方警告：`api.qweather.com` / `devapi.qweather.com` / `geoapi.qweather.com` 这几个
+   老公共地址 **2026 年起逐步停止服务**；新帐号拿它们请求会直接被判
+   `Invalid Host`（就是用户 2026-10-01 遇到的 403）。
+   下面这行只是占位，**一定要换成控制台里那串**。 */
+#define QWEATHER_HOST      "devapi.qweather.com"      /* ← 换成你的 API Host */
 
 /* ⑩ **JWT 方式**（2026-10-01 用户提的：和风支持 JSON Web Token，EdDSA 签名）——
    比 API key 安全：**私钥只存在设备上**、token 15 分钟就过期；就算 token 被截走，
@@ -683,7 +691,20 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
     code = https.GET();
     if (code != 200)
     {
-        logf("  和风：HTTP %d（401/403 一般是 key 不对）", code);
+        /* ⚠ 光看状态码没用 —— 和风把真正的原因放在**响应体**里（也是 gzip），
+           比如 {"error":{"type":".../invalid-host","title":"Invalid Host"}} 或
+           token/kid 相关的说明。这里解出来打前 160 字节，一眼就知道是哪类问题。 */
+        String errRaw = https.getString();
+        String errTxt;
+
+        if (gunzipToString(errRaw, errTxt))
+        {
+            errRaw = errTxt;
+        }
+        logf("  和风：HTTP %d  响应=%s", code, errRaw.substring(0, 160).c_str());
+        logf("        （401/403 三类原因：① 响应体里是 Invalid Host → QWEATHER_HOST "
+             "要换成控制台-设置里的 API Host；② token/kid 相关 → kid/sub 填错或公钥没传上去；"
+             "③ 凭据类型不是 JWT）");
         https.end();
         return false;
     }
@@ -1175,7 +1196,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-11");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-13");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),

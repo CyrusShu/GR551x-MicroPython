@@ -112,6 +112,15 @@
 > （同 seed 的公钥、照固件格式签的签名，与 OpenSSL 完全一致）。
 > 整机 1,794,199 → 1,806,335 B。**keygen 的输出格式没变**（还是 32 字节 seed 的
 > 64 位十六进制），用户只管重新编译上传即可。
+>
+> 🚨 **再更正（还是同一天）**：用户刷完 build-11 后实机报 **和风 403**。
+> 我加了"把响应体打出来"的诊断后，用假凭据探路发现 —— **key 错和 JWT 错，和风回的是同一句**：
+> `{"status":403,"title":"Invalid Host","detail":"An invalid or unauthorized API Host."}`
+> ⇒ **域名不对**。查文档（开发配置→API Host）：和风现在给**每个帐号分配独立唯一的
+> API Host**（`xxx.xx.qweatherapi.com`，在**控制台→设置**里看），而且**它本身就是身份
+> 认证的一部分**；老的公共地址 `api/devapi/geoapi.qweather.com` **2026 年起停服**。
+> → `QWEATHER_HOST` 必须填**控制台里那串**（代码注释、README、`wx-compare.py` 的
+> 帮助和报错提示都已按这个改）。教训：**只看 HTTP 状态码等于没看 —— 要把响应体打出来**。
 
 * Mac 版 `zk_ble_base.py`：`probe / sync / watch / raw`，坐标已改**深圳公明广场 22.7809,113.8861**。
   `raw` 发原始字节给面板（`03`=命令 `04`=数据）。

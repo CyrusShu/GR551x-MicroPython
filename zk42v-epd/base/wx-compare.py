@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 MODELS = [
@@ -91,14 +92,35 @@ def qweather(key: str, lat: float, lon: float, host: str = "devapi.qweather.com"
                         % (host, lon, lat, key))
 
 
+def _http_error_body(e) -> str:
+    """把 urllib 抛的 HTTPError 里的**响应体**抠出来（和风把原因写在里面）。"""
+    try:
+        raw = e.read()
+        if getattr(e, "headers", None) is not None and \
+           (e.headers.get("Content-Encoding") or "") == "gzip":
+            raw = gzip.decompress(raw)
+        return raw.decode("utf-8", "replace")[:300]
+    except Exception:
+        return ""
+
+
 def qweather_url(url: str, bearer: str = ""):
     req = urllib.request.Request(url, headers={"User-Agent": "zk42v-wx-compare/1"})
     if bearer:
         req.add_header("Authorization", "Bearer " + bearer)
-    with urllib.request.urlopen(req, timeout=15) as r:
-        raw = r.read()
-        if r.headers.get("Content-Encoding") == "gzip":
-            raw = gzip.decompress(raw)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read()
+            if r.headers.get("Content-Encoding") == "gzip":
+                raw = gzip.decompress(raw)
+    except urllib.error.HTTPError as e:
+        body = _http_error_body(e)
+        hint = ""
+        if "Invalid Host" in body:
+            hint = ("\n    → **域名不对**：和风给每个帐号分配独立的 API Host，"
+                    "去 控制台-设置 复制那串（形如 xxx.xx.qweatherapi.com）填到 --qweather-host；"
+                    "\n      老的 devapi/api/geoapi 已从 2026 年起逐步停服")
+        raise RuntimeError("HTTP %s  响应体：%s%s" % (e.code, body, hint))
     d = json.loads(raw.decode("utf-8", "replace"))
     if str(d.get("code")) != "200":
         raise RuntimeError("和风返回 code=%s（401/403 通常是 key 不对，"
@@ -168,7 +190,9 @@ def main() -> int:
                     help="和风天气的 key（也可以放环境变量 QWEATHER_KEY）。填了就一并对比它")
     ap.add_argument("--qweather-host", default=os.environ.get("QWEATHER_HOST",
                                                              "devapi.qweather.com"),
-                    help="免费订阅用 devapi.qweather.com；标准订阅用 api.qweather.com")
+                    help="**你自己的 API Host**（控制台-设置里那串，形如 "
+                         "h2a9cf3mhs.xy.qweatherapi.com）。⚠ 老的 devapi/api/geoapi "
+                         "是公共地址，2026 起逐步停服，新帐号用它会报 Invalid Host")
     ap.add_argument("--qweather-jwt-key", default="",
                     help="Ed25519 私钥 PEM（keygen 生成的 ed25519-private.pem）。"
                          "给了它 + kid + sub 就用 JWT 请求 —— **不刷机先验通**")

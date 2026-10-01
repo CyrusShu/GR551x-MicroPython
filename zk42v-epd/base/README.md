@@ -1,5 +1,30 @@
 # Mac 当基站：价签一上电就自己拿到时间 + 天气
 
+## 🚨 2026-10-01：和风报 403 的真凶是 **API Host**（不是 key/JWT）
+
+用户实机 403。我用假凭据探了路，发现**不管 key 错还是 JWT 错，和风回的都是同一句**：
+
+```json
+{"error":{"status":403,"title":"Invalid Host",
+          "detail":"An invalid or unauthorized API Host."}}
+```
+
+→ 说明**域名不对**。查官方文档（开发配置 → API Host）确认：
+
+> **API Host 是开发者独立的 API 地址**……每个帐号独立唯一，**它本身就是身份认证的一部分**
+> （凭据泄露了，别人不知道这个域名也调不动）。在 **控制台 → 设置** 里查看，
+> 形如 `h2a9cf3mhs.xy.qweatherapi.com`。
+> ⚠ `api.qweather.com`、`devapi.qweather.com`、`geoapi.qweather.com` 这些**老公共地址
+> 从 2026 年起逐步停止服务**，请尽快换成自己的。
+
+**要填的是**（两处）：
+
+* ESP32：`#define QWEATHER_HOST "控制台-设置里那串"`
+* Mac 工具：`python3 wx-compare.py --qweather-host 那串 ...`（或 `export QWEATHER_HOST=...`）
+
+工具和固件现在都会**把和风的响应体打出来**（以前只看状态码，等于什么都没说），
+并且遇到 `Invalid Host` 会直接提示"去控制台-设置复制 API Host"。
+
 ## ⚡ 2026-10-01：和风天气改成 **JWT（EdDSA/Ed25519）** 认证
 
 用户提的："和风支持 JSON Web Token，显著提高请求 API 的安全性。" 已实现 ——
@@ -68,7 +93,7 @@ bash qweather-jwt-keygen.sh
 **在哪儿填**：
 
 * ESP32 基站：`zk_base_esp32.ino` 里 `#define QWEATHER_KEY "你的key"`
-  （免费订阅用 `devapi.qweather.com`，标准订阅才改 `QWEATHER_HOST`）
+  （⚠ `QWEATHER_HOST` **必须换成本帐号的 API Host**，见上面那节）
 * Mac 基站：`./run.sh sync --qweather-key 你的key`，或 `export QWEATHER_KEY=...`
   （`--wx-source qweather` 可以强制只用和风）
 * 只想先看看它报多少：`python3 wx-compare.py --qweather-key 你的key`
