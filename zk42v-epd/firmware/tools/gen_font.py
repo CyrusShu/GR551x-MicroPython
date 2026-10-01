@@ -99,7 +99,7 @@ ZODIAC_CHARS = ['鼠', '牛', '虎', '兔', '龙', '蛇',
 WEATHER_CHARS = list('晴多云阴小雨大雷阵雪雾风')      # 天气文字（"雷阵雨"最长 3 个字）
 SMALL_CHARS = (['正', '冬', '腊', '闰', '年', '月'] +
                list('一二三四五六七八九十') + ZODIAC_CHARS + WEATHER_CHARS +
-               CITY_CHARS)
+               CITY_CHARS + GANZHI_CHARS)      # build 64：干支也降一号，得有小字模
 
 # 页面用到的全部汉字，顺序 = C 里的索引顺序（zkgui.c 的 CJK_xxx 常量依赖它，
 # **改顺序必须同步改 zkgui.c**，新增的字只能往后加）。前 35 个是原来那套

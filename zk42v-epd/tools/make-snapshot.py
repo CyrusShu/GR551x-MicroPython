@@ -88,6 +88,8 @@ FILES = [
                                                         "firmware/docs/preview/preview-header-build62.png"),
     ("outputs/firmware/docs/preview/preview-header-build63.png",
                                                         "firmware/docs/preview/preview-header-build63.png"),
+    ("outputs/firmware/docs/preview/preview-header-build64.png",
+                                                        "firmware/docs/preview/preview-header-build64.png"),
     ("outputs/firmware/docs/preview/preview-calendar.png", "firmware/docs/preview/preview-calendar.png"),
     ("outputs/firmware/docs/preview/preview-clock.png",  "firmware/docs/preview/preview-clock.png"),
     ("outputs/firmware/zk42v-epd-app/GCC/Makefile",     "firmware/zk42v-epd-app/GCC/Makefile"),

@@ -850,6 +850,8 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
 {
     char s[8];
     int  neg = 0;
+    int  hot = 0;                            /* build 64：超过 30℃ 用红字（用户提的） */
+    int  color;
 
     if (info->env_temp_c != (int8_t)(-128))
     {
@@ -858,6 +860,7 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
         int k  = 0;
 
         neg = (t < 0);
+        hot = (t > 30);
         if (av >= 10)
         {
             s[k++] = (char)('0' + (av / 10) % 10);
@@ -873,6 +876,7 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
         int av = (t < 0) ? -t : t;
 
         neg = (t < 0);
+        hot = (t > 300);                     /* 十分之一度：300 = 30.0℃ */
         s[0] = (char)('0' + (av / 100) % 10);
         s[1] = (char)('0' + (av / 10) % 10);
         s[2] = '.';
@@ -895,13 +899,14 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
         return x;                            /* 两个温度都没有：这一段留空 */
     }
 
+    color = hot ? C_RED : C_BLACK;
     x += 3;                                  /* 跟天气文字拉开 3px */
     if (neg)
     {
-        draw_text5(buf, x, CAL_HDR_TEMP_Y, "-", CAL_HDR_TEMP_SCALE, C_BLACK);
+        draw_text5(buf, x, CAL_HDR_TEMP_Y, "-", CAL_HDR_TEMP_SCALE, color);
         x += 12;                             /* 5x7 放大 2 倍：10 宽 + 2 间隔 */
     }
-    draw_text5(buf, x, CAL_HDR_TEMP_Y, s, CAL_HDR_TEMP_SCALE, C_BLACK);
+    draw_text5(buf, x, CAL_HDR_TEMP_Y, s, CAL_HDR_TEMP_SCALE, color);
     return x + text5_width(s, CAL_HDR_TEMP_SCALE);
 }
 
@@ -1005,15 +1010,30 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
 
             strcpy(gz, s_tiangan[gi]);
             strcat(gz, s_dizhi[zi2]);
-            x = draw_text_cjk(buf, x, 5, gz, 1, C_BLACK);
-            /* 农历月份用**小一号**的字（build 62b）：这样后面才塞得下生肖 + 城市 */
-            x = draw_text_small(buf, x + 1, 7, mbuf, C_BLACK);
+            /* build 64：干支也降一号（用户提的），颜色仍是黑 */
+            x = draw_text_small(buf, x, 7, gz, C_BLACK);
+            /* 农历月份：**末字「月」小号黑**，前面的数字**大号红**
+               （用户 2026-10-01 提的：八月的「八」不用小一号、用红色；月保持小号黑）。
+               mbuf 形如 "八月" / "冬月" / "闰八月" —— 末 3 字节永远是「月」。 */
+            {
+                int n = (int)strlen(mbuf);
+
+                if (n > 3)
+                {
+                    char head[16];
+
+                    memcpy(head, mbuf, (size_t)(n - 3));
+                    head[n - 3] = 0;
+                    x = draw_text_cjk(buf, x, 5, head, 1, C_RED);
+                }
+                x = draw_text_small(buf, x, 7, mbuf + (n - 3), C_BLACK);
+            }
             x += 5;
         }
     }
 
-    /* 中右：生肖年（红）—— build 62b 按用户要求加回来了，用**小一号**的字
-       （跟农历月份同一个字号，16px 排不下这么多东西）。
+    /* 中右：生肖 —— build 64 按用户要求：「马」大号红、「年」小号黑
+       （跟农历月份同一个套路：内容字大号红、量词小号黑）。
        ⚠ 不受"不画农历"那个开关（0x04）影响 —— 它是生肖，不是农历那行字
        （2026-10-01 之前也是无条件画的，test_gui 里那条"表头红字不动"就是盯这个）。 */
     if (with_lunar)
@@ -1024,8 +1044,8 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
         };
         int zi = (int)(((year - 4) % 12 + 12) % 12);
 
-        x = draw_text_small(buf, x, 7, s_shengxiao[zi], C_RED);
-        x = draw_text_small(buf, x, 7, "年", C_RED);
+        x = draw_text_cjk(buf, x, 5, s_shengxiao[zi], 1, C_RED);
+        x = draw_text_small(buf, x, 7, "年", C_BLACK);
         x += 5;
     }
 

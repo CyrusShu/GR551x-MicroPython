@@ -223,10 +223,15 @@ def main():
         check('5: 关农历只改了每格那行小字（改了 %d 个像素）' % diff, diff > 1200)
         check('5: 改动没跑到日号/表头上去（越界 %d 个）' % len(outside),
               not outside, str(outside[:4]))
-        # 表头里的红色部分（年月、生肖、电池）一个像素都不该动
-        check('5: 表头的红字（年月/生肖/电池）没受影响',
-              count(cal_rows, RED, 0, 0, G.W, CAL_HDR_H)
-              == count(rows_off, RED, 0, 0, G.W, CAL_HDR_H))
+        # 表头的红字分两块看（build 64 起「八」「马」都是大号红字：关掉农历时「八」
+        # 会跟着没、后面的东西还会整体左移，所以不能拿整条表头一起比）：
+        #   ① 年月那一段**位置永远不动**（它是第一个画的）→ 红像素数必须一模一样
+        #   ② 生肖「马」不受"不画农历"影响 → 关掉农历后中段仍该有红字
+        hdr_red = lambda r, x0, x1: count(r, RED, x0, 0, x1, CAL_HDR_H)
+        check('5: 关农历不影响表头的年月（红字一个像素都没动）',
+              hdr_red(cal_rows, 0, 110) == hdr_red(rows_off, 0, 110))
+        check('5: 关农历也不影响生肖「马」（中段还有 %d 个红像素）'
+              % hdr_red(rows_off, 111, 365), hdr_red(rows_off, 111, 365) > 20)
 
         # 5b) 选项 0x08 = 节气加粗（同样的字错开 1px 再画一遍）：节气那格的墨要变多
         rows_bold, _ = render(1, TS, 0x08)
