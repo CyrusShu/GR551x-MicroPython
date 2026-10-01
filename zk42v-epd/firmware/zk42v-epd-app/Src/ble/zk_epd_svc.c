@@ -644,15 +644,27 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 }
 
                 /* 模式字节（1=日历 2=时钟，见他网页 syncTime(1)/syncTime(2)）。
-                   网页只给"时间点"，页面由我们画 —— 跟原厂一致。 */
+                   网页只给"时间点"，页面由我们画 —— 跟原厂一致。
+
+                   build 60：**0 = 保持当前模式（别动页面）**。
+                   为什么要它：基站（ESP32 / Mac）每次推天气都会**顺手带一次时间**
+                   给价签对表（用户 2026-10-01 的要求：取天气+温度时把时间一起推，
+                   这样钟一直是校准的）。但基站并不知道用户现在看的是哪一页 ——
+                   没有这个 0，它一推天气就会把时钟页/推的图顶掉换成日历页。 */
                 if (len > 6u && (d[6] == ZKGUI_MODE_CALENDAR || d[6] == ZKGUI_MODE_CLOCK))
                 {
                     s_mode = d[6];
+                }
+                else if (len > 6u && d[6] == 0u)
+                {
+                    /* 保持当前模式：s_mode 不动 */
+                    g_dbg.time_keep_cnt++;
                 }
                 else
                 {
                     s_mode = ZKGUI_MODE_CALENDAR;
                 }
+                g_dbg.set_time_cmds++;
 
                 /* build 50：**可选把天气一起带上**（一条命令 = 只画一页、只刷一次）
                  *   20 <utc4> <tz> <mode> [wx] [temp]
@@ -681,7 +693,13 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 /* 用 64 位单调时基：低 32 位每 49.7 天绕一次，绕的时候
                    "现在几点"会跳掉（build 29 就是这么每 4.5 分钟自刷一次的） */
                 s_ts_ms    = zk_tick_ms64();
-                s_need_gui = 1;
+                /* 图片模式下不重画：那张图是网页推的，跟时间无关。
+                   （build 60 起 0x20 可以"只对表、不换页"，所以这里必须跟 0x71
+                     那条一样加护栏 —— 否则基站推一次天气就把用户的图顶掉了） */
+                if (ZKGUI_MODE_PICTURE != s_mode)
+                {
+                    s_need_gui = 1;
+                }
                 g_dbg.ble_gui_mode = s_mode;
                 g_dbg.ble_gui_ts   = s_ts;
 

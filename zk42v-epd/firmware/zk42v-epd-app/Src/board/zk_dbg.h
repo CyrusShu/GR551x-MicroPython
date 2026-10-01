@@ -23,7 +23,7 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   59u
+#define ZK_BUILD_ID   60u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -101,7 +101,7 @@ typedef struct
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 #define ZK_FLAG_AON_TB       0x0020u   /* build 59：毫秒时基在跑 AON 定时器（不是 CYCCNT） */
 
-#define ZK_DBG_WORDS 112
+#define ZK_DBG_WORDS 114
 
 typedef struct
 {
@@ -281,7 +281,14 @@ typedef struct
     uint32_t tb_ticks;            /* 109: 累计原始 tick 的低 32 位（÷ tb_hz 就是秒） */
     uint32_t tb_bad;              /* 110: 计数器"倒退/被复位"的异常次数（正常一直是 0） */
     uint32_t tb_jumps;            /* 111: 两次 tick 之间隔了 >1 秒的次数（长阻塞的补记，正常几次） */
-    uint32_t rsv[ZK_DBG_WORDS - 112];
+
+    /* ---- build 60：基站"顺手带时间"（推天气时把时间一起发）----------------------
+       用户 2026-10-01 的要求：取天气+温度的时候把时间也放同一条命令里推下来，
+       这样每次推天气都顺便对了一次表。固件侧对应"模式字节 = 0（保持当前模式）"，
+       下面两个计数就是给这件事做验收用的。 */
+    uint32_t set_time_cmds;       /* 112: 收到过多少次 0x20 SET_TIME（含只对表那种） */
+    uint32_t time_keep_cnt;       /* 113: 其中"模式=0 保持当前模式"的次数（基站推天气带时间的那些） */
+    uint32_t rsv[ZK_DBG_WORDS - 114];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

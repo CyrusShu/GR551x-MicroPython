@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+ZK42V 价签「基站」模拟器 —— 让 Mac 当基站，价签一上电就自动拿到时间和天气。
+
+背景（详见 outputs/HANDOFF.md）：
+  * 价签固件（build 21 起）跑的是 tsl0922/EPD-nRF5 那套网页协议，
+    价签是从机（GATT server + 一直广播），手机/电脑是主机（central）。
+  * 所以「让 Mac 当基站」= 让 Mac 当 BLE central：扫到 ZK42V-EPD → 连上 →
+    发 0x20（时间+时区+模式[+天气]）→（没能合并时才单独发 0x71）→ 断开。
+  * 全程不需要传图：日历页是固件自己画的，我们只喂「现在几点」和「天气」。
+    这正好补上 build 46 的缺口（默认日历模式，但时间没同步过就不会自动画）。
+
+  2026-10-01 三条约定（用户提的）：
+    1. **推天气的时候把时间一起带上**（0x20 的合并格式）—— 每次推天气都顺便对一次表，
+       价签的钟一直是校准的；而且那一条命令本来就会让它整页重画，代价为零。
+    2. 带时间但**不想动页面**时，模式字节发 **0 = 保持当前页**（build 60 起的固件支持）。
+       ⚠ 基站并不知道你现在看的是日历页 / 时钟页 / 推的图，发 1 会把页面顶掉。
+       watch 常驻模式默认就用 0。
+    3. 时间戳**在写下去的前一刻才取**（`now = int(time.time())` 挪到 send 之前）——
+       早取几秒（取天气 + 连蓝牙都要时间）就会把旧时刻写进价签。
+       ⚠ 顺带记住：日历页**只在换天和收到命令时重画**，所以屏上那个时分只在
+         每次推送的那一刻是对的，之后就不动了（不是钟慢）。
+
+三个子命令：
+  probe   只扫描，列出附近 BLE 设备（先确认 Mac 能看见价签）
+  sync    扫一次，找到就同步一次就退出（手动/调试用）
+  watch   常驻：盯着广播，价签一出现就同步；之后按 --interval 定时再同步
+
+用法（venv 见同目录 setup.sh / run.sh）：
+  ./run.sh probe
+  ./run.sh sync  --tz 8
+  ./run.sh watch --tz 8 --weather-interval 21600
+  （坐标默认就是深圳公明广场 22.7809/113.8861，换地方用 --lat/--lon）
+
+macOS 两个坑（跟本项目无关，是系统规矩）：
+  1. CoreBluetooth 要「蓝牙」权限，必须在 Terminal 里跑（Terminal 持有那份授权）。
+     Codex 的沙箱里跑会拿到 state=2(unsupported) —— 实测见 README。
+  2. macOS 给的 address 不是 MAC，是本机视角的 UUID，换台电脑就变，
+     所以默认按名字找设备（ZK42V-EPD），别写死 address。
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+
+from bleak import BleakClient, BleakScanner
+
+# ---------------------------------------------------------------- 协议常量
+# 服务/特征 UUID：跟固件 Src/ble/zk_epd_svc.c 里那张属性表一字不差
+SVC_UUID = "62750001-d828-918d-fb46-b6c11c675aec"
+WR_UUID = "62750002-d828-918d-fb46-b6c11c675aec"   # 写命令 / 收通知
+VER_UUID = "62750003-d828-918d-fb46-b6c11c675aec"  # 读固件版本（>=0x16 才走新流程）
+
+DEV_NAME = "ZK42V-EPD"          # 广播里的完整名字（zk_ble.c: ZK_BLE_NAME）
+
+CMD_SET_TIME = 0x20             # [0x20, utc_be32, tz_s8, mode]
+CMD_SET_WX = 0x71               # [0x71, code, temp_s8]
+CMD_READ_BAT = 0x72             # 立刻重读电池 + 重画一页
+
+MODE_KEEP = 0                   # build 60 起的固件认这个：只对表、别动页面
+MODE_CALENDAR = 1
+MODE_CLOCK = 2
+
+# 温度要变这么多（十分之一度，10 = 1.0℃）才值得推一次
+WX_TEMP_DELTA_T10 = 10
+
+WX_SUN, WX_CLOUDY, WX_OVERCAST = 1, 2, 3
+WX_LIGHT_RAIN, WX_HEAVY_RAIN, WX_THUNDER = 4, 5, 6
+WX_SNOW, WX_FOG, WX_WIND = 7, 8, 9
+
+# WMO weather_code（Open-Meteo 用的就是这套）→ 固件那 9 个码
+WMO_MAP = {
+    0: WX_SUN, 1: WX_SUN,
+    2: WX_CLOUDY, 3: WX_OVERCAST,
+    45: WX_FOG, 48: WX_FOG,
+    51: WX_LIGHT_RAIN, 53: WX_LIGHT_RAIN, 55: WX_LIGHT_RAIN,
+    56: WX_LIGHT_RAIN, 57: WX_LIGHT_RAIN,
+    61: WX_LIGHT_RAIN, 80: WX_LIGHT_RAIN,
+    63: WX_HEAVY_RAIN, 65: WX_HEAVY_RAIN,
+    66: WX_HEAVY_RAIN, 67: WX_HEAVY_RAIN,
+    81: WX_HEAVY_RAIN, 82: WX_HEAVY_RAIN,
+    71: WX_SNOW, 73: WX_SNOW, 75: WX_SNOW, 77: WX_SNOW,
+    85: WX_SNOW, 86: WX_SNOW,
+    95: WX_THUNDER, 96: WX_THUNDER, 99: WX_THUNDER,
+}
+
+WX_NAME = {
+    0: "不显示", WX_SUN: "晴", WX_CLOUDY: "多云", WX_OVERCAST: "阴",
+    WX_LIGHT_RAIN: "小雨", WX_HEAVY_RAIN: "大雨", WX_THUNDER: "雷阵雨",
+    WX_SNOW: "雪", WX_FOG: "雾", WX_WIND: "风",
+}
+
+
+# ---------------------------------------------------------------- 小工具
+def log(msg: str, logfile=None) -> None:
+    line = "[" + datetime.now().strftime("%H:%M:%S") + "] " + msg
+    print(line, flush=True)
+    if logfile:
+        try:
+            with open(logfile, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+
+def local_tz_hours() -> int:
+    """本机时区偏移（小时，整数）。价签屏上的墙钟 = UTC秒 + 这个偏移。"""
+    off = datetime.now().astimezone().utcoffset()
+    return int(round(off.total_seconds() / 3600.0)) if off else 0
+
+
+def fetch_weather(lat: float, lon: float, timeout: float = 10.0):
+    """Open-Meteo 取实时天气（免 key）。返回 (固件码, 温度, 原始 WMO 码, 风速)。"""
+    url = ("https://api.open-meteo.com/v1/forecast"
+           "?latitude=" + str(lat) + "&longitude=" + str(lon) +
+           "&current=temperature_2m,weather_code,wind_speed_10m"
+           "&timezone=auto")
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        j = json.load(r)
+    cur = j["current"]
+    wmo = int(cur["weather_code"])
+    temp = int(round(float(cur["temperature_2m"])))
+    wind = float(cur.get("wind_speed_10m") or 0.0)
+    code = WMO_MAP.get(wmo, WX_CLOUDY)
+    # 没降水但风很大 → 用「风」那个图标（9）
+    if code in (WX_SUN, WX_CLOUDY) and wind >= 30.0:
+        code = WX_WIND
+    return code, temp, wmo, wind
+
+
+def explain(e: Exception) -> str:
+    """把 bleak 的错误翻成一句能照做的话。"""
+    s = str(e)
+    if "turned off" in s:
+        return "Mac 的蓝牙是关的 —— 在菜单栏/系统设置里打开蓝牙就行（脚本会自己重试）。"
+    if "BLE is unsupported" in s:
+        return ("CoreBluetooth 报 unsupported：进程没有蓝牙权限。"
+                "在 Codex 里跑必然是这样（沙箱），请改在 Terminal 里跑。")
+    if "unauthorized" in s.lower():
+        return "蓝牙权限被拒：系统设置 → 隐私与安全性 → 蓝牙，把 Terminal 打开。"
+    return type(e).__name__ + ": " + s
+
+
+def is_tag(dev, adv) -> bool:
+    name = (dev.name or "") + (adv.local_name or "")
+    if DEV_NAME in name:
+        return True
+    # 名字万一没解析出来，就按扫描响应里的服务 UUID 认
+    return SVC_UUID in [u.lower() for u in (adv.service_uuids or [])]
+
+
+# ---------------------------------------------------------------- probe
+async def cmd_probe(args) -> int:
+    found = {}
+
+    def cb(dev, adv):
+        found[dev.address] = (dev.name, adv.rssi, tuple(adv.service_uuids or ()))
+
+    log("扫 " + str(args.scan) + " 秒（看得到 ZK42V-EPD 就说明 Mac 这侧没问题）…", args.log)
+    scanner = BleakScanner(detection_callback=cb)
+    await scanner.start()
+    await asyncio.sleep(args.scan)
+    await scanner.stop()
+
+    if not found:
+        log("一个设备都没扫到 —— 多半是蓝牙没授权/没开，或者价签没上电。", args.log)
+        return 2
+
+    log("扫到 " + str(len(found)) + " 个设备：", args.log)
+    for addr, (name, rssi, svcs) in sorted(found.items(), key=lambda kv: -(kv[1][1] or -999)):
+        tag = "  <== 价签" if (name and DEV_NAME in name) else ""
+        log("  rssi=" + str(rssi) + "  " + addr + "  " + repr(name) + "  " + str(svcs) + tag, args.log)
+    return 0
+
+
+# ---------------------------------------------------------------- 找设备
+async def find_tag(args, scan_s: float, quiet: bool = False):
+    """扫 scan_s 秒找价签；找到返回 (device, adv)。"""
+    hit = {}
+
+    def cb(dev, adv):
+        if is_tag(dev, adv):
+            hit["dev"] = dev
+            hit["adv"] = adv
+
+    scanner = BleakScanner(detection_callback=cb)
+    await scanner.start()
+    await asyncio.sleep(scan_s)
+    await scanner.stop()
+    if "dev" not in hit:
+        if not quiet:
+            log("这一轮没看到价签。", args.log)
+        return None, None
+    return hit["dev"], hit["adv"]
+
+
+
+# ---------------------------------------------------------------- sync
+async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None) -> bool:
+    """连上去把时间和/或天气写进价签。
+
+    ⚠ 固件的脾气（Src/ble/zk_epd_svc.c:930 起）：日历模式只在**换天**时自己重画，
+       但我们每发一条 0x20 / 0x71 / 0x72 都会置 s_need_gui → **一次 16 秒全刷**。
+       所以基站不能刷得太勤：时间在「刚上电 / 每天一次 / 要推天气时」发，
+       天气只在**值变了**才发（last_wx 就是拿来做这个比对的）。
+       ⚠ 顺带说明屏上那个时分为什么"不动"：日历页只在换天和收到命令时重画，
+         所以它只在每次推送的那一刻是对的。想让它一直新，要么用时钟模式
+         （每分钟一张，每张 16 秒全刷），要么把推的间隔调小。
+    """
+    tz = args.tz if args.tz is not None else local_tz_hours()
+    # 模式字节：0 = 保持当前页（只对表）。watch 常驻模式默认走这个 ——
+    # 基站不该把用户在网页上选的页面（时钟页/推的图）顶掉。
+    if getattr(args, "keep_mode", None):
+        mode = MODE_KEEP
+    else:
+        mode = MODE_CLOCK if args.mode == 2 else MODE_CALENDAR
+    # ⚠ 时间戳**不能在这儿取**：下面取天气（HTTP）和连蓝牙都可能花几秒~几十秒，
+    #   早取就把旧时刻写进价签了。挪到真正 write 的前一刻（见下面 now = ...）。
+
+    # 天气**先取好**再连：这样连上之后两条命令是挨着发出去的。
+    # 为什么在意这个：固件对每条命令都置 s_need_gui → 各刷一屏（`画过 2 次` 就是这么来的）。
+    # 挨着发至少有机会被合并；先取天气则少 2 秒的中间等待。
+    wx_payload = None
+    if do_weather and not args.no_weather:
+        try:
+            code, temp, wmo, wind = fetch_weather(args.lat, args.lon)
+            # **不四舍五入**（用户 2026-09-30 要求）：按十分之一度发，面板上显示一位小数
+            t10 = max(-32768, min(32767, int(round(temp * 10))))
+            # 阈值判定（用户 2026-09-30 拍板）：天气码变了必发；温度变化 ≥1.0℃ 才发；
+            # 从没发过也发。其余不推 —— 省一次 17 秒全刷。
+            prev = last_wx.get("v") if last_wx else None
+            changed = True
+            if prev is not None:
+                pc, pt10 = prev
+                changed = (pc != code) or (abs(t10 - pt10) >= WX_TEMP_DELTA_T10)
+            if not changed:
+                log("  = 天气没变（" + WX_NAME.get(code, str(code)) + " " + str(temp)
+                    + "℃），不重发 —— 省一次全刷。", args.log)
+            else:
+                # 71 <code> <t_hi> <t_lo>：t 是 int16 的"十分之一度"（34.6℃ → 346）
+                wx_payload = bytes([CMD_SET_WX, code, (t10 >> 8) & 0xFF, t10 & 0xFF])
+                log("  · 天气取好了（" + str(args.lat) + "," + str(args.lon) + "）："
+                    + WX_NAME.get(code, str(code)) + " " + ("%.1f" % temp) + "℃"
+                    + "（Open-Meteo WMO=" + str(wmo) + " 风速=" + str(wind) + "km/h）", args.log)
+                if last_wx is not None:
+                    last_wx["v"] = (code, t10)
+        except Exception as e:
+            log("  ! 取天气失败：" + explain(e), args.log)
+
+    # 2026-10-01（用户要求）：**只要这次要推天气，就把时间也一起带上** ——
+    # 每次推天气都顺便对一次表，价签的钟一直是校准的；反正那条命令本来就要重画一页。
+    put_time = bool(do_time or (wx_payload is not None))
+
+    log("找到价签：" + repr(dev.name) + " rssi=" + str(adv.rssi) + " addr=" + dev.address + "；连接中…", args.log)
+
+    try:
+        async with BleakClient(dev, timeout=args.connect_timeout) as cli:
+            try:
+                ver = await cli.read_gatt_char(VER_UUID)
+                log("  固件协议版本 = 0x" + ver[0].to_bytes(1, "big").hex().upper() +
+                    "（>=0x16 就是新流程）", args.log)
+            except Exception as e:
+                log("  读版本失败（不影响）：" + explain(e), args.log)
+
+            def on_notify(_h, data: bytearray):
+                txt = bytes(data).decode("latin-1", "replace")
+                log("  ← 价签：" + repr(txt) + "  (" + bytes(data).hex(" ") + ")", args.log)
+
+            try:
+                await cli.start_notify(WR_UUID, on_notify)
+            except Exception as e:
+                log("  开通知失败（只影响回读日志）：" + explain(e), args.log)
+
+            # 1) 时间 + 时区 + 模式 [+ 天气] —— 这条落地后价签会整页重画（约 16 秒）
+            #    build 50 起支持把天气**一起带上**：20 <utc4> <tz> <mode> [wx] [temp]
+            #    2026-10-01：**只要这次要推天气，就顺带把时间也放进来**（用户要求）——
+            #    每次推天气都对一次表，而且反正只画一页、只刷一次。
+            merged = (wx_payload is not None) and put_time
+            if put_time:
+                now = int(time.time())          # ← 写下去的前一刻才取（见上面那条注释）
+                wall = datetime.fromtimestamp(now + tz * 3600, tz=timezone.utc)
+                payload = bytes([CMD_SET_TIME,
+                                 (now >> 24) & 0xFF, (now >> 16) & 0xFF,
+                                 (now >> 8) & 0xFF, now & 0xFF,
+                                 tz & 0xFF, mode])
+                if merged:
+                    payload += wx_payload[1:]          # 去掉 0x71 那个命令字节，只带 code+temp
+                await cli.write_gatt_char(WR_UUID, payload, response=True)
+                log("  → 时间：UTC " + str(now) + " + 时区" + str(tz) + "h → 价签应显示 "
+                    + wall.strftime("%Y-%m-%d %H:%M:%S")
+                    + "，模式=" + str(mode) + "（"
+                    + {MODE_KEEP: "保持当前页，只对表",
+                       MODE_CALENDAR: "日历", MODE_CLOCK: "时钟"}[mode] + "）"
+                    + ("+天气（合并成一条）" if merged else "")
+                    + "  载荷=" + payload.hex(" "),
+                    args.log)
+
+            # 2) 天气（前面已经取好了，这里就是紧跟着上一条发出去）
+            if wx_payload is not None and not merged:
+                await cli.write_gatt_char(WR_UUID, wx_payload, response=True)
+                log("  → 天气  载荷=" + wx_payload.hex(" "), args.log)
+            elif merged:
+                log("  （天气已经并进上一条命令了，不用单独发）", args.log)
+
+            # 3) 顺手读一次电池（价签会回 bat=.. pct=..）
+            if args.battery:
+                await cli.write_gatt_char(WR_UUID, bytes([CMD_READ_BAT]), response=True)
+                log("  → 已请求读电池（0x72）", args.log)
+
+            # 留点时间把通知收完；整页刷新会在我们断开后自己跑完
+            await asyncio.sleep(args.dwell)
+            try:
+                await cli.stop_notify(WR_UUID)
+            except Exception:
+                pass
+    except Exception as e:
+        log("  连接/写入失败：" + explain(e), args.log)
+        return False
+
+    log("  同步完成，已断开（价签这时在刷屏，约 16 秒）。", args.log)
+    return True
+
+
+# ---------------------------------------------------------------- sync 子命令
+async def cmd_sync(args) -> int:
+    dev, adv = await find_tag(args, args.scan)
+    if not dev:
+        log("没找到价签：确认它上电了（换电池/刚刷机后要碰一下 RST），"
+            "以及这台 Mac 的蓝牙已授权。", args.log)
+        return 2
+    return 0 if await sync_once(dev, adv, args) else 1
+
+
+# ---------------------------------------------------------------- raw 子命令
+async def cmd_raw(args) -> int:
+    """把原始字节发给价签的写特征（调试用）。用法：
+
+       ./run.sh raw "03 18 | 04 80 | 03 1A | 04 55 | 03 22 | 04 D7 | 03 20"
+
+       `03 xx` = SEND_CMD（把一个字节当命令发给屏）
+       `04 xx` = SEND_DATA（把一个字节当数据发给屏）
+       两条都是固件里现成的调试命令，直接透传到面板（UC8176）。
+    """
+    dev, adv = await find_tag(args, args.scan)
+    if not dev:
+        log("没找到价签。", args.log)
+        return 2
+
+    hexstr = args.hex or args.hexpos            # 两种写法都认：raw --hex "..." / raw "..."
+    if not hexstr:
+        log('raw 模式要带字节串，例如：raw "03 22 | 04 C7 | 03 20"', args.log)
+        return 2
+    groups = [g.strip() for g in hexstr.split("|") if g.strip()]
+    log("连价签发原始命令：" + " | ".join(groups), args.log)
+    try:
+        async with BleakClient(dev, timeout=args.connect_timeout) as cli:
+            for g in groups:
+                payload = bytes.fromhex(g.replace(" ", ""))
+                await cli.write_gatt_char(WR_UUID, payload, response=True)
+                log("  → " + payload.hex(" "), args.log)
+                await asyncio.sleep(0.06)
+            await asyncio.sleep(args.dwell)
+    except Exception as e:
+        log("发送失败：" + explain(e), args.log)
+        return 1
+    log("发完了。", args.log)
+    return 0
+
+
+# ---------------------------------------------------------------- watch 子命令
+async def cmd_watch(args) -> int:
+    # watch 是"常驻基站"：它只在天气变了/到点时才连一次，**不该动用户在网页上选的页面**，
+    # 所以默认用模式 0（保持当前页）—— 除非命令行里显式 --no-keep-mode。
+    if args.keep_mode is None:
+        args.keep_mode = True
+    log("基站模式启动：每 " + str(args.scan) + " 秒扫一轮；价签一出现就同步时间+天气，"
+        "之后时间每 " + str(int(args.time_interval)) + " 秒、天气每 "
+        + str(int(args.weather_interval)) + " 秒复查一次（值没变不发）；ctrl-C 退出。",
+        args.log)
+    if args.keep_mode:
+        log("（推命令时模式字节发 0 = 保持价签当前页面，不会把它顶回日历页）", args.log)
+    last_time = {}      # addr -> 上次成功同步时间的 monotonic 时间
+    last_wx_t = {}      # addr -> 上次查天气的 monotonic 时间
+    last_wx = {}        # addr -> {"v": (code, temp)} 上次真发出去的天气值
+    present = set()     # 上一轮在广播的设备
+
+    while True:
+        try:
+            dev, adv = await find_tag(args, args.scan, quiet=True)
+        except Exception as e:
+            log("扫描出错：" + explain(e), args.log)
+            await asyncio.sleep(5)
+            continue
+
+        if dev is None:
+            if present:
+                log("价签从空中消失了（关机/走远了）。", args.log)
+            present = set()
+            await asyncio.sleep(args.poll)
+            continue
+
+        addr = dev.address
+        now = time.monotonic()
+        reappeared = addr not in present        # 刚上电/刚回来 → 立刻同步
+        due_time = addr not in last_time or (now - last_time[addr]) >= args.time_interval
+        due_wx = addr not in last_wx_t or (now - last_wx_t[addr]) >= args.weather_interval
+        present = {addr}
+
+        if reappeared:
+            log("价签出现了（应该是刚上电，它自己的时间是空的）→ 立刻校时。", args.log)
+
+        if reappeared or due_time or due_wx:
+            do_wx = reappeared or due_wx
+            # 2026-10-01（用户要求）：推天气的时候把时间一起带上（合并成一条命令），
+            # 这样每次推天气都顺便对一次表 —— 所以 do_wx 也就意味着 do_time。
+            do_time = reappeared or due_time or do_wx
+            if await sync_once(dev, adv, args, do_time, do_wx, last_wx.setdefault(addr, {})):
+                if do_time:
+                    last_time[addr] = time.monotonic()
+                if do_wx:
+                    last_wx_t[addr] = time.monotonic()
+            else:
+                await asyncio.sleep(5)
+        await asyncio.sleep(args.poll)
+
+
+# ---------------------------------------------------------------- 入口
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="ZK42V 价签基站模拟器（Mac 当 BLE central）")
+    p.add_argument("cmd", choices=["probe", "sync", "watch", "raw"])
+    p.add_argument("--hex", default="", help='raw 模式要发的字节，用 | 分组，例："03 18 | 04 80"')
+    p.add_argument("hexpos", nargs="?", default="",
+                   help='同上（位置写法）：raw "03 22 | 04 C7 | 03 20"')
+    p.add_argument("--tz", type=int, default=None,
+                   help="时区小时数（默认用本机时区；北京时间填 8）")
+    p.add_argument("--mode", type=int, default=1, choices=[1, 2],
+                   help="1=日历页（默认） 2=时钟页")
+    p.add_argument("--keep-mode", dest="keep_mode", action="store_true", default=None,
+                   help="模式字节发 0（build 60 固件）= 保持价签当前页面，只对表/推天气。"
+                        "sync 默认关（按 --mode 切页面）；watch 默认开。")
+    p.add_argument("--no-keep-mode", dest="keep_mode", action="store_false",
+                   help="watch 里也按 --mode 切页面（会把价签顶回日历页）")
+    # 默认点 = 深圳公明广场（光明区公明街道）。坐标来源见 README 第 2.1 节：
+    # OSM(Overpass) 里"公明广场"本体 22.7809/113.8861，三个同名条目 + 公明广场地铁站都在 20m 内。
+    p.add_argument("--lat", type=float, default=22.7809, help="纬度（默认：深圳公明广场 22.7809）")
+    p.add_argument("--lon", type=float, default=113.8861, help="经度（默认：深圳公明广场 113.8861）")
+    p.add_argument("--no-weather", action="store_true", help="不发天气，只对时间")
+    p.add_argument("--battery", action="store_true", help="顺带发 0x72 读一次电池")
+    p.add_argument("--scan", type=float, default=6.0, help="单轮扫描秒数（默认 6）")
+    p.add_argument("--poll", type=float, default=3.0, help="watch 模式每轮之间歇（秒）")
+    p.add_argument("--time-interval", type=float, default=86400.0,
+                   help="watch 里多久重新校一次时间（秒，默认 86400=一天）")
+    p.add_argument("--weather-interval", type=float, default=21600.0,
+                   help="watch 里多久查一次天气（秒，默认 21600=6 小时；值没变不会发）")
+    p.add_argument("--dwell", type=float, default=2.0, help="同步后停留收通知的秒数")
+    p.add_argument("--connect-timeout", type=float, default=20.0)
+    p.add_argument("--log", default=None, help="同时把日志写进这个文件")
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    runner = {"probe": cmd_probe, "sync": cmd_sync,
+              "watch": cmd_watch, "raw": cmd_raw}[args.cmd]
+    try:
+        return asyncio.run(runner(args))
+    except KeyboardInterrupt:
+        log("收到 ctrl-C，退出。", args.log)
+        return 0
+    except Exception as e:
+        log(explain(e), args.log)
+        return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -537,6 +537,9 @@ int main(void)
     g_dbg.adc_trim_rc = ZK_NONE_U32;
     /* build 45：网页给的时区（屏上时间/日期不对时先看它） */
     g_dbg.tz_h = ZK_NONE_U32;
+    /* build 60：基站"顺手带时间"的两个计数（推天气时把时间一起发下来） */
+    g_dbg.set_time_cmds = 0;
+    g_dbg.time_keep_cnt = 0;
     {
         volatile uint32_t *st = &g_dbg.ble_adv_st0;
         uint32_t           i;

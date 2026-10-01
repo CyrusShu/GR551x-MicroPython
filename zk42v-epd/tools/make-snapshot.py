@@ -158,6 +158,21 @@ FILES = [
 
     # ---- 文档 ---------------------------------------------------------------------
     ("outputs/pyocd/README.md",                         "docs/pyocd-notes.md"),
+
+    # ---- 基站（Mac 版 + ESP32 版）--------------------------------------------------
+    #  2026-10-01 补进来：之前只把基站留在本机 outputs/ble-base，仓库里其实没有
+    #  （3165812 那条提交的标题写了"Mac/ESP32 基站"，但 FILES 表里漏了）。
+    #  编出来的 .bin 不进库（跟价签镜像一个规矩），要刷就照 base/esp32/README.md 现编。
+    ("outputs/ble-base/README.md",                      "base/README.md"),
+    ("outputs/ble-base/zk_ble_base.py",                 "base/zk_ble_base.py"),
+    ("outputs/ble-base/run.sh",                         "base/run.sh"),
+    ("outputs/ble-base/setup.sh",                       "base/setup.sh"),
+    ("outputs/ble-base/probe-on-air.command",           "base/probe-on-air.command"),
+    ("outputs/ble-base/watch-on-air.command",           "base/watch-on-air.command"),
+    ("outputs/ble-base/esp32/README.md",                "base/esp32/README.md"),
+    ("outputs/ble-base/esp32/zk_base_esp32/zk_base_esp32.ino",
+                                                        "base/esp32/zk_base_esp32/zk_base_esp32.ino"),
+
     ("outputs/pyocd/BACKUP-zk42v.md",                   "docs/BACKUP-zk42v.md"),
     ("outputs/pyocd/WRITE-zk42v.md",                    "docs/WRITE-zk42v.md"),
     ("outputs/analysis/PANEL-zk42v.md",                 "docs/PANEL-zk42v.md"),
