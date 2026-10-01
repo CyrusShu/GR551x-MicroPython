@@ -810,6 +810,7 @@ void loop()
             lastTimeMs     = 0;          /* 时间也要重发 */
             wxSentCode     = -1;         /* 天气也要重发 */
             wxSentTemp     = -999;
+            citySent[0]    = 0;          /* 城市名也要重发（价签掉电后 RAM 里那个没了） */
         }
         tagPresent = true;
 
