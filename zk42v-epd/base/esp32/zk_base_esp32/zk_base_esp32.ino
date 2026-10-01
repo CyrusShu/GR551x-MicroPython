@@ -1,5 +1,5 @@
 /* ===========================================================================
- *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-9）
+ *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-11）
  *
  *  干什么：让一块 ESP32 当 BLE central，扫到价签就连上去，把
  *          · 时间（0x20：UTC 秒 + 时区 + 模式）
@@ -99,8 +99,12 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
    0 = 只在有变化时推（最省电，屏上时分可能停在几十分钟前）。 */
 #define PUSH_EVERY_MS       0
 #define NOTIFY_DWELL_MS     1500          // 写完命令后停留收通知的时间
-#define HTTP_TRIES          3             // 取天气失败重试几次
-#define HTTP_RETRY_GAP_MS   800
+/* 取天气失败重试几次（2026-10-01 从 3 次/800ms 提到 5 次/2s）：
+   实机看到 WiFi 会掉一下再自己回来（信号弱 + BLE 扫描抢射频），
+   原来 3 次 × 0.8 秒根本等不到它回来，结果"这一轮没天气"。
+   现在给足 ~8 秒的窗口，成功率明显高；失败也不影响价签（有兜底）。 */
+#define HTTP_TRIES          5
+#define HTTP_RETRY_GAP_MS   2000
 #define FETCH_FAIL_BACKOFF_MS 60000UL     // 失败后至少隔 60 秒再试，别刷屏
 
 // ⑥ 天气走不走 TLS
@@ -159,9 +163,9 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
    ⚠ JWT 要拿"现在几点"当 iat/exp，所以**先取时间再签**：这个固件总是先用
      Open-Meteo(HTTP) 拿到 HTTP Date 头，再签 JWT 去请求和风 ——
      避免"要签名得先有时间、要时间得先能请求"的鸡生蛋问题。 */
-#define QWEATHER_JWT_KID   ""                        /* 凭据 ID（kid） */
-#define QWEATHER_JWT_SUB   ""                        /* 项目 ID（sub） */
-#define QWEATHER_JWT_HEX   "49e2ec40c21bf57d0e630c1e37a3286694504b28311720e831f689feb58ddef9"                        /* Ed25519 私钥 seed 的 64 个十六进制字符 */
+#define QWEATHER_JWT_KID   "KMWDYQGERV"                        /* 凭据 ID（kid） */
+#define QWEATHER_JWT_SUB   "29TNG35JCC"                        /* 项目 ID（sub） */
+#define QWEATHER_JWT_HEX   "06dd2ed05252dd91b8266bfa6a7da85f6c0b95f1af6a639e375c4f4d6f03c60a"                        /* Ed25519 私钥 seed 的 64 个十六进制字符 */
 
 #define MODE_CALENDAR   1
 
@@ -716,35 +720,15 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
 static bool fetchWeatherAndTime()
 {
     String dateHdr;
-    bool   haveWx  = false;
-    bool   needNet = true;               /* 还要不要跑 Open-Meteo（没天气或者没时间） */
 
-    /* ⑨ 先试和风天气（实况；跟手机同一路）。没填 key 就跳过。 */
-    if (qweatherJwtConfigured() || strlen(QWEATHER_KEY) > 0)
-    {
-        int c = 0, t10 = 0, wind = 0;
-
-        if (fetchQWeatherNow(&c, &t10, &wind, &dateHdr))
-        {
-            wxCode      = c;
-            wxTemp      = t10;
-            haveWeather = true;
-            haveWx      = true;
-            needNet     = (dateHdr.length() == 0);   /* 时间也从它那儿拿到了就不用再跑一次 */
-            logf("天气源 = **和风天气（实况）** %.1f℃ %s —— 手机同源那一路",
-                 t10 / 10.0, wxName(c));
-        }
-        else
-        {
-            logf("和风没取到 → 退回 Open-Meteo（纯 HTTP，一直能用）");
-        }
-    }
-    if (!needNet)
-    {
-        applyDateHeader(dateHdr);          /* ⚠ 别漏了校时（就是这么踩过一次） */
-        lastFetchOkMs = millis();
-        return true;
-    }
+    /* ⚠ 顺序很重要（2026-10-01 实机踩到）：
+       和风 JWT 的 iat/exp 要用"现在几点"，所以**必须先把时间拿到手**。
+       第一版我先试和风、拿不到时间就失败退回 Open-Meteo —— 结果**开机后第一轮
+       永远用不上和风**（日志：`和风 JWT：还没有时间 → 这次先不用 JWT`）。
+       现在改成：
+         ① 先用 Open-Meteo（纯 HTTP）拿时间 + 一份天气（它同时是时钟源和兜底源）
+         ② 再问和风（JWT 或 key），成功就用它的**实况**覆盖天气
+       代价是每轮多一次 Open-Meteo 请求 —— 那个不计数、也不限制，无所谓。 */
 
     String url = String(WX_USE_TLS ? "https://" : "http://") + WX_HOST
                + String("/v1/forecast?latitude=")
@@ -820,11 +804,8 @@ static bool fetchWeatherAndTime()
     if (t10 < -32768) t10 = -32768;
     int t = t10 / 10;
     haveWeather = true;
-    if (!haveWx)                /* 和风已经给过天气了就别覆盖它（这条只是兜底） */
-    {
-        wxCode = c;
-        wxTemp = t10;           /* 现在存的是"十分之一度" */
-    }
+    wxCode = c;
+    wxTemp = t10;               /* 现在存的是"十分之一度" */
     lastFetchOkMs = millis();
     logf("（用的是 Open-Meteo 的 %s 模型；换源看 WX_MODEL 那段注释）",
          (strlen(WX_MODEL) > 0) ? WX_MODEL : "best_match");
@@ -839,6 +820,26 @@ static bool fetchWeatherAndTime()
         findJsonStringInCurrent(body, "time", obs, sizeof(obs));
         logf("  Open-Meteo 观测时刻 = %s   原始温度 = %.1f℃（屏幕上是四舍五入后的 %d℃）",
              obs, (double)temp, t);
+    }
+
+    /* ② 时间到手了 → 再问和风（JWT 的 iat/exp 要"现在几点"）。成功就覆盖天气。 */
+    if (qweatherJwtConfigured() || strlen(QWEATHER_KEY) > 0)
+    {
+        int c2 = 0, t102 = 0, wind2 = 0;
+        String dateHdr2;
+
+        if (fetchQWeatherNow(&c2, &t102, &wind2, &dateHdr2))
+        {
+            wxCode = c2;
+            wxTemp = t102;
+            logf("天气源 = **和风天气（实况）** %.1f℃ %s —— 手机同源那一路",
+                 t102 / 10.0, wxName(c2));
+        }
+        else
+        {
+            logf("和风没取到 → 这次就用 Open-Meteo 的值（%.1f℃，不影响价签工作）",
+                 (double)temp);
+        }
     }
     return true;
 }
@@ -1164,7 +1165,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-9");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-11");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),
