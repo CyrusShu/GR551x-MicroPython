@@ -1335,7 +1335,8 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 31 加到 96 —— 多一组「电池电压 / 电量 / 片内温度」；
 # build 41 加到 100 —— 多一组「天气」（手机经 0x71 下发：天气码 + 天气温度）。
 # build 42 加到 104 —— 多一组「ADC 诊断」（原始码值 / 两条路的电压 / 通道寄存器 / 出厂校准）。
-ZK_DBG_WORDS = 104
+# build 59 加到 112 —— 多一组「时基」（AON 定时器：标定出来的频率 / 来源 / 现场计数）。
+ZK_DBG_WORDS = 112
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4528,6 +4529,55 @@ def _zk_err_text(v):
     return ZK_BLE_ERR_NAME.get(v, '未知错误码 0x%02X' % v)
 
 
+def _zk_say_timebase(words):
+    """build 59：把时基那一组（word 104..111）翻译成人话
+
+    背景：CYCCNT 数的是 **CPU 周期**，而 GR5513 的主频会变（空闲 16 MHz、刷屏/连
+    BLE 时明显更高），于是"毫秒"快 3~4.8 倍 —— 日历每 ~8 小时跨一天。
+    build 59 把时基换成 AON 定时器（低功耗时钟域，与主频无关），
+    频率在开机时标定，标不出来就回退老做法。这几个数就是判断依据：
+      tb_src       bit0-7 来源（1 DWT 标定 / 2 SDK 值 / 3 名义值 / 0 回退了）
+                   bit8 = 1 表示计数器递减
+      tb_hz        实际用的「每秒多少 tick」（0 = 没在用 AON）
+      tb_hz_cal    开机 DWT 标定出来的值（0 = 没标出来）
+      tb_hz_sdk    sys_lpclk_get() 报的值（0 = 不可信/读不到）
+      tb_aon_ticks AON 计数器的原始读数（在动 = 低功耗时钟活着）
+      tb_ticks     累计 tick 低 32 位（÷ tb_hz = 秒）
+      tb_bad       计数器"倒退/被复位"的异常次数（正常 0）
+      tb_jumps     两次 tick 之间隔了 >1 秒的次数（长阻塞的补记）
+    """
+    src, hz, hz_cal, hz_sdk, raw, ticks, bad = words[104:111]
+    jumps = words[111]
+    code = src & 0xFF
+    src_txt = {0: '**回退了**（没在用 AON，还在拿 CYCCNT 算）',
+               1: 'DWT 开机标定',
+               2: 'SDK 报的低频时钟频率',
+               3: '名义值（标定和 SDK 都不可信）'}.get(code, '?')
+
+    say("    ---- 毫秒时基（build 59 起用 AON 定时器）----")
+    say("    来源 = %s   %s计数" % (src_txt, '递减' if src & 0x100 else '递增'))
+
+    if code == 0 or hz == 0:
+        say("    ⚠ 没在用 AON 时基 —— 说明 AON 计数器没在动（原始读数 %d）。" % raw)
+        say("      这时毫秒还是拿 CYCCNT 算的，主频一变就又快了（日历会每 ~8 小时跨一天）。")
+        return
+
+    say("    频率 = %d tick/秒   （≈ %.1f kHz）" % (hz, hz / 1000.0))
+    say("      开机 DWT 标定 = %s   sys_lpclk_get() = %s"
+        % ('%d' % hz_cal if hz_cal else '没标出来',
+           '%d' % hz_sdk if hz_sdk else '不可信/读不到'))
+    if code == 2 and hz_cal:
+        say("      （两个值差得超过 20% ⇒ 信 SDK 那个。标定那会儿主频可能不在 16MHz）")
+    if code == 3:
+        say("      ⚠ 两个来源都不靠谱，用的是名义值 %d —— 只能保证量级对。" % hz)
+    say("    AON 计数器原始值 = %d   累计 tick = %d（÷ 频率 ≈ %d 秒）"
+        % (raw, ticks, ticks // max(1, hz)))
+    say("    异常（计数器倒退/被复位）= %d 次   长阻塞补记（>1 秒）= %d 次"
+        % (bad, jumps))
+    if bad:
+        say("      ⚠ bad 不是 0：要么计数器被复位过，要么方向搞反了（把这行发我）")
+
+
 def _zk_say_ble_experiment(words):
     """把状态块里 B2-A.2 那一组（word 24..52）翻译成人话"""
     (scan_state, scan_par_err, scan_start_err, scan_start_st, scan_stop_rsn,
@@ -4787,6 +4837,13 @@ def _zk_say_epd_service(words):
                 say("      ⚠ 这个秒数大得离谱 —— 时基很可能又绕了（build 29 那个 "
                     "268 秒锯齿的典型值是 4294917 秒 ≈ 49.7 天）")
         say("    zk_tick_ms() = %d（单调毫秒的低 32 位；它不该突然掉回 0）" % tickms)
+
+    # ---- build 59：时基换成 AON 定时器（与 CPU 主频无关）----
+    #  为什么要换：CYCCNT 数的是 CPU 周期，而主频会变（空闲 16 MHz、刷屏/连 BLE 时
+    #  更高），于是"毫秒"快 3~4.8 倍 —— 日历每 ~8 小时跨一天就是这么来的。
+    #  这一段把「标定 → 选用 → 现场」全译出来，好判断它到底有没有生效。
+    if len(words) > 111:
+        _zk_say_timebase(words)
 
     # ---- build 31：电池 + 片内温度（表头右上角那两个数）----
     if len(words) > 92:
@@ -5296,19 +5353,32 @@ def zkstatus():
         say("    （BUSY 是输入脚：空闲时不忙的话应该是 0；一直是 1 可能是脚悬空/接错）")
 
     t1 = rd(ZK_AON_TIMERV)
+    tw_a0 = time.monotonic()
     time.sleep(0.25)
     t2 = rd(ZK_AON_TIMERV)
+    tw_a1 = time.monotonic()
     lpclk_dead = False
     if t1 is not None and t2 is not None:
+        # ⚠ 这个计数器是**递减**的（2026-10-01 实测：474690 -> 467688 走了 7002），
+        #   所以差值要拿 t1 - t2 算；以前写成 t2 - t1，印出来是个 4294960xxx 的怪数。
+        down = (t1 - t2) & 0xFFFFFFFF
+        up   = (t2 - t1) & 0xFFFFFFFF
+        delta = down if down and down < up else up
+        dt_a  = max(1e-9, tw_a1 - tw_a0)
         say("")
         say("  AON 定时器（跑在低功耗时钟上）：读两次（隔 250ms）")
-        say("    %d  ->  %d    （差 %d）" % (t1, t2, (t2 - t1) & 0xFFFFFFFF))
-        if (t2 - t1) & 0xFFFFFFFF == 0:
+        say("    %d  ->  %d    （%s计数，差 %d）"
+            % (t1, t2, '递减' if delta == down else '递增', delta))
+        if delta == 0:
             lpclk_dead = True
             say("    → **没走**：低功耗时钟（32.768kHz 那一路）没有在跑。")
             say("      这也解释了 PSC 为什么完不成 RTC_CLK 命令。")
         else:
             say("    → 在走，低功耗时钟是活的（那 PSC 卡住就是别的原因）。")
+            say("      %.1f 秒实际走了 %d 个 tick ⇒ **约 %d Hz**"
+                % (dt_a, delta, round(delta / dt_a)))
+            say("      （这就是 build 59 要标定的那个频率：本机实测一直在 28 kHz 上下，"
+                "不是教科书式的 32768）")
 
     # ---- 时基自检：SystemCoreClock 跟真实主频对不对得上 ----
     c1 = rd(ZK_DWT_CYCCNT)
@@ -5351,6 +5421,39 @@ def zkstatus():
                 "多半是**符号地址不对**（不是固件的问题）。" % sysclk)
             say("      用 .map 查一下真地址：grep -n SystemCoreClock "
                 "outputs/firmware/zk42v-epd-app/GCC/out/lst/zk42v_epd.map")
+
+    # ---- build 59：**时基实测**（读两次状态块里的 zk_tick_ms，跟宿主的秒表对拍）----
+    #  判据就一条：增量 ÷ 真实秒数 ≈ 1.00。
+    #  修之前这个比值是 3~4.8（CYCCNT 按 16 MHz 折算，而主频会变）；
+    #  换成 AON 定时器以后应该贴着 1.00 走。
+    tb_build = rd(ZK_DBG_ADDR + 4 * 11)
+    tb_now = rd(ZK_DBG_ADDR + 4 * 88)
+    if (tb_build is not None and tb_build >= 59) and tb_now is not None:
+        r0 = rd(ZK_DBG_ADDR + 4 * 88)
+        h0 = time.monotonic()
+        time.sleep(float(_env_str('TICK_WATCH_S', '5')))
+        r1 = rd(ZK_DBG_ADDR + 4 * 88)
+        h1 = time.monotonic()
+        if r0 is not None and r1 is not None and h1 > h0:
+            dm = ((r1 - r0) & 0xFFFFFFFF) / 1000.0
+            dh = h1 - h0
+            ratio = dm / dh
+            say("")
+            say("  时基实测（拿状态块里的 zk_tick_ms 跟宿主秒表对拍，等了 %.1f 秒）：" % dh)
+            say("    价签走了 %.2f 秒 / 真实 %.2f 秒   ⇒ **比值 %.3f**" % (dm, dh, ratio))
+            if 0.98 <= ratio <= 1.02:
+                say("    → 对上了 ✅ 日历/时钟的重画间隔现在是按真实时间走的。")
+            elif ratio > 2.0:
+                say("    → 还是快 %.1f 倍 ❌ 说明**没在用 AON 时基**（看下面那一组 tb_* 字段），"
+                    % ratio)
+                say("      或者计数器频率标定得不对。")
+            elif ratio < 0.5:
+                say("    → 慢得离谱（%.2f）❌ —— 标定出来的频率偏大，把这一段发我。" % ratio)
+            else:
+                say("    → 偏 %.0f%% ❌ （主要看 tb_hz 跟 tb_hz_cal / tb_hz_sdk 差多少）"
+                    % ((ratio - 1.0) * 100.0))
+            if (r1 - r0) & 0xFFFFFFFF == 0:
+                say("      ⚠ 两次读到的毫秒一模一样：主循环可能卡住了（正好在刷屏？）")
 
     words = last['words']
     say("")

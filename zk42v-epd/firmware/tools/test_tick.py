@@ -22,6 +22,7 @@
 """
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -104,6 +105,75 @@ int main(void)
     ms = zk_tick_step(&t, 99999u, 0u);
     printf("D %llu\n", (unsigned long long)ms);
 
+    /* ---- 6：build 59 的 AON 时基（低频递减计数器 + 每秒 tick 数）----
+       频率取本机实测那一档 28000（不是 32768！必然除不尽，专门盯截断误差），
+       起点挑在离绕圈很近的地方，让它跨过一次 32 位回绕。 */
+    {
+        zk_tick_aon_t a;
+        const uint32_t hz = 28000u;
+        uint32_t ct, i;
+
+        memset(&a, 0, sizeof(a));
+        ct = 0xFFFFFF00u;
+        (void)zk_tick_aon_step(&a, ct, hz);         /* 第一次调用只记基准 */
+        for (i = 0; i < 200000u; i++)
+        {
+            ct += 28u;                              /* 每步 1ms（28 tick） */
+            ms = zk_tick_aon_step(&a, ct, hz);
+            if (i % 20000u == 0u || i + 1u == 200000u)
+            {
+                printf("E %u %llu %llu\n", i, (unsigned long long)ms,
+                       (unsigned long long)(((uint64_t)(i + 1u) * 28u) * 1000u / hz));
+            }
+        }
+
+        /* 间隔不均匀（1ms / 250ms / 1ms / 40 秒），累计 tick 换算必须跟得上 */
+        memset(&a, 0, sizeof(a));
+        ct = 0x00000100u;
+        (void)zk_tick_aon_step(&a, ct, hz);
+        {
+            const uint32_t step_ms[4] = { 1u, 250u, 1u, 40000u };
+            uint64_t total_ms = 0;
+            unsigned  k;
+
+            for (k = 0; k < 4u; k++)
+            {
+                total_ms += step_ms[k];
+                ct       += step_ms[k] * 28u;
+                ms        = zk_tick_aon_step(&a, ct, hz);
+                printf("F %u %llu %llu\n", k, (unsigned long long)ms,
+                       (unsigned long long)((total_ms * 28u) * 1000u / hz));
+            }
+        }
+
+        /* 白盒：累计 tick 大到"毫秒超过 2^32"时，高 32 位要进位 */
+        memset(&a, 0, sizeof(a));
+        a.started = 1;
+        a.last    = 0u;
+        a.tk_lo   = 0u;
+        a.tk_hi   = 5u;                             /* 5 * 2^32 tick */
+        ms = zk_tick_aon_step(&a, 0u, hz);
+        printf("G %llu %llu\n", (unsigned long long)ms,
+               (unsigned long long)((5ull << 32) * 1000u / hz));
+
+        /* 计数器被复位/方向反了：一次 >= 2^31 的跳变不许计时，只记一笔 */
+        memset(&a, 0, sizeof(a));
+        ct = 100000u;
+        (void)zk_tick_aon_step(&a, ct, hz);
+        ct += 28u;
+        ms = zk_tick_aon_step(&a, ct, hz);
+        printf("H %llu %u ", (unsigned long long)ms, a.bad);
+        ct = 500u;                                  /* 突然倒退一大截（被复位） */
+        ms = zk_tick_aon_step(&a, ct, hz);
+        printf("%llu %u\n", (unsigned long long)ms, a.bad);
+
+        /* hz = 0（这条时基不可用）：原样返回、不崩 */
+        memset(&a, 0, sizeof(a));
+        ms = zk_tick_aon_step(&a, 1234u, 0u);
+        ms = zk_tick_aon_step(&a, 5678u, 0u);
+        printf("I %llu\n", (unsigned long long)ms);
+    }
+
     return 0;
 }
 '''
@@ -124,9 +194,16 @@ def main():
 
     A = []
     B = []
+    E = []
+    F = []
+    G = []
     C = D = None
+    H = None
+    I = None
     for line in out.splitlines():
         f = line.split()
+        if not f:
+            continue
         if f[0] == 'A':
             A.append((int(f[1]), int(f[2]), int(f[3])))    # i, 新, 老
         elif f[0] == 'B':
@@ -135,6 +212,16 @@ def main():
             C = int(f[1])
         elif f[0] == 'D':
             D = int(f[1])
+        elif f[0] == 'E':
+            E.append((int(f[1]), int(f[2]), int(f[3])))    # i, 新, 期望
+        elif f[0] == 'F':
+            F.append((int(f[1]), int(f[2]), int(f[3])))    # k, 新, 期望
+        elif f[0] == 'G':
+            G = (int(f[1]), int(f[2]))
+        elif f[0] == 'H':
+            H = [int(x) for x in f[1:]]                    # ms1 bad1 ms2 bad2
+        elif f[0] == 'I':
+            I = int(f[1])
 
     # 1) 新公式：严格等于累计毫秒
     errs = [(i, ms, i) for (i, ms, _old) in A if ms != i]
@@ -160,12 +247,45 @@ def main():
     # 5) 时基不可用
     check('5: per_ms=0 时原样返回、不乱加', D == 0, '得到 %s' % D)
 
-    # 6) 源码守卫
+    # 6) build 59：AON 低频计数器那条路（1ms 一步、跨回绕、频率除不尽）
+    errs = [(i, ms, want) for (i, ms, want) in E if ms != want]
+    check('6: AON 时基：28000 tick/秒、1ms 一步走 200 秒（跨回绕）都对得上',
+          len(E) >= 5 and not errs, str(errs[:3]))
+
+    # 7) 间隔不均匀也要对得上
+    bad = [(k, ms, want) for (k, ms, want) in F if ms != want]
+    check('7: AON 时基：间隔不均匀（含 40 秒那一档）也对得上', len(F) == 4 and not bad,
+          str(bad))
+
+    # 8) 毫秒超过 2^32 时高位进位（白盒）
+    check('8: AON 时基：累计 tick 很大时毫秒高 32 位也不丢（%s，期望 %s）'
+          % (G[0] if G else None, G[1] if G else None),
+          bool(G) and G[0] == G[1])
+
+    # 9) 计数器被复位/倒退：不计时、只记一笔
+    check('9: AON 时基：一次 >=2^31 的跳变不推进（%s）也不崩，bad 记一笔（%s）'
+          % (H[:2] if H else None, H[2:] if H else None),
+          H == [1, 0, 1, 1])
+
+    # 10) hz = 0
+    check('10: AON 时基 hz=0 时原样返回、不乱加', I == 0, '得到 %s' % I)
+
+    # 11) 源码守卫
     src = open(MAIN_C, encoding='utf-8').read()
-    check('6: main.c 里不再有 CYCCNT 直除那种写法',
+    check('11: main.c 里不再有 CYCCNT 直除那种写法',
           'DWT->CYCCNT / (clk / 1000u)' not in src)
-    check('6: main.c 走 zk_tick_step', 'zk_tick_step(&s_tick' in src)
-    check('6: 日历页用的是 64 位时基',
+    check('11: main.c 走 zk_tick_step（CYCCNT 那条路还在，当兜底）',
+          'zk_tick_step(&s_tick' in src)
+    check('11: main.c 的时基换成了 AON 定时器（AON->TIMER_VAL + zk_tick_aon_step）',
+          'AON->TIMER_VAL' in src and 'zk_tick_aon_step' in src)
+    check('11: 标定过 AON 频率（开机用 DWT 量 + 跟 sys_lpclk_get 对账）',
+          'sys_lpclk_get' in src and 'zk_timebase_init' in src)
+    check('11: main.c 里没有把 CPU 周期率写死成 16000',
+          re.search(r'\b16000u\b', src) is None)
+    tick_h = open(os.path.join(INC, 'zk_tick.h'), encoding='utf-8').read()
+    check('11: zk_tick.h 里有 zk_tick_aon_step（主机端测的就是固件那份）',
+          'zk_tick_aon_step' in tick_h)
+    check('11: 日历页用的是 64 位时基',
           'zk_tick_ms64()' in open(os.path.join(FW, 'zk42v-epd-app', 'Src',
                                                 'ble', 'zk_epd_svc.c'),
                                    encoding='utf-8').read())

@@ -23,7 +23,7 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   54u
+#define ZK_BUILD_ID   59u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -99,8 +99,9 @@ typedef struct
 #define ZK_FLAG_DWT_OK       0x0004u   /* DWT 周期计数器可用（延时是准的） */
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
+#define ZK_FLAG_AON_TB       0x0020u   /* build 59：毫秒时基在跑 AON 定时器（不是 CYCCNT） */
 
-#define ZK_DBG_WORDS 104
+#define ZK_DBG_WORDS 112
 
 typedef struct
 {
@@ -264,7 +265,23 @@ typedef struct
     uint32_t adc_trim_rc;         /* 102: sys_adc_trim_get() 的返回值（0 = 读到校准了） */
     uint32_t tz_h;                /* 103: 网页给的时区（有符号小时数，例 8 = 北京；0xFFFFFFFF = 还没同步过）
                                       —— 屏上时间/日期不对时先看这个：浏览器报错时区就会这样 */
-    uint32_t rsv[ZK_DBG_WORDS - 104];
+
+    /* ---- build 59：毫秒时基从 CYCCNT 换成 **AON 定时器**（低功耗时钟域）------
+       背景：CYCCNT 数的是 CPU 周期，而主频会变（空闲 16 MHz、刷屏/连 BLE 时更高），
+       于是"毫秒"快 3~4.8 倍 —— 日历每 ~8 小时跨一天就是这么来的。
+       AON 定时器（AON->TIMER_VAL）与主频无关，但**频率要标定**（实测 ~28 kHz，
+       不是教科书的 32.768 kHz），所以下面这几个数把"标定 — 选用 — 现场"全记下来，
+       status.sh 会把它们译成人话。 */
+    uint32_t tb_src;              /* 104: 时基来源：bit0-7 = 1 DWT标定 / 2 SDK值 / 3 名义值 /
+                                     0 没用 AON（回退老 DWT 做法）；bit8 = 1 表示计数器**递减** */
+    uint32_t tb_hz;               /* 105: 实际用的「每秒多少 tick」（0 = 没在用 AON） */
+    uint32_t tb_hz_cal;           /* 106: 开机用 DWT 标定出来的值（不管采不采用；0 = 没标出来） */
+    uint32_t tb_hz_sdk;           /* 107: SDK（ROM 的 sys_lpclk_get()）报的 LP 时钟频率（0 = 不可信） */
+    uint32_t tb_aon_ticks;        /* 108: AON 计数器的**原始**读数（每轮都刷；在动就说明时钟活着） */
+    uint32_t tb_ticks;            /* 109: 累计原始 tick 的低 32 位（÷ tb_hz 就是秒） */
+    uint32_t tb_bad;              /* 110: 计数器"倒退/被复位"的异常次数（正常一直是 0） */
+    uint32_t tb_jumps;            /* 111: 两次 tick 之间隔了 >1 秒的次数（长阻塞的补记，正常几次） */
+    uint32_t rsv[ZK_DBG_WORDS - 112];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

@@ -38,6 +38,7 @@
 #include "ble_prf.h"          /* ble_gatts_prf_add —— 建服务必须走它，见下面注释 */
 
 #include <string.h>
+#include "gr55xx.h"     /* SystemCoreClock（build 55 的观测用） */
 
 /* ---------------------------------------------------------------- UUID */
 #define ZK_UUID128(b12, b13)                                                  \
@@ -1016,6 +1017,11 @@ void zk_epd_svc_init(void)
 
 void zk_epd_svc_poll(uint32_t now_ms)
 {
+    /* build 57 起 zk_tick_ms() 是**实时**的（以前只在"画一页"时写一次，两次 status
+       读到同一个数是正常的，不是时基停了）。
+       build 59 起这一刷连"时基现场证据"（tb_* 那几个字段）一起写 —— 见 main.c 的
+       zk_tick_ms()。test_step / ble_tick_ms 都由它维护，这里不再自己写。 */
+    g_dbg.ble_tick_ms = zk_tick_ms();
     /* 客户端刚打开通知：先把「配置」这条通知补上（等 CCCD 的响应发完了再发，
        免得被客户端当成"还没订阅"丢掉）。网页按「第 0 条通知」解析它。 */
     if (s_need_cfg)

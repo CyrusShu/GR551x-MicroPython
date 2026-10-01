@@ -59,53 +59,254 @@ const char zk_fw_tag[] __attribute__((section(".zk_tag"), used)) = "ZK42V-EPD-CU
  *   凡是拿它当绝对时间的地方（日历页那句 `s_ts + (tick - s_ts_ms)/1000`）都会
  *   在那一下突然跳 49.7 天 —— build 29 的"屏每 4.5 分钟自己刷一次"就是这么来的。
  *   现在按差值累加成单调计数，见 board/zk_tick.h。 */
-static zk_tick_t s_tick;
+/* ======================================================================
+ * build 59：时基换成 **AON 定时器**
+ *
+ * 上面那段注释里说的第①个坑（268 秒绕圈）是老问题；这次解决的是第②个坑：
+ * **CYCCNT 数的是 CPU 周期，而 GR5513 的主频会变**（空闲 16 MHz，刷屏/连 BLE
+ * 时明显更高）。于是"毫秒"平均快 3~4.8 倍 —— 日历每 ~8 小时跨一天。
+ * 证据：build 58 记下的那次跳变 = 1e9 个周期，按 16 MHz 算成 62 秒，
+ * 而真实只过了 20.8 秒（正好一次全刷），比值 3.0。
+ *
+ * AON 定时器（AON->TIMER_VAL = 0xA000C594）跑在**低功耗时钟**上，与主频无关；
+ * 实测 ~28 kHz 而且是**递减**计数（2026-10-01 三次 status：27.8/28.0/28.1 kHz）。
+ *
+ * 开机做一次标定（zk_timebase_init）：
+ *   ① 用 DWT 量 4 个 ~50ms 的窗口，同时数 AON 走了多少 tick → 每秒多少 tick；
+ *   ② 跟 SDK（ROM 的 sys_lpclk_get()）报的低频时钟频率交叉核对，差 20% 以内才信；
+ *   ③ AON 完全不涨 / 两个频率都不可信 → 老实回退到上面那套 DWT 实现。
+ * 标定和选用的每个数都写进状态块（104~111 号字），`status.sh` 会印出来。
+ * ====================================================================== */
+static zk_tick_t     s_tick;        /* DWT/CYCCNT 路径（build 30~58 的老实现，兜底） */
+static zk_tick_aon_t s_tick_aon;    /* AON 路径（build 59） */
+static uint32_t      s_aon_hz;      /* 实际用哪个频率：0 = 没在用 AON（走 DWT） */
+static uint32_t      s_aon_src;     /* 1=DWT 标定 2=SDK 值 3=名义值 0=DWT 路径 */
+static uint8_t       s_aon_down;    /* 1 = AON 计数器递减（本机实测就是） */
+static uint8_t       s_aon_alive;   /* 标定期间看到它在动 */
 
-static uint32_t tick_ms(void)
+#define ZK_TB_HZ_MIN  18000u        /* 低频时钟只可能是 32k 那一档（±）。 */
+#define ZK_TB_HZ_MAX  45000u        /* 出了这个范围 = 标定/读数崩了，宁可不用。 */
+#define ZK_TB_HZ_NOM  28000u        /* 本机名义值（DWT 和 SDK 都给不出时用这个） */
+
+static inline uint32_t tb_aon_raw(void)
 {
-    uint32_t clk, per_ms;
+    return AON->TIMER_VAL;          /* 只读；低功耗时钟域，与 CPU 主频无关 */
+}
 
-    if (!(g_dbg.flags & ZK_FLAG_DWT_OK))
+/* 递减计数器归一成"递增"，这样 zk_tick_aon_step() 只认一种方向 */
+static inline uint32_t tb_aon_norm(uint32_t raw)
+{
+    return s_aon_down ? (uint32_t)(0u - raw) : raw;
+}
+
+/* 空转 cycles 个周期（DWT 不在时按圈数兜底） */
+static void tb_spin(uint32_t cycles)
+{
+    if (g_dbg.flags & ZK_FLAG_DWT_OK)
     {
-        return 0;
+        uint32_t c0 = DWT->CYCCNT;
+        while ((uint32_t)(DWT->CYCCNT - c0) < cycles)
+        {
+        }
+    }
+    else
+    {
+        volatile uint32_t n = cycles / 4u + 1u;
+        while (n--)
+        {
+        }
+    }
+}
+
+/* 这个计数器往上数还是往下数？读两次就知道。
+   兜底按**递减**算 —— GR551x 的 AON 休眠定时器天生递减（SDK 的
+   hal_sleep_timer_get_current_value() 也是这样用的）。 */
+static void tb_aon_probe_dir(void)
+{
+    uint32_t i;
+
+    s_aon_down  = 1u;
+    s_aon_alive = 0u;
+
+    for (i = 0; i < 4u; i++)
+    {
+        uint32_t a = tb_aon_raw();
+
+        tb_spin(2000u);             /* ~125us @16MHz */
+        {
+            uint32_t b = tb_aon_raw();
+
+            if (b != a)
+            {
+                s_aon_alive = 1u;
+                s_aon_down  = (b < a) ? 1u : 0u;
+                return;
+            }
+        }
+    }
+}
+
+/* 开机标定：定方向 → 量频率 → 与 SDK 交叉核对 → 选中一条时基 */
+static void zk_timebase_init(void)
+{
+    uint32_t clk = SystemCoreClock;
+    uint32_t hz_cal = 0u;
+    uint32_t hz_sdk;
+
+    if (clk < 1000000u || clk > 128000000u)
+    {
+        clk = 16000000u;
     }
 
-    clk = SystemCoreClock;
+    tb_aon_probe_dir();
+
+    /* ① DWT 标定：4 个 ~50ms 窗口，累加完再除（一次除完，免得每次截断）。
+          此刻主频就是 SystemCoreClock（开机还没跑 BLE/刷屏），
+          所以量出来的就是「AON tick / 真实秒」。 */
+    if ((g_dbg.flags & ZK_FLAG_DWT_OK) && s_aon_alive)
+    {
+        uint32_t i;
+        uint32_t win   = clk / 20u;         /* ~50ms */
+        uint32_t ticks = 0u;
+        uint32_t cyc   = 0u;
+
+        for (i = 0; i < 4u; i++)
+        {
+            uint32_t c0 = DWT->CYCCNT;
+            uint32_t a0 = tb_aon_norm(tb_aon_raw());
+
+            while ((uint32_t)(DWT->CYCCNT - c0) < win)
+            {
+            }
+            ticks += (uint32_t)(tb_aon_norm(tb_aon_raw()) - a0);
+            cyc   += win;
+        }
+
+        if (0u != cyc)
+        {
+            hz_cal = (uint32_t)(((uint64_t)ticks * (uint64_t)clk) / (uint64_t)cyc);
+        }
+        if (hz_cal < ZK_TB_HZ_MIN || hz_cal > ZK_TB_HZ_MAX)
+        {
+            hz_cal = 0u;                    /* 标定崩了 → 当没标出来 */
+        }
+        s_aon_alive = (0u != ticks) ? 1u : 0u;
+    }
+
+    /* ② SDK 报的低频时钟频率（ROM 的 sys_lpclk_get()）—— 交叉核对用 */
+    hz_sdk = sys_lpclk_get();
+    if (hz_sdk < ZK_TB_HZ_MIN || hz_sdk > ZK_TB_HZ_MAX)
+    {
+        hz_sdk = 0u;
+    }
+
+    /* ③ 选一条 */
+    if (!s_aon_alive)
+    {
+        s_aon_hz  = 0u;                     /* AON 压根不动 → 回退 DWT */
+        s_aon_src = 0u;
+    }
+    else if (0u != hz_cal && 0u != hz_sdk)
+    {
+        uint32_t lo = hz_sdk - hz_sdk / 5u;     /* ±20%：能把"标定时主频不对" */
+        uint32_t hi = hz_sdk + hz_sdk / 5u;     /* （量出来会差好几倍）挡在外面 */
+
+        if (hz_cal >= lo && hz_cal <= hi)
+        {
+            s_aon_hz  = hz_cal;
+            s_aon_src = 1u;
+        }
+        else
+        {
+            s_aon_hz  = hz_sdk;
+            s_aon_src = 2u;
+        }
+    }
+    else if (0u != hz_cal)
+    {
+        s_aon_hz  = hz_cal;
+        s_aon_src = 1u;
+    }
+    else if (0u != hz_sdk)
+    {
+        s_aon_hz  = hz_sdk;
+        s_aon_src = 2u;
+    }
+    else
+    {
+        s_aon_hz  = ZK_TB_HZ_NOM;
+        s_aon_src = 3u;
+    }
+
+    if (0u != s_aon_hz)
+    {
+        g_dbg.flags |= ZK_FLAG_AON_TB;
+    }
+
+    /* 标定现场留证据 */
+    g_dbg.tb_src       = s_aon_src | (s_aon_down ? 0x100u : 0u);
+    g_dbg.tb_hz        = s_aon_hz;
+    g_dbg.tb_hz_cal    = hz_cal;
+    g_dbg.tb_hz_sdk    = hz_sdk;
+    g_dbg.tb_aon_ticks = tb_aon_raw();
+    g_dbg.tb_ticks     = 0u;
+    g_dbg.tb_bad       = 0u;
+    g_dbg.tb_jumps     = 0u;
+    g_dbg.test_step    = s_aon_hz;      /* build 58 那个字段：现在放"实际用的频率" */
+}
+
+static uint32_t tb_core_per_ms(void)
+{
+    uint32_t clk = SystemCoreClock;
+
     if (clk < 1000000u || clk > 128000000u)
     {
         clk = 64000000u;
     }
-    per_ms = clk / 1000u;
+    return clk / 1000u;
+}
 
-    return (uint32_t)zk_tick_step(&s_tick, DWT->CYCCNT, per_ms);
+/* 时基本体：AON 优先，DWT 兜底 */
+static uint64_t tick_ms64_raw(void)
+{
+    if (0u != s_aon_hz)
+    {
+        return zk_tick_aon_step(&s_tick_aon, tb_aon_norm(tb_aon_raw()), s_aon_hz);
+    }
+
+    if (!(g_dbg.flags & ZK_FLAG_DWT_OK))
+    {
+        return 0u;
+    }
+    return zk_tick_step(&s_tick, DWT->CYCCNT, tb_core_per_ms());
+}
+
+static uint32_t tick_ms(void)
+{
+    return (uint32_t)tick_ms64_raw();
 }
 
 /* 给别的模块用（B2-A.2 的推图状态机要量「写图+刷新花了多久」——
-   那个过程整个跑在 zk_epd_svc_poll() 里面，外面传进去的 now_ms 是不动的） */
+   那个过程整个跑在 zk_epd_svc_poll() 里面，外面传进去的 now_ms 是不动的）。
+   build 59：顺手把时基的现场证据刷进状态块（每轮主循环都调一次这里）。 */
 uint32_t zk_tick_ms(void)
 {
-    return tick_ms();
+    uint32_t now = (uint32_t)tick_ms64_raw();
+
+    g_dbg.tb_aon_ticks = tb_aon_raw();
+    g_dbg.tb_ticks     = s_tick_aon.tk_lo;
+    g_dbg.tb_bad       = s_tick_aon.bad;
+    g_dbg.tb_jumps     = s_tick_aon.jumps;
+    g_dbg.test_step    = s_aon_hz;
+    g_dbg.ble_tick_ms  = now;       /* build 57：实时值，跟秒表对拍用 */
+    return now;
 }
 
 /* 单调的 64 位毫秒：日历/时钟那句"网页时间戳 + 已经过了多久"必须用这个，
    否则低 32 位每 49.7 天绕一次，又会把"现在几点"算错。 */
 uint64_t zk_tick_ms64(void)
 {
-    uint32_t clk, per_ms;
-
-    if (!(g_dbg.flags & ZK_FLAG_DWT_OK))
-    {
-        return 0;
-    }
-
-    clk = SystemCoreClock;
-    if (clk < 1000000u || clk > 128000000u)
-    {
-        clk = 64000000u;
-    }
-    per_ms = clk / 1000u;
-
-    return zk_tick_step(&s_tick, DWT->CYCCNT, per_ms);
+    return tick_ms64_raw();
 }
 
 /* ------------------------------------------------------------------
@@ -359,6 +560,11 @@ int main(void)
        BLE 实验这条路上原来没人调 delay_init，于是 flags 的 bit2 一直没置位、
        tick_ms() 恒为 0，空闲循环里的超时只能用"数圈数"。现在有真毫秒了。 */
     epd_timer_init();
+
+    /* build 59：标定 AON 定时器、把毫秒时基从 CYCCNT 换过去（标不出来就继续用
+       CYCCNT）。必须在 epd_timer_init() 之后 —— 标定要借 DWT 当尺子。
+       也要在任何用 tick 的代码之前（zk_bat_init / zk_ble_start 都在下面）。 */
+    zk_timebase_init();
 
     /* build 31：把 ADC 的两个内部通道（VBAT / TMP）准备好。
        表头右上角的电池和温度就是它读的 —— 不用外接任何东西。 */

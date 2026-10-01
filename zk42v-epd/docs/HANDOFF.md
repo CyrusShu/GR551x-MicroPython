@@ -1,4 +1,31 @@
-# ZK42V 价签自研固件 —— 交接说明（2026-09-30）
+# ZK42V 价签自研固件 —— 交接说明（2026-10-01）
+
+## ⚡ 2026-10-01：**build 59 —— 毫秒时基换成 AON 定时器**（先看这段）
+
+**这一版修的是"日历每 ~8 小时跨一天"的老大难**：时基原来拿 `DWT->CYCCNT`（CPU 周期）
+折算毫秒，但 GR5513 的主频会变（空闲 16 MHz、刷屏/连 BLE 时高得多），于是毫秒
+**快 3~4.8 倍**。现在改用 **AON 定时器** `AON->TIMER_VAL`（0xA000C594，低功耗时钟域，
+与主频无关），开机动用 DWT 标定它的频率（实测 **~28 kHz，而且是递减计数**），
+标不出来依次退到 SDK 的 `sys_lpclk_get()`、名义值 28000 —— **AON 完全不涨才退回老做法**。
+
+| build | 内容 | 镜像 |
+|---|---|---|
+| 59 | AON 时基 + 开机标定 + 回退 + 状态块 104~111 号字 | `bin_size 130224 / check_sum 0x00CAE38F`，SHA-256 `fd4e55cb…` |
+
+* 改了：`Src/main.c`（`zk_timebase_init()` / `tick_ms64_raw()`）· `Src/board/zk_tick.h`
+  （新增 `zk_tick_aon_step()`）· `Src/board/zk_dbg.h`（`ZK_DBG_WORDS` 104→112）·
+  `outputs/pyocd/led-window-user.py`（译码 + **时基实测**）· `tools/test_tick.py`（+5 条用例）。
+* 完整来龙去脉（症状 → 证据 → 根因 → 修法 → 副作用）在
+  `outputs/firmware/docs/feature-backlog.md` 的「✅ 已修：毫秒时基换成 AON 定时器」一节。
+* **验收就一条**：`cd outputs/pyocd && MODE=app bash flash-app.sh` 之后
+  `STATUS_SETTLE_MS=0 bash status.sh`，看新加的那段「时基实测」——
+  `价签走了 X 秒 / 真实 Y 秒 ⇒ 比值 ≈ 1.00`（修之前是 3~4.8）。
+  旁边「毫秒时基（build 59 起用 AON 定时器）」那一组会印出频率和来源。
+* 副作用（可接受、其实是"回到本来该有的值"）：所有拿 `tick_ms()` 计时的逻辑现在走真实
+  时间 —— 电池每 60 秒读一次（以前 ~15 秒）、日历重画间隔按真时间走。
+  `epd_wait_busy` 的 30 秒超时不受影响（它数的是 200µs 步数，不是 tick）。
+* 安全网不变：刷坏了 `MODE=app bash flash-app.sh` 刷回 build 58（镜像在 git 里），
+  或者 `MODE=restore bash flash-write.sh` 整片回出厂。
 
 ## ⚡ 2026-09-30 下午：新增两块（先看这段）
 
@@ -41,8 +68,9 @@
 
 ZKONG ZK42V（GR5513BEND）4.2 寸三色价签，**保留原厂 bootloader、只换 APP**；
 屏已点亮、SWD 推图/网页 BLE 推图都通，固件自己画**整页农历月历 + 天气 + 电量**。
-当前固件 **build 46**（分支 `zk42v-boot-calendar`，开机默认日历模式），
-**机器上刷的是 build 45**（另一条主线 `zk42v-epd`）。
+当前固件 **build 59**（分支 `zk42v-boot-calendar`；开工默认日历模式，
+**毫秒时基已换成 AON 定时器**）。**机器上刷到哪一版要看 `status.sh` 里的 `build=`**
+（2026-10-01 中午最后一次已知是 build 58；build 59 还没刷上去）。
 
 ## 1. 硬件
 
@@ -110,6 +138,7 @@ for t in test_fwpack test_img2epd test_dbg_layout test_adv_data test_lunar test_
   python3 tools/$t.py >/tmp/o.txt 2>&1 && tail -1 /tmp/o.txt || echo 失败; done
 
 # 看屏幕/固件状态（先 halt 再读、隔一会儿采 5 个点，最后恢复运行）
+#   build 59 起还会多打两段：AON 定时器频率 + 「时基实测」（比值应 ≈1.00）
 cd /Users/mac/Documents/Codex/2026-09-15/a/outputs/pyocd && bash status.sh
 
 # 刷机：日常只写 APP 段
