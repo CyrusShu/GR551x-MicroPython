@@ -23,7 +23,7 @@ bash qweather-jwt-keygen.sh
 
 | 输出 | 去哪 |
 |---|---|
-| **公钥**（hex / base64） | 粘到和风控制台 → 项目管理 → 创建凭据（类型选 **JSON Web Token**） |
+| **公钥文件 `ed25519-public.pem`** | **上传**到和风控制台 → 项目管理 → 创建凭据（类型选 **JSON Web Token**）。⚠ 控制台要的是这种 **PEM 文件**（`-----BEGIN PUBLIC KEY-----`）；给裸的 hex/base64 会报"无效的公钥"（第一版就是这么被拒的，文档里写得很明确） |
 | **私钥 seed**（64 个十六进制字符） | ESP32 的 `#define QWEATHER_JWT_HEX` |
 | 自检结果 | 用那串 seed 反推公钥，**必须跟上面一致**才算对（脚本自己会验） |
 

@@ -161,7 +161,7 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
      避免"要签名得先有时间、要时间得先能请求"的鸡生蛋问题。 */
 #define QWEATHER_JWT_KID   ""                        /* 凭据 ID（kid） */
 #define QWEATHER_JWT_SUB   ""                        /* 项目 ID（sub） */
-#define QWEATHER_JWT_HEX   ""                        /* Ed25519 私钥 seed 的 64 个十六进制字符 */
+#define QWEATHER_JWT_HEX   "49e2ec40c21bf57d0e630c1e37a3286694504b28311720e831f689feb58ddef9"                        /* Ed25519 私钥 seed 的 64 个十六进制字符 */
 
 #define MODE_CALENDAR   1
 

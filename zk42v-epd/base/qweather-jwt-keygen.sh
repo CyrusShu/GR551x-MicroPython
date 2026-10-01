@@ -2,24 +2,28 @@
 # =============================================================================
 #  和风天气 JWT 的密钥生成器（在 Mac 上跑，全程不需要联网）
 #
-#      bash qweather-jwt-keygen.sh            # 默认生成到 ./qweather-ed25519.pem
+#      bash qweather-jwt-keygen.sh            # 默认生成 ed25519-private.pem / ed25519-public.pem
 #      bash qweather-jwt-keygen.sh my.pem      # 指定文件名
 #
 #  它做四件事：
 #    ① 生成 Ed25519 私钥（PEM）
-#    ② 打印**公钥**（十六进制 + base64）—— 粘到和风控制台「凭据」里
+#    ② 写出**公钥 PEM 文件**（ed25519-public.pem）—— **这个文件上传到和风控制台**
 #    ③ 打印**私钥 seed 十六进制**（64 个字符）—— 填进 ESP32 的 QWEATHER_JWT_HEX
 #    ④ 自检：从刚才那串 seed 重新推出公钥，确认跟 ② 一致（能推出来就说明
 #       这串 hex 就是"能把 JWT 签对"的那一串）
 #
 #  控制台那边：dev.qweather.com → 项目管理 → 新建项目 → 创建凭据
-#              （类型选 **JSON Web Token**）→ 上传公钥 → 记下两个 ID：
+#              （类型选 **JSON Web Token**）→ 上传上面那个公钥文件 → 记下两个 ID：
 #        · 凭据 ID → ESP32 的 QWEATHER_JWT_KID
 #        # 项目 ID → ESP32 的 QWEATHER_JWT_SUB
 # =============================================================================
 set -euo pipefail
 
-PEM="${1:-qweather-ed25519.pem}"
+# 文件名跟和风文档里那套保持一致，省得看着两套名字发懵：
+#   ed25519-private.pem  私钥（自己留着，签名用）
+#   ed25519-public.pem   公钥（**上传到和风控制台**的就是这个文件）
+PEM="${1:-ed25519-private.pem}"
+PUB_PEM="${PEM%.pem}-public.pem"
 
 # ⚠ 必须找一个**支持 Ed25519** 的 openssl：
 #   macOS 自带的 /usr/bin/openssl 是 **LibreSSL**，不支持 ed25519
@@ -72,8 +76,18 @@ PUB_HEX="$("$OPENSSL_BIN" pkey -in "$PEM" -pubout -outform DER | hex_of_last32)"
 SEED_HEX="$("$OPENSSL_BIN" pkey -in "$PEM" -outform DER | hex_of_last32)"
 PUB_B64="$("$OPENSSL_BIN" pkey -in "$PEM" -pubout -outform DER | tail -c 32 | base64)"
 
+# ⚠ 和风控制台要的是**标准公钥 PEM**（-----BEGIN PUBLIC KEY-----）——就是文档里
+#   `openssl pkey -pubout -in ed25519-private.pem > ed25519-public.pem` 那个文件。
+#   第一版我给的是 32 字节裸公钥的 hex/base64，控制台直接报"无效的公钥"。
+"$OPENSSL_BIN" pkey -in "$PEM" -pubout -out "$PUB_PEM"
+
 echo
-echo "② 公钥（粘到和风控制台的「凭据」里）："
+echo "② 公钥文件：$PUB_PEM   ← **把这个文件上传到控制台**（凭据类型选 JSON Web Token）"
+echo "   文件内容如下，控制台要是只让粘贴文本，就粘这个："
+echo
+sed 's/^/       /' "$PUB_PEM"
+echo
+echo "   （同一把公钥的其它写法，备用）"
 echo "     十六进制: $PUB_HEX"
 echo "     base64  : $PUB_B64"
 echo
