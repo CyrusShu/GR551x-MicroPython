@@ -145,12 +145,27 @@ def find_openssl() -> str:
     raise RuntimeError("找不到支持 ed25519 的 openssl（brew install openssl@3）")
 
 
+_PUB_SHOWN = False
+
+
 def make_jwt(pem_path: str, kid: str, sub: str) -> str:
+    global _PUB_SHOWN
     b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()   # noqa: E731
     now = int(time.time())
     hdr = json.dumps({"alg": "EdDSA", "kid": kid}, separators=(",", ":"))
     pay = json.dumps({"sub": sub, "iat": now - 30, "exp": now + 900},
                      separators=(",", ":"))
+    # 打印出"我到底签了什么"——排 401 的时候一眼就能看出 kid/sub 是不是填反了
+    print("    JWT header  = %s" % hdr)
+    print("    JWT payload = %s" % pay)
+    try:      # 顺手报一下"这把私钥对应的公钥"——401 时拿它跟控制台里那把对一眼
+        if not _PUB_SHOWN:
+            der = subprocess.run([find_openssl(), "pkey", "-in", pem_path, "-pubout",
+                                  "-outform", "DER"], capture_output=True, check=True).stdout
+            print("    本机私钥对应的公钥 = %s" % der[-32:].hex())
+            _PUB_SHOWN = True
+    except Exception:
+        pass
     signing_input = b64(hdr.encode()) + "." + b64(pay.encode())
     with tempfile.TemporaryDirectory() as td:
         m = os.path.join(td, "m"); s = os.path.join(td, "s")
@@ -164,10 +179,24 @@ def make_jwt(pem_path: str, kid: str, sub: str) -> str:
 
 def qweather_jwt(pem_path: str, kid: str, sub: str, lat: float, lon: float,
                  host: str = "devapi.qweather.com"):
-    tok = make_jwt(pem_path, kid, sub)
     url = ("https://%s/v7/weather/now?location=%.4f,%.4f&lang=zh&unit=m"
            % (host, lon, lat))
-    return qweather_url(url, bearer=tok)
+    try:
+        return qweather_url(url, bearer=make_jwt(pem_path, kid, sub))
+    except RuntimeError as e:
+        # 401/403 十有八九是**两个 ID 填反了** —— 控制台里"凭据 ID"和"项目 ID"
+        # 长得一模一样（都是 10 来位大写字母数字）。这里自动换个顺序再试一次，
+        # 能通就直接告诉你反了，省得来回猜。
+        if "401" not in str(e) and "403" not in str(e):
+            raise
+        print("    （第一次 401/403 —— 换一下 kid/sub 顺序再试一遍…）")
+        try:
+            now, upd = qweather_url(url, bearer=make_jwt(pem_path, sub, kid))
+            print("    ⚠⚠ **两个 ID 填反了**！正确的用法是：")
+            print("         --qweather-kid %s --qweather-sub %s" % (sub, kid))
+            return now, upd
+        except RuntimeError:
+            raise e
 
 
 def om(lat: float, lon: float, model: str):
@@ -218,7 +247,12 @@ def main() -> int:
             print("")
         except Exception as e:
             print("★ 和风 JWT 取不到：%s" % e)
-            print("    · 401/403 → kid/sub 填错，或控制台没上传这把公钥（要 PEM 文件）")
+            print("    · 401 且 host 已经对了，只剩两种可能：")
+            print("      ① 两个 ID 反了（控制台里「凭据 ID」和「项目 ID」长得一样）——")
+            print("         本工具刚才应该自动试过反的顺序了，没成功就再手动对调一次")
+            print("      ② 控制台里那把**公钥不是这个私钥的**（比如换过密钥、或上次上传失败）——")
+            print("         重跑 `bash qweather-jwt-keygen.sh` 它会打印现有私钥对应的公钥 PEM，"
+                  "拿它**重新上传**一次")
             print("    · 还想用 API key 试：--qweather-key")
             print("")
     elif args.qweather_key:

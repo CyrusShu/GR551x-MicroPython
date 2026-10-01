@@ -165,7 +165,7 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
    老公共地址 **2026 年起逐步停止服务**；新帐号拿它们请求会直接被判
    `Invalid Host`（就是用户 2026-10-01 遇到的 403）。
    下面这行只是占位，**一定要换成控制台里那串**。 */
-#define QWEATHER_HOST      "devapi.qweather.com"      /* ← 换成你的 API Host */
+#define QWEATHER_HOST      "kj4bjd22dq.re.qweatherapi.com"      /* ← 换成你的 API Host */
 
 /* ⑩ **JWT 方式**（2026-10-01 用户提的：和风支持 JSON Web Token，EdDSA 签名）——
    比 API key 安全：**私钥只存在设备上**、token 15 分钟就过期；就算 token 被截走，
