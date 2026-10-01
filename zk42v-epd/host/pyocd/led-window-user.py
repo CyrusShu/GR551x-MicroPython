@@ -5481,9 +5481,16 @@ def zkstatus():
                 % (words[12], words[13]))
             say("      这块 RAM 是 NOLOAD、软复位不清，所以它在涨就是芯片在反复复位）")
             if len(words) > 15 and build >= 4:
-                say("    test_step = %d   （B1.3 那个「按 RST 换下一步」的遗留字段，"
-                    "B1.5 起就没人写了 —— 这块 RAM 不清零，所以那个数是垃圾，别当真）"
-                    % words[15])
+                if build >= 59:
+                    say("    test_step = %d   （build 59 起 = 毫秒时基实际用的频率："
+                        "每秒多少 tick。0 = 没在用 AON 时基，回退成 CYCCNT 了）"
+                        % words[15])
+                else:
+                    say("    test_step = %d   （B1.3 那个「按 RST 换下一步」的遗留字段，"
+                        "B1.5 起就没人写了；build 55 起改放 SystemCoreClock、"
+                        "build 58 放跳变计数、**build 59 起放时基频率** —— "
+                        "这块 RAM 不清零，旧版本读到的可能是垃圾）"
+                        % words[15])
             if build >= 10 and len(words) > 18:
                 sttxt = {0: '没起来', 1: '在广播，等连接', 2: '已连接',
                          3: '扫描实验：在听（build 19+）',
