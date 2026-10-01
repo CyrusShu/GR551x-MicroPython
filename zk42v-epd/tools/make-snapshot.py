@@ -187,6 +187,7 @@ FILES = [
     #  编出来的 .bin 不进库（跟价签镜像一个规矩），要刷就照 base/esp32/README.md 现编。
     ("outputs/ble-base/README.md",                      "base/README.md"),
     ("outputs/ble-base/zk_ble_base.py",                 "base/zk_ble_base.py"),
+    ("outputs/ble-base/wx-compare.py",                  "base/wx-compare.py"),
     ("outputs/ble-base/run.sh",                         "base/run.sh"),
     ("outputs/ble-base/setup.sh",                       "base/setup.sh"),
     ("outputs/ble-base/probe-on-air.command",           "base/probe-on-air.command"),

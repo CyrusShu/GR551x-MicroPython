@@ -1,5 +1,40 @@
 # Mac 当基站：价签一上电就自己拿到时间 + 天气
 
+## ⚡ 2026-10-01：温度跟手机差 3℃ —— 先看这张表（`wx-compare.py`）
+
+用户问："手机 33℃，价签 29.9℃，你给的温度从哪来的？"
+
+**来源**：基站请求的是 Open-Meteo 的 `current.temperature_2m`（默认 `best_match` 模型），
+坐标就是 `LAT/LON`（默认深圳公明广场 22.7809/113.8861）。价签只是**显示基站发来的数**，
+它自己不联网。
+
+**同一时刻（16:45）、同一坐标，各家模型实测**（`python3 wx-compare.py` 的输出）：
+
+| 源 / 模型 | 温度 | 天气 | 备注 |
+|---|---|---|---|
+| Open-Meteo `best_match` | **29.9℃** | 小雨 | **基站默认用的就是这个**（网格点 22.81/113.91，海拔 12m） |
+| Open-Meteo `ecmwf_ifs025`（欧洲中心） | 30.8℃ | 雷阵雨 | |
+| Open-Meteo `cma_grapes_global`（**中国气象局**） | 31.7℃ | 晴 | 国内源 |
+| Open-Meteo `icon_seamless`（德国 DWD） | **32.4℃** | 阴 | 实测最接近手机的 33℃ |
+| Open-Meteo `gfs_seamless`（美国 NOAA） | **35.0℃** | 晴 | 最热的那家 |
+| wttr.in（另一个聚合站） | 31℃ | 晴 | |
+| **手机 Apple 天气·光明区** | **33℃**（体感 35℃） | 有雨 | 国内走 和风天气/QWeather + 中国气象局实况 |
+
+**结论**：同一地点同一时刻，各家能差 **5℃** —— 差 2~3℃ 是**气象源之间的分歧**，
+不是我们算错。想更贴近手机，改基站里的一个宏就行：
+
+```c
+#define WX_MODEL "icon_seamless"        // 或 "cma_grapes_global"；"" = 默认 best_match
+```
+
+随时手动对比几家（不用动固件、不用刷机）：
+
+```bash
+cd /Users/mac/Documents/Codex/2026-09-15/a/outputs/ble-base
+python3 wx-compare.py                       # 默认用基站那组坐标
+python3 wx-compare.py --lat 22.78 --lon 113.88 --city-code 101280601
+```
+
 > 2026-10-01 · 对应固件 **build 60**（`zk42v-boot-calendar`；ESP32 基站 = **build-7**）
 
 ## ⚡ 2026-10-01 再更新（build 62）：城市名

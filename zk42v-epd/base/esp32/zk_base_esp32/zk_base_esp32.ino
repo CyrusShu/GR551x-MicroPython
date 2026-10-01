@@ -107,6 +107,18 @@
 #ifndef WX_HOST
 #define WX_HOST             "api.open-meteo.com"
 #endif
+/* ⑧ 天气用哪个模型（2026-10-01 加）。
+   为什么要有：用户发现"价签 29.9℃、手机 33℃"，一查 —— **同一时刻同一坐标，
+   Open-Meteo 各家模型差了整整 5℃**：
+       best_match 29.9 / ecmwf 30.8 / cma(中国气象局) 31.7 / icon 32.4 / gfs 35.0
+   手机（Apple 天气）国内用的是 和风天气/QWeather + 中国气象局实况那一路，
+   跟我们的源本来就不是一个，差 2~3℃ 属于正常分歧。
+      ""（默认）= best_match，行为跟以前完全一样
+      "cma_grapes_global" = 中国气象局 GRAPES（国内源，最接近国产 App 的取向）
+      "icon_seamless"     = 德国 DWD（实测那天最接近手机的 33℃）
+      "gfs_seamless" / "ecmwf_ifs025" = 美国 NOAA / 欧洲中心
+   想随时对比几家：跑 outputs/ble-base/wx-compare.py（不用改固件）。 */
+#define WX_MODEL            ""
 
 #define MODE_CALENDAR   1
 
@@ -413,6 +425,10 @@ static bool fetchWeatherAndTime()
                + String("/v1/forecast?latitude=")
                + String(LAT, 4) + "&longitude=" + String(LON, 4)
                + "&current=temperature_2m,weather_code,wind_speed_10m&timezone=auto";
+    if (strlen(WX_MODEL) > 0)
+    {
+        url += "&models=" + String(WX_MODEL);      /* ⑧ 换模型（默认空 = best_match） */
+    }
 
     String body, dateHdr;
     bool got = false;
@@ -491,6 +507,8 @@ static bool fetchWeatherAndTime()
     wxCode = c;
     wxTemp = t10;               /* 现在存的是"十分之一度" */
     lastFetchOkMs = millis();
+    logf("（用的是 Open-Meteo 的 %s 模型；换源看 WX_MODEL 那段注释）",
+         (strlen(WX_MODEL) > 0) ? WX_MODEL : "best_match");
     logf("天气取好了（%.4f,%.4f）：%s %d℃  （WMO=%d 原始温度=%.1f）",
          (double)LAT, (double)LON, wxName(c), t, wmo, (double)temp);
     /* 这两行是"到底在动还是被缓存了"的判据（2026-09-30 用户提出）：
