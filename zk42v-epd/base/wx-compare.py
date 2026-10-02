@@ -247,10 +247,16 @@ def main() -> int:
 
     if args.qweather_jwt_key and args.qweather_kid and args.qweather_sub and \
             not args.qweather_dev_id:
-        print("⚠ 少了 --qweather-dev-id（开发者 ID，iss）：去 控制台-设置 复制那个 Q 开头的 10 位。")
-        print("  和风的 JWT payload 必须是 {iss, sub, iat, exp} 四个字段，缺 iss 一定 401。")
+        # ⚠ 这里**直接不发请求**：iss 为空必被拒（2026-10-02 用户就是这么白跑一趟，
+        #   还被后面那两条 401 提示带偏到"ID 反了 / 公钥不对"上去）。
+        print("✖ 缺 --qweather-dev-id（开发者 ID / JWT 的 iss）—— 这次**不发请求**了。")
+        print("   去哪找：控制台 → **设置** → 开发者 ID，形如 Q12345ABCD（Q 开头 + 10 位）")
+        print("   加上它再跑：  --qweather-dev-id Q12345ABCD")
+        print("   （或 export QWEATHER_DEV_ID=Q12345ABCD）")
         print("")
-    if args.qweather_jwt_key and args.qweather_kid and args.qweather_sub:
+        print("   JWT 的 payload 必须是四个字段 {iss, sub, iat, exp} —— 少 iss 一定 401。")
+        print("")
+    elif args.qweather_jwt_key and args.qweather_kid and args.qweather_sub:
         try:
             now, upd = qweather_jwt(args.qweather_jwt_key, args.qweather_kid,
                                     args.qweather_sub, args.lat, args.lon,
@@ -259,7 +265,10 @@ def main() -> int:
                   % (now.get("temp"), now.get("feelsLike"), now.get("text"),
                      qweather_code(now.get("text"))))
             print("    观测时刻 %s   更新 %s" % (now.get("obsTime"), upd))
-            print("    ✅ JWT 这套（私钥/kid/sub）是通的 —— ESP32 那边照这个填就行")
+            print("    ✅ JWT 这套（私钥 + iss/kid/sub）是通的 —— 把下面三行抄进 ESP32：")
+            print("         #define QWEATHER_JWT_ISS   \"%s\"" % args.qweather_dev_id)
+            print("         #define QWEATHER_JWT_KID   \"%s\"" % args.qweather_kid)
+            print("         #define QWEATHER_JWT_SUB   \"%s\"" % args.qweather_sub)
             print("")
         except Exception as e:
             print("★ 和风 JWT 取不到：%s" % e)
