@@ -136,7 +136,17 @@
        和风(HTTPS+JWT) ←── NAS 上的 wx-relay ──→ ESP32（纯 HTTP，几毫秒）
    好处：ESP32 不用 TLS、不用 gzip、**连和风凭据和私钥都不存**。
    取不到会自动退回 Open-Meteo（纯 HTTP，海外也通）。留空 = 不用中继。 */
+
+/*  ⚠⚠ 这一行**必须是 http:// + 局域网地址** —— 两个坑都踩过（2026-10-02 实机）：
+      ① **不能用 https://**：这台板子的 TLS 根本发不出去（和风 443 当初就是这么失败的），
+         http.begin("https://…") 会直接回 HTTP -1。中继存在的意义就是**绕开 TLS**。
+      ② **那个域名只有 AAAA 记录**（公网通配符指向 NAS 的 IPv6），而这块板子只跑 IPv4，
+         写域名连解析都过不去。要让域名在局域网里能用，得在路由器上给它加一条局域网
+         A 记录（2026-10-02 已加：weather.swimbirds.com -> 192.168.100.221）。
+    所以默认用 **NAS 的局域网 IP**（最稳、不依赖 DNS）；想用域名就把下面那行注释换上来
+    （端口仍旧直连中继自己的 8788，不走 Lucky 的 443）。 */
 #define WX_RELAY_URL       "http://192.168.100.221:8788/wx"   /* 飞牛 NAS 上的 wx-relay（2026-10-02 部署） */
+/* #define WX_RELAY_URL    "http://weather.swimbirds.com:8788/wx"   局域网域名（要上面那条 A 记录） */
 
 #define MODE_CALENDAR   1
 
@@ -1171,6 +1181,35 @@ void setup()
     if (!wifiConfigured())
     {
         Serial.println(" !! 没填 WIFI_SSID：只能验证蓝牙，不会发时间/天气");
+    }
+    /* 中继地址的自检（2026-10-02 加）：那天把 WX_RELAY_URL 写成了
+       "https://weather.swimbirds.com/wx"，结果中继一直是 HTTP -1、静默退回 Open-Meteo
+       （天气还能刷，**只是没有预警**，不看串口根本发现不了）。
+       与其再猜一次，不如开机就把原因喊出来。 */
+    if (strncmp(WX_RELAY_URL, "https://", 8) == 0)
+    {
+        Serial.println(" !! WX_RELAY_URL 是 https:// —— 这台板子**做不了 TLS**，中继一定失败！");
+        Serial.println("    改成 http://<NAS 的局域网IP>:8788/wx（中继本身没有加密，靠局域网隔离）");
+    }
+    else if (strstr(WX_RELAY_URL, "://") != 0 && strncmp(WX_RELAY_URL, "http://", 7) == 0)
+    {
+        const char *host = WX_RELAY_URL + 7;
+        bool        allDigitsDots = true;
+
+        for (const char *q = host; *q != 0 && *q != ':' && *q != '/'; q++)
+        {
+            if ((*q < '0' || *q > '9') && *q != '.')
+            {
+                allDigitsDots = false;
+                break;
+            }
+        }
+        if (!allDigitsDots)
+        {
+            Serial.println(" 提示: 中继用的是域名 —— 这块板子只跑 IPv4，域名必须在局域网里能解析出");
+            Serial.println("       A 记录（路由器上加：weather.swimbirds.com -> NAS 的 IPv4）。");
+            Serial.println("       解析不了就会静默退回 Open-Meteo（有天气、但没有预警）。");
+        }
     }
     Serial.println("=================================================");
 
