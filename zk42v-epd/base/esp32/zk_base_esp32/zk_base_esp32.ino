@@ -166,6 +166,15 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
    `Invalid Host`（就是用户 2026-10-01 遇到的 403）。
    下面这行只是占位，**一定要换成控制台里那串**。 */
 #define QWEATHER_HOST      "kj4bjd22dq.re.qweatherapi.com"      /* ← 换成你的 API Host */
+/* ⑪ **局域网中继**（2026-10-02 实机结论后加的，推荐）：
+   实测这台 ESP32 **连不上和风**（HTTPS 到海外节点，HTTP -1、1 秒被拒），而你的
+   路由器/Mac 直连它完全没问题（curl 0.09 秒、401）—— 和风给每个账号分配的 API Host
+   （xxx.re.qweatherapi.com）实际落在**新加坡 Linode**，不是国内节点。
+   于是让**能连的机器**（NAS/Mac 跑 outputs/ble-base/wx-relay.py）去请求和风，
+   ESP32 只跟局域网说话（**纯 HTTP**，无 TLS、无 gzip，连私钥都不用放）：
+       和风(HTTPS+JWT) ←── wx-relay.py ──→ ESP32(http://nas:8788/wx)
+   填了就不直连和风；取不到自动退回 Open-Meteo。留空 = 不用中继。 */
+#define WX_RELAY_URL       ""     /* 例 "http://192.168.100.50:8788/wx" */
 
 /* ⑩ **JWT 方式**（2026-10-01 用户提的：和风支持 JSON Web Token，EdDSA 签名）——
    比 API key 安全：**私钥只存在设备上**、token 15 分钟就过期；就算 token 被截走，
@@ -873,9 +882,86 @@ static bool fetchWeatherAndTime(void)
     return job.ok;
 }
 
+/* 问局域网中继（纯 HTTP，几毫秒的事）。成功返回 true 并写好 wxCode/wxTemp。 */
+static bool fetchFromRelay(String *dateOut)
+{
+    HTTPClient http;
+    String     body;
+    int        code;
+
+    if (!http.begin(WX_RELAY_URL))
+    {
+        logf("  中继：begin 失败（%s）", WX_RELAY_URL);
+        return false;
+    }
+    http.setTimeout(5000);
+    {
+        const char *hdrs[] = {"Date"};
+        http.collectHeaders(hdrs, 1);
+    }
+    code = http.GET();
+    if (code != 200)
+    {
+        logf("  中继：HTTP %d（%s）", code, WX_RELAY_URL);
+        http.end();
+        return false;
+    }
+    body = http.getString();
+    if (dateOut != 0)
+    {
+        *dateOut = http.header("Date");
+    }
+    http.end();
+
+    {
+        float wx = -1, tp = -999;
+        bool  okWx = findJsonNumber(body, "code", &wx);
+        bool  okTp = findJsonNumber(body, "temp", &tp);
+
+        if (!okWx || !okTp)
+        {
+            logf("  中继：返回里没有 code/temp（前 80 字节：%s）", body.substring(0, 80).c_str());
+            return false;
+        }
+        wxCode = (int)wx;
+        /* 中继发整数就按整数度处理（屏上 29℃），带小数就当十分之一度（屏上 27.7℃） */
+        if (fabsf(tp - lroundf(tp)) < 0.05f)
+        {
+            wxTemp          = (int)lroundf(tp) * 10;
+            wxTempHasTenths = false;
+        }
+        else
+        {
+            wxTemp          = (int)lroundf(tp * 10.0f);
+            wxTempHasTenths = true;
+        }
+        haveWeather = true;
+        logf("天气源 = **局域网中继** %.1f℃ %s（%s）",
+             wxTemp / 10.0, wxName(wxCode), WX_RELAY_URL);
+    }
+    return true;
+}
+
 static bool fetchWeatherAndTimeInner()
 {
     String dateHdr;
+
+    /* ⑪ 配了局域网中继就优先走它（纯 HTTP，最稳；拿不到时间才继续往下跑） */
+    if (strlen(WX_RELAY_URL) > 0)
+    {
+        String relayDate;
+
+        if (fetchFromRelay(&relayDate))
+        {
+            if (relayDate.length() > 0)
+            {
+                applyDateHeader(relayDate);
+            }
+            lastFetchOkMs = millis();
+            return true;
+        }
+        logf("中继没取到 → 继续走直连那条路（Open-Meteo 兜底）");
+    }
 
     /* ⚠ 顺序很重要（2026-10-01 实机踩到）：
        和风 JWT 的 iat/exp 要用"现在几点"，所以**必须先把时间拿到手**。
@@ -1348,7 +1434,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-19");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-20");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),

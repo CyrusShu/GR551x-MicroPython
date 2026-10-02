@@ -1,5 +1,34 @@
 # Mac 当基站：价签一上电就自己拿到时间 + 天气
 
+## ✅ 2026-10-02：结论 —— 好用 **局域网中继**（wx-relay.py）
+
+实测数据把这事定死了：
+
+| 谁 | 直连和风 `kj4bjd22dq.re.qweatherapi.com:443` | 说明 |
+|---|---|---|
+| 路由器 iStoreOS | ✅ `HTTP=401 connect=0.089s` | 网络路径、TLS 都没问题（401 只是没带凭据） |
+| Mac（192.168.100.145） | ✅ JWT 全套跑通 | 同上 |
+| **ESP32（192.168.100.120）** | ❌ `HTTP -1`，1 秒被拒 | 就是它连不上；换 MTU、加大栈、收紧超时都无效 |
+
+而和风那个 API Host 解析到 **139.162.26.165 = 新加坡 Linode**（四家 DNS 给的都是这个），
+**不是国内节点** —— 所以"和风是国内服务、不该走代理"在这个域名上不成立。
+
+**结论：让能连的机器去连**。`wx-relay.py` 跑在常开的 NAS（或 Mac）上，替 ESP32 跑
+HTTPS + JWT，ESP32 只跟局域网说话（纯 HTTP、无 TLS、无 gzip，**连私钥都不用放**）：
+
+```
+和风(HTTPS+JWT) ←── wx-relay.py ──→ ESP32（http://nas:8788/wx）
+```
+
+```bash
+# NAS/Mac 上：
+python3 wx-relay.py --host kj4bjd22dq.re.qweatherapi.com \
+    --jwt-key ed25519-private.pem \
+    --kid KMWDYQGERV --sub 29TNG35JCC --dev-id Q92D603497 \
+    --lat 22.7809 --lon 113.8861 --port 8788
+# ESP32： #define WX_RELAY_URL "http://<上面那台机器的局域网IP>:8788/wx"
+```
+
 ## 🚨 2026-10-02：刷上 JWT 后 ESP32 **崩溃** —— loopTask 栈溢出（我的 bug）
 
 实机：
