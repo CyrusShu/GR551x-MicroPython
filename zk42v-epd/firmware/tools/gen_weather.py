@@ -83,6 +83,19 @@ SETS = {
                'variablefont/MaterialSymbolsOutlined%5BFILL%2CGRAD%2Copsz%2Cwght%5D.ttf',
         'axes': [1, 0, 20, 400],       # FILL=1（填实）, GRAD=0, opsz=20, wght=400
     },
+    # 2026-10-02 加：和风天气自己的图标库（用户问"能不能从和风拿图标"）。
+    # **MIT 开源**，507 个图标，编号跟 API 返回的 `icon` 字段一一对应
+    # （100 晴 / 305 小雨 / 1003 暴雨预警…），而且同时提供 TTF —— 正好走同一条
+    # 渲染流水线。实测结论见 tools/wx_icon_compare.py：**天气那 9 个不换**
+    # （线条版在 20×20 上太细、实心版的"雪/风"反而糊），**预警可以挑几个上**。
+    'qw': {
+        'ttf': 'qweather-icons.ttf',
+        'name': 'QWeather Icons (和风天气)',
+        'license': 'MIT',
+        'url': 'https://raw.githubusercontent.com/qwd/Icons/main/font/fonts/'
+               'qweather-icons.ttf',
+        'codepoints': 'qweather-icons.codepoints.json',   # 编号 -> 码点（官方仓库 font/ 下）
+    },
 }
 
 # 每个天气码用哪套字体的哪个码点（码点来自各套字体官方的 codepoints 文件）

@@ -60,6 +60,10 @@ FILES = [
     # build 71：天气预警（表头那格"天气文字"改画预警名；上=没有预警 / 下=有）
     ("outputs/firmware/docs/preview/preview-alert-header.png",  "firmware/docs/preview/preview-alert-header.png"),
     ("outputs/firmware/docs/preview/preview-alert-calendar.png","firmware/docs/preview/preview-alert-calendar.png"),
+    # 2026-10-02：和风官方图标 vs 现在这套（20×20 同一条渲染路径）
+    ("outputs/firmware/docs/preview/preview-wx-icons-qweather.png", "firmware/docs/preview/preview-wx-icons-qweather.png"),
+    ("outputs/firmware/docs/preview/preview-wx-alert-icons.png",    "firmware/docs/preview/preview-wx-alert-icons.png"),
+    ("outputs/firmware/tools/wx_icon_compare.py",                   "firmware/tools/wx_icon_compare.py"),
     ("outputs/firmware/docs/preview/preview-calendar-2025-08.png",            "firmware/docs/preview/preview-calendar-2025-08.png"),
     ("outputs/firmware/tools/gen_wqy_bitmap.py",                            "firmware/tools/gen_wqy_bitmap.py"),
     ("outputs/firmware/tools/wqy_font.py",                                  "firmware/tools/wqy_font.py"),
