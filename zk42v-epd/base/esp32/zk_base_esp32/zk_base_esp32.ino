@@ -736,6 +736,47 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
         logf("        （401/403 三类原因：① 响应体里是 Invalid Host → QWEATHER_HOST "
              "要换成控制台-设置里的 API Host；② token/kid 相关 → kid/sub 填错或公钥没传上去；"
              "③ 凭据类型不是 JWT）");
+        if (code < 0)
+        {
+            /* 连都连不上时的**现场判别**（2026-10-02 加）：
+               同一台主机的 **80 端口（纯 HTTP）**通不通？
+                 · 80 通、443 不通 → IP 是通的，被挡的是 **TLS**（这类网络里很常见：
+                   HTTPS 握手一出就被 RST，而纯 HTTP 没事 —— 项目当初选 Open-Meteo 纯 HTTP
+                   就是这个原因）
+                 · 80 也连不上   → 这个 IP 整条路不通（路由/代理规则问题）
+                 · 80/443 都通   → 那问题在 ESP32 这边的 TLS（堆/射频），跟网络无关 */
+            WiFiClient plain;
+            unsigned long t0 = millis();
+            bool ok80, okTlsOther;
+
+            /* ① 同一主机：80 端口（纯 HTTP）—— 看 IP 通不通 */
+            plain.setTimeout(5);
+            ok80 = plain.connect(QWEATHER_HOST, 80);
+            logf("  诊断①  %s:80（纯 HTTP）  → %s（%lu ms）", QWEATHER_HOST,
+                 ok80 ? "能连" : "连不上", (unsigned long)(millis() - t0));
+            if (ok80) plain.stop();
+
+            /* ② **另一个主机**的 443（TLS）—— api.open-meteo.com 是我们知道
+                 能用纯 HTTP 取到数据的域名，用它来回答"这台 ESP32 到底会不会 TLS"。
+                 注意：不同主机不同 IP，所以②只回答"ESP32 的 TLS 行不行"，
+                 不回答"和风那个 IP 通不通"。 */
+            t0 = millis();
+            {
+                WiFiClientSecure tls;
+                IPAddress      ip2;
+
+                tls.setInsecure();
+                tls.setTimeout(5);
+                tls.setHandshakeTimeout(5);
+                okTlsOther = WiFi.hostByName("api.open-meteo.com", ip2) &&
+                             tls.connect("api.open-meteo.com", 443);
+                logf("  诊断②  api.open-meteo.com:443（TLS）→ %s（%lu ms）",
+                     okTlsOther ? "能连" : "连不上", (unsigned long)(millis() - t0));
+                if (okTlsOther) tls.stop();
+            }
+            logf("  ⇒ 结论：①=%d ②=%d   （①0=IP 不通看路由；①1②0=ESP32 的 TLS 不行；"
+                 "①1②1=和风这台主机被单独挡/或它自己的 TLS 参数）", (int)ok80, (int)okTlsOther);
+        }
         https.end();
         return false;
     }
@@ -1307,7 +1348,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-17");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-19");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),
