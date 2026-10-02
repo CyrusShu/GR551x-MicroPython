@@ -174,6 +174,13 @@ static unsigned long lastPushMs     = 0;   /* 上次"没变化也推一次"的�
    顺便验证链路），免得"中继和 Open-Meteo 同时不通"时它什么都不做。 */
 #define TAG_FIRST_WAIT_MS     60000UL      /* 价签出现后最多等这么久（还是没数据就先连一次） */
 
+/* build-24：**耗时画像**（用户："时间和天气为啥要那么久呢"）。
+   先说结论：**取数本身不慢** —— 局域网中继是本机 HTTP，几毫秒的事（实测日志里
+   "天气源 = 局域网中继"那一行和上一行的时间戳是同一秒）；Open-Meteo 也就几百毫秒。
+   真正占时间的是「扫到价签 → BLE 连上 → 写完命令」这几段，所以每一步都打一个毫秒数，
+   下一份开机日志就能一眼看出时间花在哪（以前只有"秒"级时间戳，8 秒的连接过程
+   和瞬间完成的取数长得一模一样）。 */
+
 /* WiFi 关联的状态机：关联本身可能要几十秒（信号弱时实测 ~100 秒），
    所以记下"什么时候开始喊的"，30 秒内不重复 WiFi.begin()。 */
 static bool          wifiStarted = false;
@@ -211,6 +218,7 @@ static int32_t utcEpoch = 0;        // UTC 秒（0 = 还没拿到）
 static bool    tagPresent = false;  // 上一轮扫描有没有看到价签
 static bool    forceTimeSync = true;
 static unsigned long tagSeenAtMs = 0;   // 这一轮"价签在线"是从什么时候开始的（B 的兜底计时）
+static unsigned long scanStartedAtMs = 0;   // 本轮扫描是从什么时候开始的（算"多久才扫到"）
 static bool    everSynced = false;  // 开机后至少连过一次（验证链路用）
 static char    citySent[24] = "";   // 上次发出去的城市名（build 61；没变就不重发）
 static bool    memoSent = false;    // 纪念日发过没有（build 67）
@@ -871,8 +879,9 @@ class ScanCallbacks : public BLEAdvertisedDeviceCallbacks
         {
             foundDevice = dev;
             foundFlag   = true;
-            logf("→ 命中价签：%s  rssi=%d  addr=%s", name.c_str(), dev.getRSSI(),
-                 dev.getAddress().toString().c_str());
+            logf("→ 命中价签：%s  rssi=%d  addr=%s（扫描开始后 %lu 毫秒扫到）",
+                 name.c_str(), dev.getRSSI(), dev.getAddress().toString().c_str(),
+                 millis() - scanStartedAtMs);
         }
     }
 };
@@ -910,6 +919,9 @@ static bool doSync(BLEAdvertisedDevice &dev)
         client = BLEDevice::createClient();
     }
 
+    unsigned long tConn0 = millis();
+    unsigned long tLap;
+
     logf("连接中 ...");
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     bool ok = client->connectTimeout(&dev, 15000);      // 毫秒
@@ -919,18 +931,19 @@ static bool doSync(BLEAdvertisedDevice &dev)
 #endif
     if (!ok)
     {
-        logf("连接失败");
+        logf("连接失败（等了 %lu 毫秒）", millis() - tConn0);
         return false;
     }
-    logf("连上了");
+    logf("连上了（BLE 连接本身用了 %lu 毫秒）", millis() - tConn0);
+    tLap = millis();
 
     /* 顺手把 MTU 谈大（build-9）：价签支持到 244（网页那套协议就是靠它推图的），
        谈大之后一次能发 244 字节，长文案/以后的功能都不用再分片。
        谈不成也不影响 —— 下面写命令的地方全都按 ≤20 字节分片了。 */
     if (client->setMTU(247))
     {
-        logf("MTU 协商后 = %d（一次能发 %d 字节）",
-             (int)client->getMTU(), (int)client->getMTU() - 3);
+        logf("MTU 协商后 = %d（一次能发 %d 字节，耗时 %lu 毫秒）",
+             (int)client->getMTU(), (int)client->getMTU() - 3, millis() - tLap);
     }
     else
     {
@@ -973,6 +986,11 @@ static bool doSync(BLEAdvertisedDevice &dev)
     }
 
     wr->registerForNotify(notifyCB);
+
+    /* 耗时画像（build-24）：从这里开始到"命令写完"花了多久。
+       用户问"时间和天气为啥要那么久" —— 取数（中继 HTTP）只有几毫秒，
+       真正吃时间的是连接和下面这串写。 */
+    unsigned long tWr0 = millis();
 
     // ① 时间：刚上电（重新出现）、超过一天没校、**或者这次要推天气** → 一起发
     //
@@ -1190,11 +1208,13 @@ static bool doSync(BLEAdvertisedDevice &dev)
         }
     }
 
+    logf("命令发完（从连上到发完这一串：%lu 毫秒）", millis() - tWr0);
+
     delay(NOTIFY_DWELL_MS);                 // 留点时间把价签的回包收全
     client->disconnect();
 
     forceTimeSync = false;
-    logf("已断开。%s",
+    logf("已断开（本次连接总耗时 %lu 毫秒）。%s", millis() - tConn0,
          (sentTime || sentWx || wroteCity || wroteMemo || wroteAlert)
              ? "价签这时在刷屏，约 16 秒"
              : "本轮没写任何命令，价签不会重画");
@@ -1293,6 +1313,7 @@ void loop()
     // 2) 扫一轮价签
     foundFlag = false;
     BLEScan *scan = BLEDevice::getScan();
+    scanStartedAtMs = millis();
     scan->start(SCAN_SECONDS, false);       // 阻塞式扫描
     scan->clearResults();
 
