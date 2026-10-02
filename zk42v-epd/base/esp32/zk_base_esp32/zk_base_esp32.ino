@@ -760,7 +760,48 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
     return true;
 }
 
-static bool fetchWeatherAndTime()
+
+/* ⚠ 取天气要放在**自己的大栈任务**里跑（build-16 修）：
+   2026-10-02 实机崩在 `Stack canary watchpoint triggered (loopTask)` —— 任务栈溢出。
+   根因是 ROM 里的 miniz：`tinfl_decompress_mem_to_mem()` 会**在栈上**开一个约 11KB 的
+   解压状态（gzip 解压要用），而 Arduino 的 loopTask 默认只有 8KB ✗；
+   再加上 TLS 握手本身也要几 KB，一解压就爆。
+   （build-11 之所以没崩：那版拿到 403 就直接返回，没走到"解压响应体"这一步。）
+   所以这里把它整体丢进一个 20KB 栈的任务里，等它跑完再返回 —— 调用方完全不用改。 */
+typedef struct
+{
+    volatile bool done;
+    volatile bool ok;
+} wx_job_t;
+
+static void wxJobTask(void *arg)
+{
+    wx_job_t *j = (wx_job_t *)arg;
+
+    j->ok   = fetchWeatherAndTimeInner();
+    j->done = true;
+    vTaskDelete(NULL);
+}
+
+static bool fetchWeatherAndTime(void)
+{
+    static wx_job_t job;               /* static：任务结束前调用方一直在等，这样最稳 */
+
+    job.done = false;
+    job.ok   = false;
+    if (xTaskCreatePinnedToCore(wxJobTask, "wxjob", 20 * 1024, &job, 5, NULL, 1) != pdPASS)
+    {
+        logf("（建 wxjob 任务失败，退回本任务里跑 —— 可能会栈溢出）");
+        return fetchWeatherAndTimeInner();
+    }
+    while (!job.done)
+    {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return job.ok;
+}
+
+static bool fetchWeatherAndTimeInner()
 {
     String dateHdr;
 
@@ -1235,7 +1276,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-15");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-16");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),

@@ -1,5 +1,24 @@
 # Mac 当基站：价签一上电就自己拿到时间 + 天气
 
+## 🚨 2026-10-02：刷上 JWT 后 ESP32 **崩溃** —— loopTask 栈溢出（我的 bug）
+
+实机：
+```
+天气取好了（Open-Meteo）…
+Guru Meditation Error: Core 1 panic'ed (Unhandled debug exception).
+Debug exception reason: Stack canary watchpoint triggered (loopTask)
+Backtrace: 0x4000c469 0x4005f4dd 0x40060082 0x4005f4dd 0x400d56d2 …
+```
+
+`Stack canary watchpoint triggered (loopTask)` = **任务栈溢出**，而且 backtrace 里
+`0x4005f4dd` 反复出现 —— 那是 **ROM 里的 miniz**：
+**`tinfl_decompress_mem_to_mem()` 会在栈上开一个约 11KB 的解压状态**，
+而 Arduino 的 loopTask 默认栈只有 **8KB** ✗（TLS 握手本身还要几 KB）。
+（build-11 之所以没崩：那版拿到 403 就直接返回，没走到"解压响应体"这一步。）
+
+**修法（build-16）**：把整个取天气过程丢进一个 **20KB 栈、pin 到 core 1** 的独立任务里，
+跑完再返回 —— 调用方一行都不用改。教训：**别在 loopTask 里做大缓冲的解压/加密**。
+
 ## ✅ 2026-10-02：和风 JWT 通了（真机验证）
 
 用户带上开发者 ID 后：
