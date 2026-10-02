@@ -129,7 +129,7 @@ def fetch_weather(lat: float, lon: float, timeout: float = 10.0):
         j = json.load(r)
     cur = j["current"]
     wmo = int(cur["weather_code"])
-    temp = int(round(float(cur["temperature_2m"])))
+    temp = float(cur["temperature_2m"])          # ⚠ 别在这儿四舍五入：小数还有用
     wind = float(cur.get("wind_speed_10m") or 0.0)
     code = WMO_MAP.get(wmo, WX_CLOUDY)
     # 没降水但风很大 → 用「风」那个图标（9）
@@ -185,18 +185,21 @@ def fetch_weather_qweather(lat: float, lon: float, key: str,
 
 
 def fetch_weather_any(args, lat: float, lon: float):
-    """按 --wx-source / 有没有 key 决定用谁。返回 (码, 温度, WMO, 风速, 源名)。"""
+    """按 --wx-source / 有没有 key 决定用谁。
+    返回 (码, 温度, WMO, 风速, 源名, 有没有小数)。
+    "有没有小数"决定发给固件的载荷格式：带小数用 10 字节（画 27.7℃），
+    整数用 9 字节（画 29℃）—— 和风给的就是整数度，别让屏上出现没意义的 "29.0℃"。"""
     src = (getattr(args, "wx_source", "auto") or "auto").lower()
     key = (getattr(args, "qweather_key", "") or os.environ.get("QWEATHER_KEY", "")).strip()
     host = getattr(args, "qweather_host", "devapi.qweather.com")
 
     if src in ("auto", "qweather") and key:
         c, t, w, wind = fetch_weather_qweather(lat, lon, key, host)
-        return c, t, w, wind, "和风天气(实况)"
+        return c, t, w, wind, "和风天气(实况)", False        # 整数度
     if src == "qweather":
         raise RuntimeError("选了和风天气但没给 key（--qweather-key 或环境变量 QWEATHER_KEY）")
     c, t, w, wind = fetch_weather(lat, lon)
-    return c, t, w, wind, "Open-Meteo(模型)"
+    return c, t, w, wind, "Open-Meteo(模型)", True          # 模型值带一位小数
 
 
 def explain(e: Exception) -> str:
@@ -294,8 +297,11 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
     wx_payload = None
     if do_weather and not args.no_weather:
         try:
-            code, temp, wmo, wind, wsrc = fetch_weather_any(args, args.lat, args.lon)
-            # **不四舍五入**（用户 2026-09-30 要求）：按十分之一度发，面板上显示一位小数
+            code, temp, wmo, wind, wsrc, has_tenths = fetch_weather_any(args, args.lat,
+                                                                        args.lon)
+            # **不四舍五入**（用户 2026-09-30 要求）：按十分之一度发，面板上显示一位小数。
+            # 但和风给的是**整数度** —— 那种就发整数形态，屏上写 29℃ 而不是 29.0℃
+            #（少占 12px，表头挤城市名时很宝贵）。
             t10 = max(-32768, min(32767, int(round(temp * 10))))
             # 阈值判定（用户 2026-09-30 拍板）：天气码变了必发；温度变化 ≥1.0℃ 才发；
             # 从没发过也发。其余不推 —— 省一次 17 秒全刷。
@@ -308,8 +314,13 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
                 log("  = 天气没变（" + WX_NAME.get(code, str(code)) + " " + str(temp)
                     + "℃），不重发 —— 省一次全刷。", args.log)
             else:
-                # 71 <code> <t_hi> <t_lo>：t 是 int16 的"十分之一度"（34.6℃ → 346）
-                wx_payload = bytes([CMD_SET_WX, code, (t10 >> 8) & 0xFF, t10 & 0xFF])
+                # 71 <code> <t_hi> <t_lo>：t 是 int16 的"十分之一度"（34.6℃ → 346）；
+                # 整数度就用 71 <code> <t_int8>（固件认这个"没小数"的短格式）
+                if has_tenths:
+                    wx_payload = bytes([CMD_SET_WX, code, (t10 >> 8) & 0xFF, t10 & 0xFF])
+                else:
+                    ti = int(round(temp))
+                    wx_payload = bytes([CMD_SET_WX, code, ti & 0xFF])
                 log("  · 天气取好了[" + wsrc + "]（" + str(args.lat) + "," + str(args.lon) + "）："
                     + WX_NAME.get(code, str(code)) + " " + ("%.1f" % temp) + "℃"
                     + "（Open-Meteo WMO=" + str(wmo) + " 风速=" + str(wind) + "km/h）", args.log)

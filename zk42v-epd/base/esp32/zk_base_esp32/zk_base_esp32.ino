@@ -183,7 +183,7 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
      避免"要签名得先有时间、要时间得先能请求"的鸡生蛋问题。 */
 #define QWEATHER_JWT_KID   "KMWDYQGERV"                        /* 凭据 ID（kid） */
 #define QWEATHER_JWT_SUB   "29TNG35JCC"                        /* 项目 ID（sub） */
-#define QWEATHER_JWT_ISS   ""                        /* **开发者 ID（iss）**：控制台-**设置**里那个 Q 开头的 10 位 —— 必须填！
+#define QWEATHER_JWT_ISS   "Q92D603497"                        /* **开发者 ID（iss）**：控制台-**设置**里那个 Q 开头的 10 位 —— 必须填！
                                                          JWT payload 是 {iss, sub, iat, exp}，
                                                          少了 iss 和风只回 "Authentication failed"
                                                          （2026-10-02 就是漏了它） */
@@ -213,7 +213,14 @@ static unsigned long wifiBegunAt = 0;
 
 static bool  haveWeather = false;
 static int   wxCode = 0;          // 0 = 不显示
-static int   wxTemp = -128;       // -128 = 没有
+static int   wxTemp = -128;       // 十分之一度（346 = 34.6℃）
+/* build-15：**这个温度有没有小数**。
+   和风给的是整数度（29℃），Open-Meteo 的模型值带一位小数（27.7℃）。
+   固件那边"有小数就画 29.0℃、整数就画 29℃"是两条不同的载荷格式：
+     有小数 → 20 … <wx> <t_hi> <t_lo>（int16 十分之一度，10 字节）
+     整数   → 20 … <wx> <t_int8>       （9 字节）
+   所以这里得记住来源有没有小数 —— 否则和风那 29℃ 会显示成 29.0℃（白占宽度还挤城市名）。*/
+static bool  wxTempHasTenths = true;
 static int   wxSentCode = -1;     // 上次真发出去的（"值没变就不发"）
 static int   wxSentTemp = -999;
 
@@ -842,6 +849,7 @@ static bool fetchWeatherAndTime()
     haveWeather = true;
     wxCode = c;
     wxTemp = t10;               /* 现在存的是"十分之一度" */
+    wxTempHasTenths = true;     /* Open-Meteo 的模型值有小数 */
     lastFetchOkMs = millis();
     logf("（用的是 Open-Meteo 的 %s 模型；换源看 WX_MODEL 那段注释）",
          (strlen(WX_MODEL) > 0) ? WX_MODEL : "best_match");
@@ -868,6 +876,7 @@ static bool fetchWeatherAndTime()
         {
             wxCode = c2;
             wxTemp = t102;
+            wxTempHasTenths = false;    /* 和风是整数度 → 让固件画 "29℃" 而不是 "29.0℃" */
             logf("天气源 = **和风天气（实况）** %.1f℃ %s —— 手机同源那一路",
                  t102 / 10.0, wxName(c2));
         }
@@ -1055,12 +1064,23 @@ static bool doSync(BLEAdvertisedDevice &dev)
         p[4] = ts & 0xFF;
         p[5] = (uint8_t)(TZ_HOURS & 0xFF);
         p[6] = 0;                          /* 0 = 保持当前模式（别顶掉用户选的页面） */
-        if (haveWeather)                   /* 合并：20 <utc4> <tz> <mode> <wx> <temp> */
+        if (haveWeather)
         {
             p[7] = (uint8_t)wxCode;
-            p[8] = (uint8_t)((wxTemp >> 8) & 0xFF);   /* 十分之一度，int16 */
-            p[9] = (uint8_t)(wxTemp & 0xFF);
-            n    = 10;
+            if (wxTempHasTenths)
+            {
+                /* 20 <utc4> <tz> <mode> <wx> <t_hi> <t_lo> —— 带一位小数 */
+                p[8] = (uint8_t)((wxTemp >> 8) & 0xFF);
+                p[9] = (uint8_t)(wxTemp & 0xFF);
+                n    = 10;
+            }
+            else
+            {
+                /* 20 <utc4> <tz> <mode> <wx> <t_int8> —— 整数度（和风就是这种） */
+                p[8] = (uint8_t)(int8_t)((wxTemp >= 0) ? ((wxTemp + 5) / 10)
+                                                       : ((wxTemp - 5) / 10));
+                n    = 9;
+            }
         }
         wr->writeValue(p, n, true);
         sentTime   = true;
@@ -1103,9 +1123,23 @@ static bool doSync(BLEAdvertisedDevice &dev)
         }
         else if (!sentTime)
         {
-            uint8_t p[4] = {0x71, (uint8_t)wxCode,
-                            (uint8_t)((wxTemp >> 8) & 0xFF), (uint8_t)(wxTemp & 0xFF)};
-            wr->writeValue(p, sizeof(p), true);
+            uint8_t p[4];
+            size_t  pn;
+            p[0] = 0x71;
+            p[1] = (uint8_t)wxCode;
+            if (wxTempHasTenths)
+            {
+                p[2] = (uint8_t)((wxTemp >> 8) & 0xFF);
+                p[3] = (uint8_t)(wxTemp & 0xFF);
+                pn   = 4;
+            }
+            else
+            {
+                p[2] = (uint8_t)(int8_t)((wxTemp >= 0) ? ((wxTemp + 5) / 10)
+                                                       : ((wxTemp - 5) / 10));
+                pn   = 3;
+            }
+            wr->writeValue(p, pn, true);
             wxSentCode = wxCode;
             wxSentTemp = wxTemp;
             logf("→ 天气 %s %d℃（单独发）  载荷=%02X %02X %02X",
@@ -1201,7 +1235,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-14");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-15");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),
