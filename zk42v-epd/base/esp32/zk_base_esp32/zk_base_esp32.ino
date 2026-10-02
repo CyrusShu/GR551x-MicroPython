@@ -885,7 +885,9 @@ class ScanCallbacks : public BLEAdvertisedDeviceCallbacks
             /* build-24：**扫到就停**。SCAN_SECONDS=6 是"最多扫 6 秒"的意思，不是
                "必须扫满 6 秒" —— 可原来的写法会把窗口跑满。实机画像：
                  扫描开始后 1119 毫秒扫到 → 但函数到 6 秒才返回 → 白等 ~5 秒。
-               在回调里 stop() 是官方例子的用法，start() 会提前返回。 */
+               在回调里 stop() 是官方例子的用法，start() 会提前返回。
+               ⚠⚠ 用了它之后，**绝对不能再从别的任务里调 clearResults()** ——
+               原因见下面扫描那段的注释（实机崩过一次）。 */
             BLEDevice::getScan()->stop();
         }
     }
@@ -1320,7 +1322,23 @@ void loop()
     BLEScan *scan = BLEDevice::getScan();
     scanStartedAtMs = millis();
     scan->start(SCAN_SECONDS, false);       // 阻塞式扫描
-    scan->clearResults();
+
+    /* ⚠⚠ **这里绝对不要再调 scan->clearResults()**（build-24 血泪，实机崩过一次）：
+
+       Arduino-ESP32 的扫描结果存在 `BLEScan::m_scanResults.m_vectorAdvertisedDevices`
+       这个 std::map 里，**插入是在 BTC 线程的 handleGAPEvent 里做的、没有任何锁**；
+       而 clearResults() 是"遍历 map、delete 掉每个设备、再 clear()"。
+       原来这行写在 start() 返回之后 —— 平时是安全的（扫满 6 秒后，
+       DISC_COMPLETE 都把事件排完了才轮到我们）。但我加了"扫到就 stop()"之后：
+       stop() 一给信号量，start() 立刻返回，**BTC 线程这会儿还在处理回调、后面还排着
+       DISC 事件**，主循环这边就开始 clearResults() → **两个线程同时改同一个 map**
+       → 内部指针被写坏 → `StoreProhibited`（往 0 地址写），ELK 显示崩在
+       `std::_Rb_tree_insert_and_rebalance` / `BLEDevice::gapEventHandler`。
+       实机表现：开机 35 秒后 ESP32 自己重启，价签被重新推了一遍 —— **刷了两次**。
+
+       而且这行本来就是多余的：`start(duration, is_continue=false)` 里的
+       **false 就是"清掉上一轮结果"**，库在开始扫之前自己会清（同一线程，安全）。
+       所以结论：**让库自己去清，我们一个字节都不碰那个 map**。 */
 
     if (foundFlag)
     {

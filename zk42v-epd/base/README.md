@@ -1,5 +1,62 @@
 # Mac 当基站：价签一上电就自己拿到时间 + 天气
 
+## 💥 2026-10-02 晚 4："刷了两次" —— 是我那句 `stop()` 引出的**跨线程竞态**（已修）
+
+用户日志里开机 35 秒后：
+
+```
+Guru Meditation Error: Core 0 panic'ed (StoreProhibited). Exception was unhandled.
+EXCVADDR: 0x00000000                       ← 往 0 地址写
+Backtrace: 0x401e8930 0x400e1d7d 0x400e1ffe 0x400df812 0x40127645 0x40127ccc …
+Rebooting…
+```
+
+用 addr2line 配合当次编译的 ELF 解出来：
+
+| 地址 | 符号 |
+|---|---|
+| 0x401e8930 | `std::_Rb_tree_insert_and_rebalance`（std::map 插入） |
+| 0x400e1ffe | `_Rb_tree<…, BLEAdvertisedDevice*>…` |
+| 0x400df812 | **`BLEDevice::gapEventHandler`** |
+| 0x40127645 | `btc_gap_ble_cb_to_app`（Bluedroid 的 BTC 线程） |
+
+也就是：**崩在"扫描结果那张 map 的插入"上**。而第二次刷屏是**后果** —— ESP32 自己重启，
+基站重新开机后又把时间/天气/城市名/纪念日/预警整包推了一遍，价签就只能再刷一次。
+
+### 根因（读 core 源码 + 反汇编都对上了）
+
+`~/Library/Arduino15/packages/esp32/hardware/esp32/3.3.11/libraries/BLE/src/BLEScan.cpp`：
+
+```cpp
+// BTC 线程里，往 map 插设备 —— **没有锁**
+pScan->m_scanResults.m_vectorAdvertisedDevices.insert(…);
+
+// 主任务里，删掉每个设备再清表
+void BLEScan::clearResults() { for (auto _dev : …) delete _dev.second; …clear(); }
+
+// start() 本身就带"清上一轮"的语义（is_continue=false）
+if (!is_continue) { for (auto _dev : …) delete _dev.second; …clear(); }
+```
+
+原来的代码在 `scan->start(6,false)` 返回后**又手动 `clearResults()`** —— 平时安全，因为扫满
+6 秒后 DISC_COMPLETE 早把事件排完了。但我加了"扫到就 `stop()`"之后：`stop()` 一给信号量，
+`start()` 立刻返回，**BTC 线程这会儿还在处理回调、后面还排着 DISC 事件**，主循环就开始
+`clearResults()` → **两个线程同时改同一张 map** → 内部指针写坏 → `StoreProhibited`。
+
+### 修法
+
+1. **删掉那句手动 `clearResults()`** —— 它本来就是多余的（`start(…, false)` 里的 `false`
+   就是"清掉上一轮"，库在开始扫之前自己清，同一线程、安全）。让库自己去管那张表，
+   我们一个字节都不碰。
+2. 保留"扫到就 `stop()`"（省 5 秒），并在两处都写上"**绝不能再从别的任务里 clearResults()**"。
+
+### 还没解决的一半：基站重启 = 价签重刷
+
+基站判断"价签刚上电"的依据是**自己**第一次看到它（`tagPresent` 从 false 变 true），
+所以**基站自己重启时也会误判**，于是把整包静态配置重推一遍。要根治得让价签报一个
+"我是第几次开机 / 开机多久了"的标记（它的连接通知里现在只有配置字节），
+基站据此区分"价签真重启"和"我自己重启"。这条先记进 backlog。
+
 ## 🧹 2026-10-02 晚 3：开机刷太多次 —— 合并刷新窗口（A）+ 没数据先别连（B）
 
 用户："价签开机刷的次数太多了，有没有办法精简。"
