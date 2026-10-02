@@ -100,3 +100,18 @@ fnOS 的「Docker → 项目 → 新建」也能直接把 `docker-compose.yml` �
 | `curl /wx` 连不上 | 服务没起 / 端口没通 | `systemctl status wx-relay`；NAS 防火墙放行 8788（局域网内） |
 | ESP32 日志 `中继：HTTP -1` | ESP32 到 NAS 不通 | 确认 NAS 的 IP 写对、8788 端口可达（先在 Mac 上 curl 试） |
 | 温度一直不变 | 缓存命中（默认 120 秒）或 ESP32 没重发 | 正常现象；和风实况本身也是 10~30 分钟更新一次 |
+
+## 2026-10-02 追加：中继现在也取「天气预警」，并且有了外部域名
+
+- **预警**：`wx-relay.py` 在取实况的同时取和风的**实时天气预警**
+  （`GET /weatheralert/v1/current/{纬度}/{经度}` —— 老的 `/v7/warning/now` 已被和风下架，
+  回 403 Deprecated）。JSON 里多四个平铺字段 `alert/alevel/atype/aend`。
+  预警取不到**不影响天气**，只是那几个字段不出现。
+- **域名**：Lucky 上加了 `weather.swimbirds.com` → `http://127.0.0.1:8788`（NAS 上 Lucky 是 host 网络）。
+  内网可用：`curl -s https://weather.swimbirds.com/wx`（走 NAS 自己的公网 IPv6，证书是
+  `*.swimbirds.com` 的通配符，2026-11-11 到期）。
+  ⚠ **公网进不来**：拿 `https://r.jina.ai/<url>` 做外网抓取实测超时，而同一时刻
+  `r.jina.ai/https://ipv6.google.com/` 返回 200（说明那个抓取服务有 IPv6 出口）→
+  运营商侧不放行入站。人在外面要看数据走 tailnet：`http://192.168.100.221:8788/wx`。
+- **NAS 静态租约**：路由器上加了 `fnNAS / 86:8F:D3:90:86:90 / 192.168.100.221` 的预留
+  （NAS 其实是自己手配的静态 IP，不是 DHCP 客户端；这条的作用是把 .221 从 DHCP 池里锁住）。
