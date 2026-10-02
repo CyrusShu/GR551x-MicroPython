@@ -670,7 +670,26 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
     char             tmp[24];
 
     client.setInsecure();                 /* 不做证书校验：只取公开天气，省下几 KB 堆 */
-    client.setTimeout(10);
+    /* ⚠ 超时全部收紧（2026-10-02）：实机出现过"和风这一步卡 121 秒"，
+       期间主循环整个堵死、基站两分钟不干活。默认超时太长 + DNS 卡住都可能。
+       下面还有调用方 30 秒的看门狗兜底（见 fetchWeatherAndTime）。 */
+    client.setTimeout(6);                 /* socket 读超时（秒） */
+    client.setHandshakeTimeout(6);        /* TLS 握手超时（秒） */
+
+    /* 先自己解析域名并打日志：卡在哪一步一眼可见（DNS？TCP？握手？） */
+    {
+        IPAddress ip;
+        unsigned long t0 = millis();
+
+        if (!WiFi.hostByName(QWEATHER_HOST, ip))
+        {
+            logf("  和风：DNS 解析 %s 失败（耗时 %lu ms）—— 网络/分流规则的问题",
+                 QWEATHER_HOST, (unsigned long)(millis() - t0));
+            return false;
+        }
+        logf("  和风：DNS %s → %s（%lu ms）", QWEATHER_HOST,
+             ip.toString().c_str(), (unsigned long)(millis() - t0));
+    }
 
     url  = String("https://") + QWEATHER_HOST + "/v7/weather/now?location="
          + String(LON, 4) + "," + String(LAT, 4)     /* ⚠ 和风是"经度,纬度" */
@@ -794,9 +813,21 @@ static bool fetchWeatherAndTime(void)
         logf("（建 wxjob 任务失败，退回本任务里跑 —— 可能会栈溢出）");
         return fetchWeatherAndTimeInner();
     }
-    while (!job.done)
+    /* ⚠ 看门狗：最多等 30 秒。超了就不再堵着主循环（基站期间要扫 BLE、连价签），
+       直接用 Open-Meteo 的值；那个任务自己会把这次请求跑完然后 vTaskDelete —— 
+       不杀它（杀 TLS 任务会漏 socket），反正最多也就多跑一会儿。 */
     {
-        vTaskDelay(pdMS_TO_TICKS(10));
+        const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(30000);
+
+        while (!job.done)
+        {
+            if (xTaskGetTickCount() > deadline)
+            {
+                logf("（和风这次太慢，>30 秒还没回来 → 先不等了，这次用 Open-Meteo 的值）");
+                return true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
     }
     return job.ok;
 }
@@ -1276,7 +1307,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-16");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-17");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),
