@@ -122,6 +122,23 @@
 > → `QWEATHER_HOST` 必须填**控制台里那串**（代码注释、README、`wx-compare.py` 的
 > 帮助和报错提示都已按这个改）。教训：**只看 HTTP 状态码等于没看 —— 要把响应体打出来**。
 >
+> ✅ **2026-10-02 收尾：和风走"NAS 中继"这条路通了**（实机验证）。
+> 那台 ESP32 **做不了 TLS**（实测：和风 443 失败；对 api.open-meteo.com 的 443 探测
+> 只用了 **10 毫秒** 就失败 —— 那是本机失败，连包都没发出去；与项目 2026-09-30 记的
+> "TLS 要 ~45KB 连续堆、BLE 起来后不够"一致）。而**路由器/Mac 直连和风一切正常**
+> （curl `HTTP=401 connect=0.089s`），和风的 API Host 解析到**新加坡 Linode**。
+> 于是把和风搬到能连的机器上：**飞牛 NAS 上新增常驻服务 `wx-relay`**
+> (`/vol1/1000/docker/wx-relay/`，docker compose，`restart=unless-stopped`)，
+> ESP32 只跟局域网说话（纯 HTTP）。
+>   · 实测：容器 **37 MB 内存 / CPU 0.03%**；`curl http://192.168.100.221:8788/wx`
+>     → `{"code":4,"temp":28,"text":"小雨","src":"qweather","obs":"2026-10-02T17:48+08:00"}`
+>     （JWT 链在 NAS 上完整跑通）
+>   · ESP32 那边只需填 `#define WX_RELAY_URL "http://192.168.100.221:8788/wx"`
+>     （填了就不再直连和风；私钥也只留在 NAS 上，ESP32 不存凭据）
+>   · 部署文件：`outputs/ble-base/deploy/`（compose / systemd 单元 / env 模板 /
+>     install-remote.sh / README 里的资源对比与故障对照表）
+>   · 那台 NAS 没有免密 sudo，所以选了 Docker 而不是 systemd（docker 对 cyrus 直用）
+>
 > 🚨 **第三次更正（2026-10-02）**：换上正确 Host 后变成 **401 Unauthorized**。
 > 对照官方示例才发现 **JWT payload 必须是四个字段 `{iss, sub, iat, exp}`，我漏了 `iss`**
 > （开发者 ID，**控制台-设置**里 Q 开头的 10 位）—— 和风只回一句 "Authentication failed"，
