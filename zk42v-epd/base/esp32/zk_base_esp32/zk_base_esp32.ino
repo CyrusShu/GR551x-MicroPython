@@ -882,6 +882,11 @@ class ScanCallbacks : public BLEAdvertisedDeviceCallbacks
             logf("→ 命中价签：%s  rssi=%d  addr=%s（扫描开始后 %lu 毫秒扫到）",
                  name.c_str(), dev.getRSSI(), dev.getAddress().toString().c_str(),
                  millis() - scanStartedAtMs);
+            /* build-24：**扫到就停**。SCAN_SECONDS=6 是"最多扫 6 秒"的意思，不是
+               "必须扫满 6 秒" —— 可原来的写法会把窗口跑满。实机画像：
+                 扫描开始后 1119 毫秒扫到 → 但函数到 6 秒才返回 → 白等 ~5 秒。
+               在回调里 stop() 是官方例子的用法，start() 会提前返回。 */
+            BLEDevice::getScan()->stop();
         }
     }
 };
@@ -1348,9 +1353,14 @@ void loop()
            ⚠ 城市名/纪念日**不算** —— 它们是静态配置，连上去换一次 16 秒整页刷新不划算，
            等第一份数据一起来的时候顺手带上就行。 */
         bool haveUsable = (utcEpoch > 0) || haveWeather;
-        bool firstDone  = everSynced || haveUsable ||
-                          (tagSeenAtMs != 0 && (millis() - tagSeenAtMs) > TAG_FIRST_WAIT_MS);
-        if (BASE_MODE == 0 || haveData || firstDone)
+        bool waitExpire = (tagSeenAtMs != 0) &&
+                          (millis() - tagSeenAtMs) > TAG_FIRST_WAIT_MS;
+        /* ⚠ "开机后还没连过"这个条件**必须带 !everSynced**（build-24 第一版把它写反了：
+           firstDone = everSynced || … → 第一次连完之后恒为真 → 之后每一轮扫描都连上去、
+           发现"没东西要发"再断开。实机日志里 25s / 38s 那两次空连接就是它。
+           这里回成原来的 !everSynced，只把"要不要等"这部分叠上去。 */
+        bool firstSync  = !everSynced && (haveUsable || waitExpire);
+        if (BASE_MODE == 0 || haveData || firstSync)
         {
             /* 发之前先看表"新不新"：手里的 utcEpoch 是上次取天气时拿的（可能几十分钟前），
                直接发就会把旧时刻写进价签 —— 实机踩过：慢了 67 分钟。
