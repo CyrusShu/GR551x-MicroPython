@@ -1,5 +1,5 @@
 /* ===========================================================================
- *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-11）
+ *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-22）
  *
  *  干什么：让一块 ESP32 当 BLE central，扫到价签就连上去，把
  *          · 时间（0x20：UTC 秒 + 时区 + 模式）
@@ -31,30 +31,11 @@
 
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
-/* Ed25519 签名（和风 JWT 用）。⚠ 别用 mbedTLS/PSA：实测这块 core 的预编译库里
-   **根本没编进 Ed25519**（sdkconfig 只有 CURVE25519=X25519 密钥交换，没有 PSA EdDSA；
-   libmbedcrypto.a 里也搜不到 edwards 符号）—— 运行时 psa_import_key 直接返回
-   -135 (INVALID_ARGUMENT)。所以自带一份**公有领域**的 TweetNaCl（tweetnacl.c/.h，
-   https://tweetnacl.cr.yp.to/ 20140427 版，我们只加了 crypto_sign_seed_keypair 一个函数）。
-   已用 openssl 对拍验证：同一 seed 推出的公钥、签出的签名与 OpenSSL **逐字节一致**。 */
-extern "C" int crypto_sign_seed_keypair(unsigned char *pk, unsigned char *sk,
-                                        const unsigned char *seed);
-extern "C" int crypto_sign_ed25519_tweet(unsigned char *sm, unsigned long long *smlen,
-                                         const unsigned char *m, unsigned long long n,
-                                         const unsigned char *sk);
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <time.h>
 #include <math.h>
 #include <esp_heap_caps.h>
-/* ESP32 的 ROM 里自带 miniz（tinfl）。头文件不在标准 include 路径里（不同 core 版本
-   位置还不一样），所以直接声明符号 —— 链接时由 esp32.rom.ld 提供（实测 3.3.11 有）。
-   用它来解和风天气的 gzip 响应：tinfl 认裸 deflate，所以 gzip 头尾要自己剥掉。 */
-extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len,
-                                             const void *pSrc_buf, size_t src_buf_len,
-                                             int flags);
-#define TINFL_DECOMPRESS_FAILED ((size_t)(-1))
 
 /* ------------------------------- 配置 ---------------------------------- */
 
@@ -143,60 +124,13 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
    想随时对比几家：跑 outputs/ble-base/wx-compare.py（不用改固件）。 */
 #define WX_MODEL            ""
 
-/* ⑨ **和风天气**（2026-10-01 接，用户："用和风天气"）。
-   为什么：手机（Apple 天气）在国内用的就是这一路（和风/中国气象局**实况**），
-   而 Open-Meteo 给的是**模型格点**，实测同一时刻同坐标能差 3~5℃
-   （那天：Open-Meteo best_match 29.9 / 手机 33）。
-
-   怎么开：把 QWEATHER_KEY 填上（免费订阅的 key 就行，dev.qweather.com 注册）。
-   三个坑（都实测过）：
-     ① location 是 **"经度,纬度"**（跟 Open-Meteo 反着来）；
-     ② 响应**总是 gzip**（写明 Accept-Encoding: identity 也照样压），ESP32 的
-        HTTPClient 不会自己解 —— 这里用 ROM 里的 miniz 手动解（见 gunzipToString）；
-     ③ 免费订阅必须用 `devapi.qweather.com`，标准订阅才是 `api.qweather.com`。
-   取不到（没 key / TLS 握手失败 / 网络不通）会**自动退回 Open-Meteo**（纯 HTTP，
-   一直能用），日志里会写清是哪条路成功 —— 不会因为换了源把价签饿死。 */
-#define QWEATHER_KEY       ""                        /* ① API key 方式：填这里（简单，但 key 就是密码）*/
-/* ⚠ **这里必须填你自己的 API Host**（不是 devapi/api！）：
-   和风现在给每个帐号分配**独立唯一的 API Host**（形如 `h2a9cf3mhs.xy.qweatherapi.com`），
-   而且它**本身就是身份认证的一部分**（别人拿到你的凭据、不知道这个域名也调不动）。
-   去哪看：**控制台 → 设置**（不是项目里）。
-   官方警告：`api.qweather.com` / `devapi.qweather.com` / `geoapi.qweather.com` 这几个
-   老公共地址 **2026 年起逐步停止服务**；新帐号拿它们请求会直接被判
-   `Invalid Host`（就是用户 2026-10-01 遇到的 403）。
-   下面这行只是占位，**一定要换成控制台里那串**。 */
-#define QWEATHER_HOST      "kj4bjd22dq.re.qweatherapi.com"      /* ← 换成你的 API Host */
-/* ⑪ **局域网中继**（2026-10-02 实机结论后加的，推荐）：
-   实测这台 ESP32 **连不上和风**（HTTPS 到海外节点，HTTP -1、1 秒被拒），而你的
-   路由器/Mac 直连它完全没问题（curl 0.09 秒、401）—— 和风给每个账号分配的 API Host
-   （xxx.re.qweatherapi.com）实际落在**新加坡 Linode**，不是国内节点。
-   于是让**能连的机器**（NAS/Mac 跑 outputs/ble-base/wx-relay.py）去请求和风，
-   ESP32 只跟局域网说话（**纯 HTTP**，无 TLS、无 gzip，连私钥都不用放）：
-       和风(HTTPS+JWT) ←── wx-relay.py ──→ ESP32(http://nas:8788/wx)
-   填了就不直连和风；取不到自动退回 Open-Meteo。留空 = 不用中继。 */
-#define WX_RELAY_URL       ""     /* 例 "http://192.168.100.50:8788/wx" */
-
-/* ⑩ **JWT 方式**（2026-10-01 用户提的：和风支持 JSON Web Token，EdDSA 签名）——
-   比 API key 安全：**私钥只存在设备上**、token 15 分钟就过期；就算 token 被截走，
-   过期就没用了，而 API key 一旦泄露等于永久可用。
-   控制台：dev.qweather.com → 项目管理 → 创建凭据（类型选 JSON Web Token）→
-   拿到 **凭据 ID(kid)** 和 **项目 ID(sub)**，并生成/下载 Ed25519 私钥。
-   私钥怎么变成下面那串十六进制（64 个字符 = 32 字节 seed）：
-       openssl genpkey -algorithm ed25519 -out ed25519.pem
-       # 取私钥 seed（PKCS#8 里最后 32 字节）：
-       openssl pkey -in ed25519.pem -outform DER | tail -c 32 | xxd -p -c 64
-       # 公钥交控制台：openssl pkey -in ed25519.pem -pubout -outform DER | tail -c 32 | xxd -p -c 64
-   ⚠ 填了 JWT 三项就用 JWT（优先于 QWEATHER_KEY）。
-   ⚠ JWT 要拿"现在几点"当 iat/exp，所以**先取时间再签**：这个固件总是先用
-     Open-Meteo(HTTP) 拿到 HTTP Date 头，再签 JWT 去请求和风 ——
-     避免"要签名得先有时间、要时间得先能请求"的鸡生蛋问题。 */
-#define QWEATHER_JWT_KID   "KMWDYQGERV"                        /* 凭据 ID（kid） */
-#define QWEATHER_JWT_SUB   "29TNG35JCC"                        /* 项目 ID（sub） */
-#define QWEATHER_JWT_ISS   "Q92D603497"                        /* **开发者 ID（iss）**：控制台-**设置**里那个 Q 开头的 10 位 —— 必须填！
-                                                         JWT payload 是 {iss, sub, iat, exp}，
-                                                         少了 iss 和风只回 "Authentication failed"
-                                                         （2026-10-02 就是漏了它） */
-#define QWEATHER_JWT_HEX   "06dd2ed05252dd91b8266bfa6a7da85f6c0b95f1af6a639e375c4f4d6f03c60a"                        /* Ed25519 私钥 seed 的 64 个十六进制字符 */
+/* ⑨ **局域网中继**（2026-10-02 起和风的唯一通道）：
+   和风的 HTTPS 这台 ESP32 传不出去（实测 10ms 级本机失败），所以和风那部分整体挪到
+   常开的 NAS 上跑（wx-relay.py，Docker 容器 wx-relay，2026-10-02 已部署）：
+       和风(HTTPS+JWT) ←── NAS 上的 wx-relay ──→ ESP32（纯 HTTP，几毫秒）
+   好处：ESP32 不用 TLS、不用 gzip、**连和风凭据和私钥都不存**。
+   取不到会自动退回 Open-Meteo（纯 HTTP，海外也通）。留空 = 不用中继。 */
+#define WX_RELAY_URL       "http://192.168.100.221:8788/wx"   /* 飞牛 NAS 上的 wx-relay（2026-10-02 部署） */
 
 #define MODE_CALENDAR   1
 
@@ -526,319 +460,6 @@ static void applyDateHeader(const String &dateHdr)
 }
 
 
-/* ---------------------------------------------------------------------------
- *  和风天气的 JWT（EdDSA/Ed25519）—— build-11
- *  header = {"alg":"EdDSA","kid":"<凭据ID>"}
- *  payload= {"sub":"<项目ID>","iat":now-30,"exp":now+900}
- *  token  = b64url(header) + "." + b64url(payload) + "." + b64url(Ed25519 签名)
- *  请求时带 Authorization: Bearer <token>（不再用 key=）
- * ------------------------------------------------------------------------- */
-
-static void b64urlEnc(const uint8_t *in, size_t n, char *out)
-{
-    static const char *T =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    size_t i = 0, o = 0;
-
-    while (i + 3 <= n)
-    {
-        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8) | in[i + 2];
-        out[o++] = T[(v >> 18) & 63];
-        out[o++] = T[(v >> 12) & 63];
-        out[o++] = T[(v >> 6) & 63];
-        out[o++] = T[v & 63];
-        i += 3;
-    }
-    if (n - i == 1)
-    {
-        uint32_t v = (uint32_t)in[i] << 16;
-        out[o++] = T[(v >> 18) & 63];
-        out[o++] = T[(v >> 12) & 63];
-    }
-    else if (n - i == 2)
-    {
-        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8);
-        out[o++] = T[(v >> 18) & 63];
-        out[o++] = T[(v >> 12) & 63];
-        out[o++] = T[(v >> 6) & 63];
-    }
-    out[o] = 0;
-}
-
-static int hexToBin(const char *hex, uint8_t *out, int cap)
-{
-    int n = 0;
-
-    while (hex[0] && hex[1] && n < cap)
-    {
-        int hi = (hex[0] >= 'a') ? (hex[0] - 'a' + 10) : ((hex[0] >= 'A') ? (hex[0] - 'A' + 10) : (hex[0] - '0'));
-        int lo = (hex[1] >= 'a') ? (hex[1] - 'a' + 10) : ((hex[1] >= 'A') ? (hex[1] - 'A' + 10) : (hex[1] - '0'));
-        if (hi < 0 || hi > 15 || lo < 0 || lo > 15)
-        {
-            return -1;
-        }
-        out[n++] = (uint8_t)((hi << 4) | lo);
-        hex += 2;
-    }
-    return n;
-}
-
-/* TweetNaCl 的 Ed25519 签名（替掉了用不了的 PSA 版本，见文件顶部那段说明）。
-   crypto_sign 的输出是 sig(64) || msg —— 用同一块缓冲，也省得再拷一次。 */
-static bool ed25519Sign(const uint8_t seed[32], const uint8_t *msg, size_t msgLen,
-                        uint8_t sig[64])
-{
-    static uint8_t pk[32];
-    static uint8_t sk[64];
-    static uint8_t sm[64 + 600];
-    unsigned long long smlen = 0;
-
-    if (msgLen > sizeof(sm) - 64)
-    {
-        logf("  Ed25519：待签内容太长（%u 字节）", (unsigned)msgLen);
-        return false;
-    }
-    crypto_sign_seed_keypair(pk, sk, seed);          /* seed -> (pk, sk) */
-    memcpy(sm + 64, msg, msgLen);
-    crypto_sign_ed25519_tweet(sm, &smlen, sm + 64, (unsigned long long)msgLen, sk);
-    if (smlen != (unsigned long long)msgLen + 64)
-    {
-        logf("  Ed25519 签名失败（smlen=%u）", (unsigned)smlen);
-        return false;
-    }
-    memcpy(sig, sm, 64);
-    return true;
-}
-
-/* TweetNaCl 要求调用方提供 randombytes()（它自己的 keypair 用）。
-   我们用不到随机（密钥对是从固定 seed 推的），但符号得在，否则链接不过。 */
-extern "C" void randombytes(unsigned char *p, unsigned long long n)
-{
-    unsigned long long i;
-
-    for (i = 0; i < n; i++)
-    {
-        p[i] = (unsigned char)(esp_random() & 0xFFu);
-    }
-}
-
-/* 签一个 JWT（iat 用"现在"——调用前必须已经有时间，见配置区那段说明） */
-static bool qweatherMakeJwt(String &tokenOut)
-{
-    const int32_t now = epochNow();
-    char          hdr[128];
-    char          pay[192];
-    char          hdrB64[192];
-    char          payB64[288];
-    char          sigB64[128];
-    char          msg[512];
-    uint8_t       seed[32];
-    uint8_t       sig[64];
-
-    if (now <= 0)
-    {
-        logf("  和风 JWT：还没有时间（iat/exp 要它）→ 这次先不用 JWT");
-        return false;
-    }
-    snprintf(hdr, sizeof(hdr), "{\"alg\":\"EdDSA\",\"kid\":\"%s\"}", QWEATHER_JWT_KID);
-    /* payload 四件套：iss（开发者 ID）+ sub（项目 ID）+ iat + exp —— 一个都不能少 */
-    snprintf(pay, sizeof(pay), "{\"iss\":\"%s\",\"sub\":\"%s\",\"iat\":%d,\"exp\":%d}",
-             QWEATHER_JWT_ISS, QWEATHER_JWT_SUB, (int)(now - 30), (int)(now + 900));
-    b64urlEnc((const uint8_t *)hdr, strlen(hdr), hdrB64);
-    b64urlEnc((const uint8_t *)pay, strlen(pay), payB64);
-    snprintf(msg, sizeof(msg), "%s.%s", hdrB64, payB64);
-
-    if (hexToBin(QWEATHER_JWT_HEX, seed, 32) != 32)
-    {
-        logf("  和风 JWT：私钥十六进制串长度不对（要 64 个字符）");
-        return false;
-    }
-    if (!ed25519Sign(seed, (const uint8_t *)msg, strlen(msg), sig))
-    {
-        return false;
-    }
-    b64urlEnc(sig, sizeof(sig), sigB64);
-    tokenOut = String(msg) + "." + sigB64;
-    return true;
-}
-
-static bool qweatherJwtConfigured(void)
-{
-    return (strlen(QWEATHER_JWT_KID) > 0 && strlen(QWEATHER_JWT_SUB) > 0 &&
-            strlen(QWEATHER_JWT_ISS) > 0 && strlen(QWEATHER_JWT_HEX) > 0);
-}
-
-static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
-                             String *dateOut)
-{
-    WiFiClientSecure client;
-    HTTPClient       https;
-    String           url;
-    String           raw, body, dateHdr;
-    int              code;
-    char             tmp[24];
-
-    client.setInsecure();                 /* 不做证书校验：只取公开天气，省下几 KB 堆 */
-    /* ⚠ 超时全部收紧（2026-10-02）：实机出现过"和风这一步卡 121 秒"，
-       期间主循环整个堵死、基站两分钟不干活。默认超时太长 + DNS 卡住都可能。
-       下面还有调用方 30 秒的看门狗兜底（见 fetchWeatherAndTime）。 */
-    client.setTimeout(6);                 /* socket 读超时（秒） */
-    client.setHandshakeTimeout(6);        /* TLS 握手超时（秒） */
-
-    /* 先自己解析域名并打日志：卡在哪一步一眼可见（DNS？TCP？握手？） */
-    {
-        IPAddress ip;
-        unsigned long t0 = millis();
-
-        if (!WiFi.hostByName(QWEATHER_HOST, ip))
-        {
-            logf("  和风：DNS 解析 %s 失败（耗时 %lu ms）—— 网络/分流规则的问题",
-                 QWEATHER_HOST, (unsigned long)(millis() - t0));
-            return false;
-        }
-        logf("  和风：DNS %s → %s（%lu ms）", QWEATHER_HOST,
-             ip.toString().c_str(), (unsigned long)(millis() - t0));
-    }
-
-    url  = String("https://") + QWEATHER_HOST + "/v7/weather/now?location="
-         + String(LON, 4) + "," + String(LAT, 4)     /* ⚠ 和风是"经度,纬度" */
-         + "&lang=zh&unit=m";
-    if (!qweatherJwtConfigured())
-    {
-        url += "&key=" + String(QWEATHER_KEY);       /* 没配 JWT 就用 API key */
-    }
-
-    if (!https.begin(client, url))
-    {
-        logf("  和风：https.begin 失败");
-        return false;
-    }
-    https.setTimeout(10000);
-    {
-        const char *hdrs[] = {"Date"};
-        https.collectHeaders(hdrs, 1);
-    }
-    if (qweatherJwtConfigured())
-    {
-        String jwt;
-        if (!qweatherMakeJwt(jwt))
-        {
-            https.end();
-            return false;
-        }
-        https.addHeader("Authorization", "Bearer " + jwt);
-    }
-    code = https.GET();
-    if (code != 200)
-    {
-        /* ⚠ 光看状态码没用 —— 和风把真正的原因放在**响应体**里（也是 gzip），
-           比如 {"error":{"type":".../invalid-host","title":"Invalid Host"}} 或
-           token/kid 相关的说明。这里解出来打前 160 字节，一眼就知道是哪类问题。 */
-        String errRaw = https.getString();
-        String errTxt;
-
-        if (gunzipToString(errRaw, errTxt))
-        {
-            errRaw = errTxt;
-        }
-        logf("  和风：HTTP %d  响应=%s", code, errRaw.substring(0, 160).c_str());
-        logf("        （401/403 三类原因：① 响应体里是 Invalid Host → QWEATHER_HOST "
-             "要换成控制台-设置里的 API Host；② token/kid 相关 → kid/sub 填错或公钥没传上去；"
-             "③ 凭据类型不是 JWT）");
-        https.end();                 /* ⚠ 先把上一次的 socket 关掉，再做下面的对照探测 ——
-                                        不然探测是在"socket 还占着"的状态下做的，结论会被污染
-                                        （2026-10-02 第一版就吃了这个亏） */
-        if (code < 0)
-        {
-            /* 连都连不上时的**现场判别**（2026-10-02 加）：
-               同一台主机的 **80 端口（纯 HTTP）**通不通？
-                 · 80 通、443 不通 → IP 是通的，被挡的是 **TLS**（这类网络里很常见：
-                   HTTPS 握手一出就被 RST，而纯 HTTP 没事 —— 项目当初选 Open-Meteo 纯 HTTP
-                   就是这个原因）
-                 · 80 也连不上   → 这个 IP 整条路不通（路由/代理规则问题）
-                 · 80/443 都通   → 那问题在 ESP32 这边的 TLS（堆/射频），跟网络无关 */
-            WiFiClient plain;
-            unsigned long t0 = millis();
-            bool ok80, okTlsOther;
-
-            /* ① 同一主机：80 端口（纯 HTTP）—— 看 IP 通不通 */
-            plain.setTimeout(5);
-            ok80 = plain.connect(QWEATHER_HOST, 80);
-            logf("  诊断①  %s:80（纯 HTTP）  → %s（%lu ms）", QWEATHER_HOST,
-                 ok80 ? "能连" : "连不上", (unsigned long)(millis() - t0));
-            if (ok80) plain.stop();
-
-            /* ② **另一个主机**的 443（TLS）—— api.open-meteo.com 是我们知道
-                 能用纯 HTTP 取到数据的域名，用它来回答"这台 ESP32 到底会不会 TLS"。
-                 注意：不同主机不同 IP，所以②只回答"ESP32 的 TLS 行不行"，
-                 不回答"和风那个 IP 通不通"。 */
-            t0 = millis();
-            {
-                WiFiClientSecure tls;
-                IPAddress      ip2;
-
-                tls.setInsecure();
-                tls.setTimeout(5);
-                tls.setHandshakeTimeout(5);
-                okTlsOther = WiFi.hostByName("api.open-meteo.com", ip2) &&
-                             tls.connect("api.open-meteo.com", 443);
-                logf("  诊断②  api.open-meteo.com:443（TLS）→ %s（%lu ms）",
-                     okTlsOther ? "能连" : "连不上", (unsigned long)(millis() - t0));
-                if (okTlsOther) tls.stop();
-            }
-            logf("  ⇒ 结论：①=%d ②=%d   （①0=IP 不通看路由；①1②0=ESP32 的 TLS 不行；"
-                 "①1②1=和风这台主机被单独挡/或它自己的 TLS 参数）", (int)ok80, (int)okTlsOther);
-        }
-        return false;
-    }
-    dateHdr = https.header("Date");
-    raw     = https.getString();
-    https.end();
-    if (dateOut != 0)
-    {
-        *dateOut = dateHdr;          /* 和风也带 Date 头 —— 时间可以从这条拿 */
-    }
-
-    if (!gunzipToString(raw, body))
-    {
-        logf("  和风：gzip 解不开（%u 字节）", (unsigned)raw.length());
-        return false;
-    }
-    if (jsonStr(body, "code", tmp, sizeof(tmp)) && strcmp(tmp, "200") != 0)
-    {
-        logf("  和风：返回 code=%s", tmp);
-        return false;
-    }
-    if (!jsonStr(body, "temp", tmp, sizeof(tmp)))
-    {
-        logf("  和风：响应里没有 temp（前 80 字节：%s）", body.substring(0, 80).c_str());
-        return false;
-    }
-    {
-        char txt[24] = {0};
-
-        jsonStr(body, "text", txt, sizeof(txt));
-        *codeOut    = qweatherCodeFromText(txt);
-        *tempT10Out = (int)lroundf(atof(tmp) * 10.0f);
-        *windOut    = 0;
-        jsonStr(body, "windSpeed", tmp, sizeof(tmp));
-        if (tmp[0]) *windOut = (int)lroundf(atof(tmp));
-        logf("  和风实况：%s %.1f℃（风 %d km/h）日期头=%s",
-             txt, atof(tmp), *windOut, dateHdr.c_str());
-    }
-    /* 时间：和风的响应同样带 Date 头，但我们在外面统一从 Open-Meteo 那条路取，
-       这里只把观测时刻记进日志，免得两处各解析一遍 */
-    return true;
-}
-
-
-/* ⚠ 取天气要放在**自己的大栈任务**里跑（build-16 修）：
-   2026-10-02 实机崩在 `Stack canary watchpoint triggered (loopTask)` —— 任务栈溢出。
-   根因是 ROM 里的 miniz：`tinfl_decompress_mem_to_mem()` 会**在栈上**开一个约 11KB 的
-   解压状态（gzip 解压要用），而 Arduino 的 loopTask 默认只有 8KB ✗；
-   再加上 TLS 握手本身也要几 KB，一解压就爆。
-   （build-11 之所以没崩：那版拿到 403 就直接返回，没走到"解压响应体"这一步。）
-   所以这里把它整体丢进一个 20KB 栈的任务里，等它跑完再返回 —— 调用方完全不用改。 */
 typedef struct
 {
     volatile bool done;
@@ -944,13 +565,12 @@ static bool fetchFromRelay(String *dateOut)
     return true;
 }
 
-static bool g_skipQweather = false;      /* 中继失败这一轮就别再直连和风了 */
 
 static bool fetchWeatherAndTimeInner()
 {
     String dateHdr;
 
-    /* ⑪ 配了局域网中继就优先走它（纯 HTTP，最稳；拿不到时间才继续往下跑） */
+    /* ⑨ 配了中继就优先走它（纯 HTTP、几毫秒；拿不到时间才继续往下跑） */
     if (strlen(WX_RELAY_URL) > 0)
     {
         String relayDate;
@@ -961,24 +581,21 @@ static bool fetchWeatherAndTimeInner()
             {
                 applyDateHeader(relayDate);
             }
-            g_skipQweather = false;
             lastFetchOkMs = millis();
             return true;
         }
-        /* ⚠ 配了中继就**不再直连和风**：这台板子的 TLS 起不来（2026-10-02 实测
-           连"发出去"都做不到），直连只会白等几秒。直接去走 Open-Meteo 兜底。 */
-        logf("中继没取到 → 直接走 Open-Meteo 兜底（不再试直连和风：这台板子 TLS 起不来）");
-        g_skipQweather = true;
+        /* 中继没答上来（NAS 关机/端口不通）→ 直接问 Open-Meteo，价签照常工作 */
+        logf("中继没取到 → 这次用 Open-Meteo 兜底（价签照常工作）");
     }
 
-    /* ⚠ 顺序很重要（2026-10-01 实机踩到）：
-       和风 JWT 的 iat/exp 要用"现在几点"，所以**必须先把时间拿到手**。
-       第一版我先试和风、拿不到时间就失败退回 Open-Meteo —— 结果**开机后第一轮
-       永远用不上和风**（日志：`和风 JWT：还没有时间 → 这次先不用 JWT`）。
-       现在改成：
-         ① 先用 Open-Meteo（纯 HTTP）拿时间 + 一份天气（它同时是时钟源和兜底源）
-         ② 再问和风（JWT 或 key），成功就用它的**实况**覆盖天气
-       代价是每轮多一次 Open-Meteo 请求 —— 那个不计数、也不限制，无所谓。 */
+    /* 取数顺序（2026-10-02 定稿）：
+         ① 配了 WX_RELAY_URL 就先问**局域网中继**（NAS 上的 wx-relay.py）——
+            它替我们跑和风的 HTTPS+JWT，我们只走纯 HTTP，几毫秒；
+         ② 中继没配 / 没答上来 → 直接问 Open-Meteo（纯 HTTP，海外也通），
+            它同时提供 HTTP Date 头当钟表。
+       为什么不让 ESP32 自己连和风：实测这台板子的 TLS 根本发不出去（和风 443 失败；
+       对别的域名做 TLS 探测 **10 毫秒**就失败 = 本机失败），与 2026-09-30 记的
+       "TLS 要 ~45KB 连续堆"一致。所以和风那部分整体挪到了 NAS 上。 */
 
     String url = String(WX_USE_TLS ? "https://" : "http://") + WX_HOST
                + String("/v1/forecast?latitude=")
@@ -1073,26 +690,6 @@ static bool fetchWeatherAndTimeInner()
              obs, (double)temp, t);
     }
 
-    /* ② 时间到手了 → 再问和风（JWT 的 iat/exp 要"现在几点"）。成功就覆盖天气。 */
-    if (!g_skipQweather && (qweatherJwtConfigured() || strlen(QWEATHER_KEY) > 0))
-    {
-        int c2 = 0, t102 = 0, wind2 = 0;
-        String dateHdr2;
-
-        if (fetchQWeatherNow(&c2, &t102, &wind2, &dateHdr2))
-        {
-            wxCode = c2;
-            wxTemp = t102;
-            wxTempHasTenths = false;    /* 和风是整数度 → 让固件画 "29℃" 而不是 "29.0℃" */
-            logf("天气源 = **和风天气（实况）** %.1f℃ %s —— 手机同源那一路",
-                 t102 / 10.0, wxName(c2));
-        }
-        else
-        {
-            logf("和风没取到 → 这次就用 Open-Meteo 的值（%.1f℃，不影响价签工作）",
-                 (double)temp);
-        }
-    }
     return true;
 }
 
@@ -1442,13 +1039,14 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-21");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-22");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),
                    psramFound() ? "有" : "无");
-    Serial.printf (" 时间源: HTTP Date 头   天气: Open-Meteo（%s）\n",
-                   WX_USE_TLS ? "HTTPS/TLS" : "纯 HTTP，绕开 TLS 吃堆");
+    Serial.printf (" 时间源: HTTP Date 头   天气: %s\n",
+                   strlen(WX_RELAY_URL) > 0 ? "NAS 局域网中继（首选）+ Open-Meteo 兜底"
+                                            : "Open-Meteo（纯 HTTP）");
     Serial.printf (" 坐标: %.4f, %.4f   时区: UTC%+d   模式: %s\n",
                    (double)LAT, (double)LON, TZ_HOURS,
                    BASE_MODE == 0 ? "0 只扫描" : "1 扫描+连接+写");
@@ -1569,99 +1167,4 @@ void loop()
     }
 
     delay(POLL_MS);
-}
-/* ---------------------------------------------------------------------------
- *  和风天气（build-10）：解 gzip + 抓 temp/text
- * ------------------------------------------------------------------------- */
-
-/* QWeather 的响应是 gzip（**总是**，跟 Accept-Encoding 无关）。ESP32 的 HTTPClient
-   不会解压，而 ROM 里的 tinfl 只认 zlib/裸 deflate —— 所以先手动跳过 gzip 的
-   头（固定 10 字节 + 3 个可选段）和尾（8 字节），再把剩下的裸 deflate 喂给 tinfl。 */
-static bool gunzipToString(const String &raw, String &out)
-{
-    const uint8_t *p = (const uint8_t *)raw.c_str();
-    size_t         n = raw.length();
-
-    if (n < 2 || p[0] != 0x1F || p[1] != 0x8B)
-    {
-        out = raw;                       /* 没压缩：原样用（万一哪天它不压了） */
-        return true;
-    }
-    if (n < 18)
-    {
-        return false;
-    }
-    {
-        const uint8_t flg = p[3];
-        size_t        off = 10;
-
-        if (flg & 0x04)                                        /* FEXTRA */
-        {
-            uint16_t xlen = (uint16_t)(p[off] | (p[off + 1] << 8));
-            off += 2 + xlen;
-        }
-        if (flg & 0x08) { while (off < n && p[off]) off++; off++; }   /* FNAME */
-        if (flg & 0x10) { while (off < n && p[off]) off++; off++; }   /* FCOMMENT */
-        if (flg & 0x02) { off += 2; }                                 /* FHCRC */
-        if (off + 8 > n)
-        {
-            return false;
-        }
-        {
-            static uint8_t buf[2048];
-            size_t got = tinfl_decompress_mem_to_mem(buf, sizeof(buf) - 1,
-                                                     p + off, n - off - 8, 0);
-
-            if (got == TINFL_DECOMPRESS_FAILED)
-            {
-                return false;
-            }
-            buf[got] = 0;
-            out = String((const char *)buf);
-        }
-    }
-    return true;
-}
-
-/* 在 JSON 里抠一个**字符串**字段：先定位 "key"，再取后面引号里的值 */
-static bool jsonStr(const String &body, const char *key, char *out, size_t cap)
-{
-    String pat = String("\"") + key + "\":\"";
-    int    i   = body.indexOf(pat);
-    int    j;
-
-    if (i < 0)
-    {
-        return false;
-    }
-    i += pat.length();
-    j = body.indexOf('"', i);
-    if (j < 0)
-    {
-        return false;
-    }
-    body.substring(i, j).toCharArray(out, cap);
-    return true;
-}
-
-/* 和风的天气文字 -> 固件那 9 个码 */
-static int qweatherCodeFromText(const char *txt)
-{
-    String s = String(txt);
-
-    if (s.indexOf("雷") >= 0) return 6;
-    if (s.indexOf("雪") >= 0 || s.indexOf("冰") >= 0) return 7;
-    if (s.indexOf("雾") >= 0 || s.indexOf("霾") >= 0 ||
-        s.indexOf("沙") >= 0 || s.indexOf("尘") >= 0) return 8;
-    if (s.indexOf("雨") >= 0)
-    {
-        return (s.indexOf("中雨") >= 0 || s.indexOf("大雨") >= 0 ||
-                s.indexOf("暴雨") >= 0 || s.indexOf("强") >= 0) ? 5 : 4;
-    }
-    if (s.indexOf("阴") >= 0) return 3;
-    if (s.indexOf("多云") >= 0 || s.indexOf("少云") >= 0 ||
-        s.indexOf("晴间") >= 0) return 2;
-    if (s.indexOf("晴") >= 0) return 1;
-    if (s.indexOf("风") >= 0 || s.indexOf("台风") >= 0) return 9;
-    return 2;
 }

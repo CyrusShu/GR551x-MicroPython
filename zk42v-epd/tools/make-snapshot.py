@@ -202,12 +202,8 @@ FILES = [
     ("outputs/ble-base/esp32/README.md",                "base/esp32/README.md"),
     ("outputs/ble-base/esp32/zk_base_esp32/zk_base_esp32.ino",
                                                         "base/esp32/zk_base_esp32/zk_base_esp32.ino"),
-    #  和风 JWT 用的 Ed25519：ESP32 的预编译库没编进 Ed25519，所以自带一份 TweetNaCl
-    #  （公有领域，https://tweetnacl.cr.yp.to/ 20140427 版；我们只加了 seed 版 keypair）
-    ("outputs/ble-base/esp32/zk_base_esp32/tweetnacl.c",
-                                                        "base/esp32/zk_base_esp32/tweetnacl.c"),
-    ("outputs/ble-base/esp32/zk_base_esp32/tweetnacl.h",
-                                                        "base/esp32/zk_base_esp32/tweetnacl.h"),
+    #  2026-10-02：和风那部分整体挪到 NAS 中继后，sketch 里那份 TweetNaCl 已挪到
+    #  ../_removed/（不再参与编译）—— 快照里也就不再收它。历史版本见 git。
 
     ("outputs/pyocd/BACKUP-zk42v.md",                   "docs/BACKUP-zk42v.md"),
     ("outputs/pyocd/WRITE-zk42v.md",                    "docs/WRITE-zk42v.md"),
