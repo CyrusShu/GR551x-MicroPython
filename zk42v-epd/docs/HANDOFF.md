@@ -138,6 +138,12 @@
 >   · 部署文件：`outputs/ble-base/deploy/`（compose / systemd 单元 / env 模板 /
 >     install-remote.sh / README 里的资源对比与故障对照表）
 >   · 那台 NAS 没有免密 sudo，所以选了 Docker 而不是 systemd（docker 对 cyrus 直用）
+>   · ✅ **ESP32 侧收尾（build-22，2026-10-02 18:26 实机）**：和风直连那套代码
+>     （TLS/JWT/TweetNaCl/gzip/探测）**整个删掉**，只留「局域网中继（首选）+ Open-Meteo（兜底）」，
+>     固件 1,795,975 B（-14 KB）。刷机后串口：
+>     `[BASE 62s] 天气源 = **局域网中继** 28.0℃ 小雨（http://192.168.100.221:8788/wx）`，
+>     **第一次就成、没再兜底**；时间仍取中继的 HTTP Date 头，与天气由 `0x20 … mode=0` 一条带走。
+>     里程碑 tag **`zk42v-wx-v1`**（提交 `dc50ee1` / `63e5c61`）。
 >
 > 🚨 **第三次更正（2026-10-02）**：换上正确 Host 后变成 **401 Unauthorized**。
 > 对照官方示例才发现 **JWT payload 必须是四个字段 `{iss, sub, iat, exp}`，我漏了 `iss`**
