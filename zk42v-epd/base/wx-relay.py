@@ -34,6 +34,17 @@
 接口约定（固件只认这两个字段，别改名字）：
     code  固件那 9 个天气码（1晴 2多云 3阴 4小雨 5大雨 6雷阵雨 7雪 8雾 9风）
     temp  ℃，**整数**表示没小数（和风就是整数度），带小数点表示有小数（模型值）
+
+2026-10-02 补：**天气预警**（用户："手机上有暴雨警报、价签只有小雨"）
+    和风的老接口 /v7/warning/now 已经**下架**（403 Deprecated），新的是
+        GET /weatheralert/v1/current/{纬度}/{经度}     ← 注意是**纬度在前**
+    预警字段摊平成几个**平铺**字段（不是嵌套对象）—— ESP32 那边是手写字符串查找，
+    嵌套的 "code" 会和实况的 "code" 撞车：
+        alert   生效中的预警条数（0 = 没有；字段缺省也当没有）
+        alevel  最严重的一条的级别：1白 2蓝 3黄 4橙 5红（固件只有黑/白/红三色，
+                所以 ≥4（橙/红）用红色画，其余用黑色）
+        atype   预警类型名（暴雨 / 雷电 / 雷雨大风 / 台风 …）
+        aend    到期时间（和风给的 ISO 串，本地时间）
 """
 
 from __future__ import annotations
@@ -68,27 +79,48 @@ def fetch_once(a) -> dict:
     # ① 和风
     try:
         if a.jwt_key and a.kid and a.sub and a.dev_id:
+            # 签一次就够：实况和预警共用同一个 token（make_jwt 是 openssl 子进程 + 一堆打印，
+            # 每 2 分钟签两遍既慢又吵）
+            tok = W.make_jwt(a.jwt_key, a.kid, a.sub, a.dev_id, quiet=True)
             now, upd = W.qweather_jwt(a.jwt_key, a.kid, a.sub, a.lat, a.lon,
-                                      a.host, a.dev_id)
+                                      a.host, a.dev_id, token=tok)
+            alerts = W.qweather_alert(a.host, a.lat, a.lon, bearer=tok)
         elif a.qweather_key:
             now, upd = W.qweather(a.qweather_key, a.lat, a.lon, a.host)
+            alerts = W.qweather_alert(a.host, a.lat, a.lon, key=a.qweather_key)
         else:
             raise RuntimeError("没配和风凭据（--jwt-key+--kid+--sub+--dev-id 或 --qweather-key）")
         text = now.get("text") or ""
-        return {"code": W.qweather_code(text), "temp": float(now["temp"]),
-                "text": text, "src": "qweather", "obs": now.get("obsTime", "")}
+        out = {"code": W.qweather_code(text), "temp": float(now["temp"]),
+               "text": text, "src": "qweather", "obs": now.get("obsTime", "")}
+        out.update(alert_fields(alerts))
+        return out
     except Exception as e:
         err = str(e)[:200]
 
     # ② 退回 Open-Meteo（模型值，带小数）
     try:
         cur, glat, glon, elev = W.om(a.lat, a.lon, a.model)
-        return {"code": _code_of(cur.get("weather_code")),
-                "temp": float(cur["temperature_2m"]),
-                "text": W.WMO_TO_TAG.get(cur.get("weather_code"), ""),
-                "src": "open-meteo", "obs": cur.get("time", ""), "qweather_err": err}
+        out = {"code": _code_of(cur.get("weather_code")),
+               "temp": float(cur["temperature_2m"]),
+               "text": W.WMO_TO_TAG.get(cur.get("weather_code"), ""),
+               "src": "open-meteo", "obs": cur.get("time", ""), "qweather_err": err}
+        return out
     except Exception as e2:
         raise RuntimeError("和风失败(%s)；Open-Meteo 也失败(%s)" % (err, str(e2)[:120]))
+
+
+def alert_fields(alerts) -> dict:
+    """预警 → JSON 里那几个平铺字段。**预警取不到绝不能让天气也拿不到**，
+    所以这里出错一律当作"没有预警"（只印一行日志）。"""
+    try:
+        s = W.alert_summary(alerts)
+    except Exception as e:
+        print("[relay] 预警解析失败（当没有预警处理）：%s" % str(e)[:120])
+        return {}
+    if not s:
+        return {"alert": 0}
+    return {"alert": s["n"], "alevel": s["level"], "atype": s["type"], "aend": s["until"]}
 
 
 def _code_of(wmo) -> int:
@@ -119,7 +151,15 @@ class Handler(BaseHTTPRequestHandler):
                 body = fetch_once(self.a)
                 CACHE["t"], CACHE["body"] = time.time(), body
                 print("[relay] %s %.1f℃ %s（%s）"
-                      % (body["src"], body["temp"], body["text"], body.get("obs", "")))
+                      % (body["src"], body["temp"], body["text"], body.get("obs", "")),
+                      end="")
+                if body.get("alert"):
+                    print("   ⚠ %s%s预警 到 %s" % (body.get("atype", ""),
+                                                   {1: "白", 2: "蓝", 3: "黄", 4: "橙",
+                                                    5: "红"}.get(body.get("alevel"), ""),
+                                                   body.get("aend", "")))
+                else:
+                    print("   无预警")
             except Exception as e:
                 if CACHE["body"] is not None:       # 取不到就继续用旧的（价签那边别断）
                     print("[relay] 取数失败，先用 %.0f 秒前的旧值：%s" % (age, str(e)[:120]))

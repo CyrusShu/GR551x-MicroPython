@@ -50,15 +50,18 @@ def build(tmpdir):
 
 
 def render(exe, mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp_c=-128,
-           city='', memo_spec='', memo_text=''):
+           city='', memo_spec='', memo_text='', alert_lv=0, alert_type=''):
     """opt：选项位，跟固件 zk_opt.h 的 ZK_OPT_xxx 对齐（这里只用到 0x04 = 不画农历）
        bat_mv / temp_c10：电池毫伏、温度×10（0 = 按"没读到"画，右上角就不显示）
        city：build 61 起表头温度后面那个城市名（基站 0x79 下发；空 = 不画）
        memo_spec / memo_text：build 67 的纪念日提醒，例 "10-05" + "付婧文生日快乐！"
-                              （那天套黑框 + 1 号左边空白处框出这句话）"""
+                              （那天套黑框 + 1 号左边空白处框出这句话）
+       alert_lv / alert_type：build 71 的天气预警（基站 0x7C 下发），
+                              例 4 + "暴雨" —— 有预警时表头那格改画它"""
     out = subprocess.run([exe, str(mode), str(ts), str(opt),
                           str(bat_mv), str(temp_c10), str(wx_code),
-                          str(env_temp_c), city, memo_spec, memo_text], check=True,
+                          str(env_temp_c), city, memo_spec, memo_text,
+                          str(alert_lv), alert_type], check=True,
                          stdout=subprocess.PIPE).stdout
     assert len(out) == BYTES + 2 * GUARD, len(out)
     head, body, tail = out[:GUARD], out[GUARD:GUARD + BYTES], out[GUARD + BYTES:]
@@ -113,12 +116,14 @@ def main(argv):
     city     = argv[10] if len(argv) > 10 else ''         # 城市名（build 61；空 = 不画）
     memo_s   = argv[11] if len(argv) > 11 else ''         # 纪念日 "月-日"（build 67）
     memo_t   = argv[12] if len(argv) > 12 else ''         # 祝福语
+    alert_lv = int(argv[13]) if len(argv) > 13 else 0     # 预警级别（build 71；0 = 没有）
+    alert_t  = argv[14] if len(argv) > 14 else ''         # 预警类型名（"暴雨"…）
     ts += tz * 3600
 
     with tempfile.TemporaryDirectory(prefix='zkgui-') as td:
         exe = build(td)
         body = render(exe, mode, ts, opt, bat_mv, temp_c10, wx_code, env_temp, city,
-                      memo_s, memo_t)
+                      memo_s, memo_t, alert_lv, alert_t)
     rows = to_rgb(body)
     write_png(out, rows)
 

@@ -44,6 +44,15 @@ int main(int argc, char **argv)
     info.memo_mon = 0;
     info.memo_day = 0;
     info.memo     = "";
+    /* build 71：天气预警 —— argv[11] = 级别（1白 2蓝 3黄 4橙 5红，0/缺省 = 没有），
+       argv[12] = 类型名（"暴雨"/"雷电"…）。有预警时表头那格会改画它。 */
+    info.alert_level = 0;
+    info.alert_type  = "";
+    if (argc > 11)
+    {
+        info.alert_level = (int8_t)atoi(argv[11]);
+        info.alert_type  = (argc > 12) ? argv[12] : "";
+    }
     if (argc > 10)
     {
         int mm = 0, dd = 0;

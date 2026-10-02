@@ -101,7 +101,7 @@ typedef struct
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 #define ZK_FLAG_AON_TB       0x0020u   /* build 59：毫秒时基在跑 AON 定时器（不是 CYCCNT） */
 
-#define ZK_DBG_WORDS 116
+#define ZK_DBG_WORDS 117
 
 typedef struct
 {
@@ -290,7 +290,8 @@ typedef struct
     uint32_t time_keep_cnt;       /* 113: 其中"模式=0 保持当前模式"的次数（基站推天气带时间的那些） */
     uint32_t city_cmds;           /* 114: 收到过多少次 0x79 SET_CITY（基站下发的城市名） */
     uint32_t memo_cmds;           /* 115: 收到过多少次 0x7A SET_MEMO（纪念日提醒：生日高亮） */
-    uint32_t rsv[ZK_DBG_WORDS - 116];
+    uint32_t alert_cmds;          /* 116: 收到过多少次 0x7C SET_ALERT（天气预警） */
+    uint32_t rsv[ZK_DBG_WORDS - 117];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

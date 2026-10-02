@@ -48,6 +48,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -66,6 +67,7 @@ CMD_SET_WX = 0x71               # [0x71, code, temp_s8]
 CMD_READ_BAT = 0x72             # 立刻重读电池 + 重画一页
 CMD_SET_CITY = 0x79             # [0x79, utf8 城市名]（build 61：表头温度后面那个）
 CMD_SET_MEMO = 0x7A             # [0x7A, mon, day, utf8 祝福语]（build 67：纪念日高亮）
+CMD_SET_ALERT = 0x7C            # [0x7C, level, utf8 类型名]（build 71：和风的天气预警）
 
 MODE_KEEP = 0                   # build 60 起的固件认这个：只对表、别动页面
 MODE_CALENDAR = 1
@@ -193,6 +195,10 @@ def fetch_weather_any(args, lat: float, lon: float):
     key = (getattr(args, "qweather_key", "") or os.environ.get("QWEATHER_KEY", "")).strip()
     host = getattr(args, "qweather_host", "devapi.qweather.com")
 
+    relay = (getattr(args, "relay", "") or "").strip()
+    if relay:
+        return fetch_from_relay(args, relay)
+
     if src in ("auto", "qweather") and key:
         c, t, w, wind = fetch_weather_qweather(lat, lon, key, host)
         return c, t, w, wind, "和风天气(实况)", False        # 整数度
@@ -200,6 +206,91 @@ def fetch_weather_any(args, lat: float, lon: float):
         raise RuntimeError("选了和风天气但没给 key（--qweather-key 或环境变量 QWEATHER_KEY）")
     c, t, w, wind = fetch_weather(lat, lon)
     return c, t, w, wind, "Open-Meteo(模型)", True          # 模型值带一位小数
+
+
+# ---- 局域网中继（NAS 上的 wx-relay.py，2026-10-02 起是**首选**）---------------
+#  ESP32 那版基站直连和风连不上（TLS 发不出去），所以在 NAS 上放了个中继替它跑
+#  HTTPS+JWT；Mac 这版也能用同一个中继（好处：不用在 Mac 上放和风凭据，
+#  而且**预警**也在同一个 JSON 里，跟 ESP32 完全对称）。
+#  中继的返回形如：
+#     {"code":4,"temp":28,"text":"小雨","src":"qweather","obs":"…",
+#      "alert":3,"alevel":4,"atype":"暴雨","aend":"2026-10-03T18:13+08:00"}
+def fetch_from_relay(args, url: str):
+    """跟 ESP32 基站读的是同一份 JSON。返回跟 fetch_weather_any 一样的六元组。"""
+    req = urllib.request.Request(url, headers={"User-Agent": "zk42v-base/1"})
+    with urllib.request.urlopen(req, timeout=10.0) as r:
+        raw = r.read()
+        if r.headers.get("Content-Encoding") == "gzip":
+            import gzip as _gz
+            raw = _gz.decompress(raw)
+    j = json.loads(raw.decode("utf-8", "replace"))
+    code = int(j["code"])
+    temp = float(j["temp"])
+    # 中继发的温度"整数就是整数度、带小数就是模型值"——跟固件的两条载荷格式对齐
+    has_tenths = abs(temp - round(temp)) >= 0.05
+    setattr(args, "_relay_alert", (int(j.get("alert") or 0), int(j.get("alevel") or 0),
+                                   str(j.get("atype") or "")))
+    return code, temp, None, 0.0, "局域网中继(" + url + ")", has_tenths
+
+
+# ---- 和风「实时天气预警」（2026-10-02 补）------------------------------------
+#  用户："手机上是局地雷暴雨而且有暴雨警报，中继获取的是小雨"。
+#  ⚠ 老接口 **/v7/warning/now 已经被和风下架**（403 Deprecated，"Please use the
+#    latest version"）；新的是
+#        GET /weatheralert/v1/current/{纬度}/{经度}
+#    又是**纬度在前**（和风自己都不统一：weather/now 是 经度,纬度）。
+#  返回 {"metadata":{…},"alerts":[{eventType,severity,color,headline,expireTime…}]}
+ALERT_LEVEL = {"white": 1, "blue": 2, "yellow": 3, "orange": 4, "red": 5}
+ALERT_SEVERITY = {"minor": 1, "moderate": 2, "severe": 3, "extreme": 4}
+
+
+def fetch_alert_qweather(lat: float, lon: float, key: str,
+                         host: str = "devapi.qweather.com", timeout: float = 10.0):
+    """返回 (level, 类型名, 条数)：没有生效中的预警就是 (0, "", 0)。
+    只有和风这一条路（预警必须带凭据），所以没 key 时调用方根本不该调它。"""
+    url = ("https://%s/weatheralert/v1/current/%.2f/%.2f?lang=zh&localTime=true&key=%s"
+           % (host, lat, lon, urllib.parse.quote(key)))
+    req = urllib.request.Request(url, headers={"User-Agent": "zk42v-base/1"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+        if r.headers.get("Content-Encoding") == "gzip":
+            import gzip as _gz
+            raw = _gz.decompress(raw)
+    j = json.loads(raw.decode("utf-8", "replace"))
+    alerts = j.get("alerts") or []
+    if not alerts:
+        return 0, "", 0
+
+    def rank(a):
+        col = ((a.get("color") or {}).get("code") or "").lower()
+        return (ALERT_LEVEL.get(col, 0), ALERT_SEVERITY.get(a.get("severity") or "", 0))
+
+    top = max(alerts, key=rank)
+    col = ((top.get("color") or {}).get("code") or "").lower()
+    # ⚠ 元组一定要带括号：`[A, B for x in y]` 里的逗号会被当成两个元素，
+    #   解析器随即在 for 处报 SyntaxError（Mac 自带 Python 3.9.6 上踩过）。
+    return (ALERT_LEVEL.get(col, 0),
+            (top.get("eventType") or {}).get("name") or "",
+            len(alerts))
+
+
+def fetch_alert_any(args, lat: float, lon: float):
+    """按当前配置取预警；取不到就返回 None（**绝不能让预警把天气也拖垮**）。"""
+    # 走中继的话，预警是刚才那次请求顺手带回来的（同一个 JSON），不用再问一遍
+    ra = getattr(args, "_relay_alert", None)
+    if ra is not None:
+        n, lv, atype = ra
+        return (lv, atype, n) if n > 0 and lv > 0 else (0, "", 0)
+
+    key = (getattr(args, "qweather_key", "") or os.environ.get("QWEATHER_KEY", "")).strip()
+    host = getattr(args, "qweather_host", "devapi.qweather.com")
+    if not key:
+        return None
+    try:
+        return fetch_alert_qweather(lat, lon, key, host)
+    except Exception as e:
+        log("  ! 取预警失败（不影响天气）: " + str(e)[:160], args.log)
+        return None
 
 
 def explain(e: Exception) -> str:
@@ -270,7 +361,8 @@ async def find_tag(args, scan_s: float, quiet: bool = False):
 
 
 # ---------------------------------------------------------------- sync
-async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None) -> bool:
+async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
+                    last_alert=None) -> bool:
     """连上去把时间和/或天气写进价签。
 
     ⚠ 固件的脾气（Src/ble/zk_epd_svc.c:930 起）：日历模式只在**换天**时自己重画，
@@ -295,6 +387,7 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
     # 为什么在意这个：固件对每条命令都置 s_need_gui → 各刷一屏（`画过 2 次` 就是这么来的）。
     # 挨着发至少有机会被合并；先取天气则少 2 秒的中间等待。
     wx_payload = None
+    alert_payload = None
     if do_weather and not args.no_weather:
         try:
             code, temp, wmo, wind, wsrc, has_tenths = fetch_weather_any(args, args.lat,
@@ -328,6 +421,26 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
                     last_wx["v"] = (code, t10)
         except Exception as e:
             log("  ! 取天气失败：" + explain(e), args.log)
+
+        # 顺带取**天气预警**（和风）：有预警时表头那格"天气文字"改画它。
+        # 预警和天气是**两条独立的路** —— 预警取不到（没 key / 接口抽风）不影响天气。
+        # 只在"有 / 没有"或"类型名或级别变了"时才发，不然每轮都白刷一屏。
+        alert = fetch_alert_any(args, args.lat, args.lon)
+        if alert is not None:
+            lv, atype, an = alert
+            prev_a = (last_alert or {}).get("a")
+            if prev_a != (lv, atype):
+                if lv > 0:
+                    alert_payload = bytes([CMD_SET_ALERT, lv & 0xFF]) + atype.encode("utf-8")
+                    log("  · 天气预警[" + str(an) + " 条]：最严重的是 " + atype
+                        + {1: "白色", 2: "蓝色", 3: "黄色", 4: "橙色", 5: "红色"}.get(lv, "")
+                        + "预警 → 表头那格改画它（" + ("红色" if lv >= 3 else "黑色") + "）",
+                        args.log)
+                else:
+                    alert_payload = bytes([CMD_SET_ALERT, 0])       # 清了
+                    log("  · 天气预警已解除 → 发一条清掉屏上那条", args.log)
+                if last_alert is not None:
+                    last_alert["a"] = (lv, atype)
 
     # 2026-10-01（用户要求）：**只要这次要推天气，就把时间也一起带上** ——
     # 每次推天气都顺便对一次表，价签的钟一直是校准的；反正那条命令本来就要重画一页。
@@ -417,6 +530,16 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None)
                 await cli.write_gatt_char(WR_UUID, bytes([CMD_SET_MEMO]), response=True)
                 log("  → 已清掉纪念日提醒", args.log)
 
+            # 4b) 天气预警（build 71）—— 和风的实时预警，有预警时表头那格改画它
+            #     （详见 fetch_alert_qweather 上面那段注释：老接口已下架，新路径
+            #      是 /weatheralert/v1/current/纬度/经度）
+            if alert_payload is not None:
+                try:
+                    await cli.write_gatt_char(WR_UUID, alert_payload, response=True)
+                    log("  → 天气预警  载荷=" + alert_payload.hex(" "), args.log)
+                except Exception as e:
+                    log("  天气预警发送失败（不影响）：" + explain(e), args.log)
+
             # 5) 顺手读一次电池（价签会回 bat=.. pct=..）
             if args.battery:
                 await cli.write_gatt_char(WR_UUID, bytes([CMD_READ_BAT]), response=True)
@@ -497,6 +620,7 @@ async def cmd_watch(args) -> int:
     last_time = {}      # addr -> 上次成功同步时间的 monotonic 时间
     last_wx_t = {}      # addr -> 上次查天气的 monotonic 时间
     last_wx = {}        # addr -> {"v": (code, temp)} 上次真发出去的天气值
+    last_alert = {}     # addr -> {"a": (level, 类型名)} 上次真发出去的预警
     present = set()     # 上一轮在广播的设备
 
     while True:
@@ -529,7 +653,8 @@ async def cmd_watch(args) -> int:
             # 2026-10-01（用户要求）：推天气的时候把时间一起带上（合并成一条命令），
             # 这样每次推天气都顺便对一次表 —— 所以 do_wx 也就意味着 do_time。
             do_time = reappeared or due_time or do_wx
-            if await sync_once(dev, adv, args, do_time, do_wx, last_wx.setdefault(addr, {})):
+            if await sync_once(dev, adv, args, do_time, do_wx, last_wx.setdefault(addr, {}),
+                               last_alert.setdefault(addr, {})):
                 if do_time:
                     last_time[addr] = time.monotonic()
                 if do_wx:
@@ -574,6 +699,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "填了 auto 就会自动改用它 —— 它给的是**实况**，最贴近手机上那个数")
     p.add_argument("--qweather-host", default="devapi.qweather.com",
                    help="免费订阅 devapi.qweather.com；标准订阅 api.qweather.com")
+    p.add_argument("--relay", default=os.environ.get("WX_RELAY_URL", ""),
+                   help="局域网中继的地址（例 http://192.168.100.221:8788/wx）。"
+                        "给了它就走中继：Mac 上不用放和风凭据，而且**天气预警**也"
+                        "在同一份 JSON 里 —— 跟 ESP32 基站完全对称。")
     p.add_argument("--no-weather", action="store_true", help="不发天气，只对时间")
     p.add_argument("--battery", action="store_true", help="顺带发 0x72 读一次电池")
     p.add_argument("--scan", type=float, default=6.0, help="单轮扫描秒数（默认 6）")

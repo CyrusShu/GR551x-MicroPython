@@ -1,5 +1,5 @@
 /* ===========================================================================
- *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-22）
+ *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-23）
  *
  *  干什么：让一块 ESP32 当 BLE central，扫到价签就连上去，把
  *          · 时间（0x20：UTC 秒 + 时区 + 模式）
@@ -61,6 +61,12 @@
 #define MEMO_TEXT       "付婧文生日快乐！"
 #define CMD_SET_MEMO    0x7A
 #define CMD_SET_MEMO_MORE 0x7B   // 续传片段（MTU 只有 23 时一句祝福语要分几次发）
+
+// ②d 天气预警（build 71 固件起支持）：有预警时，表头那格"天气文字"（雷阵雨）
+//    会被预警名顶掉，≥3（黄/橙/红）画红的、1~2（白/蓝）画黑的。
+//    数据来源 = NAS 上 wx-relay 取的和风实时预警（老接口 /v7/warning/now 已下架，
+//    新的是 /weatheralert/v1/current/{纬度}/{经度}）；我们不直连，只读中继的 JSON。
+#define CMD_SET_ALERT   0x7C
 
 // ③ 价签：按广播名找（各平台看到的 MAC 不一样，名字最稳）
 #define TAG_NAME        "ZK42V-EPD"
@@ -167,12 +173,29 @@ static bool  wxTempHasTenths = true;
 static int   wxSentCode = -1;     // 上次真发出去的（"值没变就不发"）
 static int   wxSentTemp = -999;
 
+/* build-23：**天气预警**（用户："手机上是局地雷暴雨而且有暴雨警报，中继获取的是小雨"）。
+   和风的老预警接口 /v7/warning/now 已经下架（403 Deprecated），新的是
+   /weatheralert/v1/current/纬度/经度 —— 这一趟由 NAS 上的中继代跑，我们只从它的
+   JSON 里读几个**平铺**字段（不是嵌套对象，方便手写查找）：
+     alert  生效中的条数（0/缺省 = 没有）
+     alevel 最严重那条的级别：1白 2蓝 3黄 4橙 5红
+     atype  类型名（暴雨 / 雷电 / 雷雨大风 / 台风 …）
+     aend   到期时间（ISO 串）
+   屏上只有黑/白/红三色，所以固件那边拿 level>=4 当"红"，其余当"黑"。*/
+static int   wxAlertLevel = 0;
+static char  wxAlertType[24] = "";
+static char  wxAlertEnd[32]  = "";
+static unsigned long wxAlertAtMs = 0;   /* 上次从中继拿到预警的时刻（判断"过期了没有"） */
+static const unsigned long ALERT_STALE_MS = 12UL * 3600UL * 1000UL;
+
 static int32_t utcEpoch = 0;        // UTC 秒（0 = 还没拿到）
 static bool    tagPresent = false;  // 上一轮扫描有没有看到价签
 static bool    forceTimeSync = true;
 static bool    everSynced = false;  // 开机后至少连过一次（验证链路用）
 static char    citySent[24] = "";   // 上次发出去的城市名（build 61；没变就不重发）
 static bool    memoSent = false;    // 纪念日发过没有（build 67）
+static int     alertSentLevel = -1; // 上次发出去的预警级别（build 71；-1 = 还没发过）
+static char    alertSentType[24] = "";   // 上次发出去的预警类型名
 
 /* ------------------------------ 小工具 ---------------------------------- */
 
@@ -204,6 +227,30 @@ static const char *wxName(int code)
         case 9:  return "风";
         default: return "无";
     }
+}
+
+/* 预警级别：1白 2蓝 3黄 4橙 5红（和风 color.code） */
+static const char *alertLevelName(int lv)
+{
+    switch (lv)
+    {
+        case 1:  return "白色预警";
+        case 2:  return "蓝色预警";
+        case 3:  return "黄色预警";
+        case 4:  return "橙色预警";
+        case 5:  return "红色预警";
+        default: return "预警";
+    }
+}
+
+/* 现在生效的预警级别（0 = 没有/过期了）。
+   为什么要有"过期"这一说：预警是从中继顺带读来的，中继不通时（NAS 重启之类）
+   我们不该继续拿几小时前的旧预警吓自己。12 小时没更新就当它过期。 */
+static int alertLevelNow()
+{
+    if (wxAlertLevel <= 0) return 0;
+    if ((unsigned long)(millis() - wxAlertAtMs) > ALERT_STALE_MS) return 0;
+    return wxAlertLevel;
 }
 
 // WMO weather_code（Open-Meteo 用的）→ 固件那 9 个码
@@ -271,6 +318,19 @@ static bool findJsonStringInCurrent(const String &body, const char *key, char *o
     int j = s.indexOf('"', i + (int)pat.length());
     if (j < 0) return false;
     s.substring(i + (int)pat.length(), j).toCharArray(out, n);
+    return true;
+}
+
+/* 顶层取字符串字段（中继那套平铺 JSON 用的，比如 "atype":"暴雨"）。
+   ⚠ 不能复用上面那个：那个会先找 "current":，中继的返回里没有这一段。*/
+static bool findJsonString(const String &body, const char *key, char *out, size_t n)
+{
+    String pat = String("\"") + key + "\":\"";
+    int i = body.indexOf(pat);
+    if (i < 0) return false;
+    int j = body.indexOf('"', i + (int)pat.length());
+    if (j < 0) return false;
+    body.substring(i + (int)pat.length(), j).toCharArray(out, n);
     return true;
 }
 
@@ -546,6 +606,24 @@ static bool fetchFromRelay(String *dateOut)
             logf("  中继：返回里没有 code/temp（前 80 字节：%s）", body.substring(0, 80).c_str());
             return false;
         }
+        /* 预警（中继 build-23 才有这几个字段；老版中继没有 → 当作"没有预警"）。
+           ⚠ 每个字段单独判，缺一个不会把整条天气判失败 —— 预警是"锦上添花"，
+           不能因为它没取到就让价签连天气都没有。 */
+        {
+            float n = 0, lv = 0;
+
+            wxAlertLevel  = 0;
+            wxAlertType[0] = 0;
+            wxAlertEnd[0]  = 0;
+            if (findJsonNumber(body, "alert", &n) && n > 0 &&
+                findJsonNumber(body, "alevel", &lv))
+            {
+                wxAlertLevel = (int)lv;
+                wxAlertAtMs  = millis();
+                findJsonString(body, "atype", wxAlertType, sizeof(wxAlertType));
+                findJsonString(body, "aend", wxAlertEnd, sizeof(wxAlertEnd));
+            }
+        }
         wxCode = (int)wx;
         /* 中继发整数就按整数度处理（屏上 29℃），带小数就当十分之一度（屏上 27.7℃） */
         if (fabsf(tp - lroundf(tp)) < 0.05f)
@@ -561,6 +639,9 @@ static bool fetchFromRelay(String *dateOut)
         haveWeather = true;
         logf("天气源 = **局域网中继** %.1f℃ %s（%s）",
              wxTemp / 10.0, wxName(wxCode), WX_RELAY_URL);
+        if (wxAlertLevel > 0)
+            logf("  ⚠ 预警 %s%s 到 %s（中继一并带上来的）",
+                 wxAlertType, alertLevelName(wxAlertLevel), wxAlertEnd);
     }
     return true;
 }
@@ -918,6 +999,7 @@ static bool doSync(BLEAdvertisedDevice &dev)
     bool sentWx = sendWx && !sentTime;
     bool wroteCity = false;                 /* 这一轮到底写没写东西（日志别乱说"没写"） */
     bool wroteMemo = false;
+    bool wroteAlert = false;                /* build 71：这一轮发没发天气预警 */
     if (haveWeather)
     {
         if (!sendWx)
@@ -1021,13 +1103,49 @@ static bool doSync(BLEAdvertisedDevice &dev)
              MEMO_MON, MEMO_DAY, MEMO_TEXT, parts);
     }
 
+    // ③c 天气预警（build 71）：和风的实时预警，由 NAS 中继取回（我们只读 json）。
+    //     有预警 → 表头那格"天气文字"改画预警名；预警结束（level 回到 0）也要发一条
+    //     清掉它，否则屏上会挂着一条早就过期的预警。
+    //     载荷 = 7C <level> <utf8 类型名>，最多 2+15=17 字节（< MTU-3，不用分片）。
+    {
+        int  lv  = alertLevelNow();
+        bool chg = (lv != alertSentLevel) || (strcmp(wxAlertType, alertSentType) != 0);
+
+        if (chg && (lv > 0 || alertSentLevel > 0))
+        {
+            uint8_t p[20];
+            size_t  n  = 0;
+            size_t  tl = (lv > 0) ? strlen(wxAlertType) : 0;
+
+            if (tl > 15) tl = 15;           /* 表头那格最多画 3 个字，15 字节绰绰有余 */
+            p[n++] = CMD_SET_ALERT;
+            p[n++] = (uint8_t)((lv > 0) ? lv : 0);
+            memcpy(p + n, wxAlertType, tl);
+            n += tl;
+            wr->writeValue(p, n, true);
+            alertSentLevel = lv;
+            strncpy(alertSentType, wxAlertType, sizeof(alertSentType) - 1);
+            alertSentType[sizeof(alertSentType) - 1] = 0;
+            wroteAlert = true;
+            if (lv > 0)
+            {
+                logf("→ 天气预警 %s%s（表头那格改画它）", wxAlertType, alertLevelName(lv));
+            }
+            else
+            {
+                logf("→ 天气预警已解除（发一条清掉屏上那条）");
+            }
+        }
+    }
+
     delay(NOTIFY_DWELL_MS);                 // 留点时间把价签的回包收全
     client->disconnect();
 
     forceTimeSync = false;
     logf("已断开。%s",
-         (sentTime || sentWx || wroteCity || wroteMemo) ? "价签这时在刷屏，约 16 秒"
-                                                       : "本轮没写任何命令，价签不会重画");
+         (sentTime || sentWx || wroteCity || wroteMemo || wroteAlert)
+             ? "价签这时在刷屏，约 16 秒"
+             : "本轮没写任何命令，价签不会重画");
     return true;
 }
 
@@ -1039,7 +1157,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-22");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-23");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),

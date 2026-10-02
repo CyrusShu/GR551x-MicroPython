@@ -32,6 +32,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 MODELS = [
@@ -105,6 +106,18 @@ def _http_error_body(e) -> str:
 
 
 def qweather_url(url: str, bearer: str = ""):
+    d = qweather_json(url, bearer)
+    if str(d.get("code")) != "200":
+        raise RuntimeError("和风返回 code=%s（401/403 通常是 key 不对，"
+                           "或这个 key 没开通「实时天气 now」）" % d.get("code"))
+    return d["now"], d.get("updateTime", "")
+
+
+def qweather_json(url: str, bearer: str = ""):
+    """发一个和风请求，返回**原始 JSON**（不按 /v7 那套 code/now 结构解释）。
+
+    新版的接口（比如天气预警）根本不带 `code` 字段，所以这层必须独立出来。
+    """
     req = urllib.request.Request(url, headers={"User-Agent": "zk42v-wx-compare/1"})
     if bearer:
         req.add_header("Authorization", "Bearer " + bearer)
@@ -120,12 +133,63 @@ def qweather_url(url: str, bearer: str = ""):
             hint = ("\n    → **域名不对**：和风给每个帐号分配独立的 API Host，"
                     "去 控制台-设置 复制那串（形如 xxx.xx.qweatherapi.com）填到 --qweather-host；"
                     "\n      老的 devapi/api/geoapi 已从 2026 年起逐步停服")
+        elif "Deprecated" in body:
+            hint = ("\n    → **这个接口已被和风下架**（老路径不再可用），"
+                    "看 https://dev.qweather.com/docs/api/ 换新路径")
         raise RuntimeError("HTTP %s  响应体：%s%s" % (e.code, body, hint))
-    d = json.loads(raw.decode("utf-8", "replace"))
-    if str(d.get("code")) != "200":
-        raise RuntimeError("和风返回 code=%s（401/403 通常是 key 不对，"
-                           "或这个 key 没开通「实时天气 now」）" % d.get("code"))
-    return d["now"], d.get("updateTime", "")
+    return json.loads(raw.decode("utf-8", "replace"))
+
+
+# ---- 和风「实时天气预警」（2026-10-02 补：老接口已下架） ----------------------
+#  老路径 /v7/warning/now 现在直接回 403 Deprecated（"Please use the latest version"）。
+#  新路径：GET /weatheralert/v1/current/{纬度}/{经度}     ← ⚠ 又是**纬度在前**
+#  （和风自己都不统一：weather/now 是 经度,纬度，这个却是 纬度/经度）
+#  返回 {"metadata":{...},"alerts":[{eventType,severity,color,headline,expireTime,...}]}
+ALERT_LEVEL = {"white": 1, "blue": 2, "yellow": 3, "orange": 4, "red": 5}
+ALERT_SEVERITY = {"minor": 1, "moderate": 2, "severe": 3, "extreme": 4}
+
+
+def qweather_alert(host: str, lat: float, lon: float, bearer: str = "",
+                   key: str = ""):
+    """把生效中的预警取回来（**空列表 = 没有预警**，不是出错）。"""
+    url = ("https://%s/weatheralert/v1/current/%.2f/%.2f?lang=zh&localTime=true"
+           % (host, lat, lon))
+    if key:
+        url += "&key=" + urllib.parse.quote(key)
+    d = qweather_json(url, bearer)
+    return d.get("alerts") or []
+
+
+def alert_summary(alerts):
+    """把 alerts 压成中继/固件要用的那几个字段；挑**最严重**的一条当代表。
+
+    返回 None = 当前没有预警。中继会把它摊平成 JSON 里几个平铺字段
+    （alert/alevel/atype/aend），因为 ESP32 那边是手写的字符串查找，
+    嵌套对象不好取（还容易撞上别的 "code"）。
+    """
+    if not alerts:
+        return None
+
+    def rank(a):
+        col = ((a.get("color") or {}).get("code") or "").lower()
+        return (ALERT_LEVEL.get(col, 0), ALERT_SEVERITY.get(a.get("severity") or "", 0))
+
+    top = max(alerts, key=rank)
+    col = ((top.get("color") or {}).get("code") or "").lower()
+    # ⚠ 元组一定要带括号：列表推导里 `[A, B for x in y]` 的逗号会被当成两个元素，
+    #   解析器随即在 for 处报 SyntaxError（Mac 自带 Python 3.9.6 上实测踩过）。
+    pairs = [((a.get("eventType") or {}).get("name") or "",
+              (a.get("color") or {}).get("code") or "") for a in alerts]
+    return {
+        "n":     len(alerts),
+        "level": ALERT_LEVEL.get(col, 0),          # 1白 2蓝 3黄 4橙 5红
+        "color": col,
+        "type":  (top.get("eventType") or {}).get("name") or "",   # 暴雨 / 雷电 / 台风
+        "title": top.get("headline") or "",
+        "until": top.get("expireTime") or "",
+        "all":   pairs,
+    }
+
 
 
 # ---- 和风 JWT（EdDSA）：在 Mac 上用私钥签一个，用来**不刷机先验通** -----------
@@ -148,7 +212,8 @@ def find_openssl() -> str:
 _PUB_SHOWN = False
 
 
-def make_jwt(pem_path: str, kid: str, sub: str, iss: str = "") -> str:
+def make_jwt(pem_path: str, kid: str, sub: str, iss: str = "",
+             quiet: bool = False) -> str:
     global _PUB_SHOWN
     b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()   # noqa: E731
     now = int(time.time())
@@ -158,16 +223,19 @@ def make_jwt(pem_path: str, kid: str, sub: str, iss: str = "") -> str:
     pay = json.dumps({"iss": iss, "sub": sub, "iat": now - 30, "exp": now + 900},
                      separators=(",", ":"))
     # 打印出"我到底签了什么"——排 401 的时候一眼就能看出 kid/sub 是不是填反了
-    print("    JWT header  = %s" % hdr)
-    print("    JWT payload = %s" % pay)
-    try:      # 顺手报一下"这把私钥对应的公钥"——401 时拿它跟控制台里那把对一眼
-        if not _PUB_SHOWN:
-            der = subprocess.run([find_openssl(), "pkey", "-in", pem_path, "-pubout",
-                                  "-outform", "DER"], capture_output=True, check=True).stdout
-            print("    本机私钥对应的公钥 = %s" % der[-32:].hex())
-            _PUB_SHOWN = True
-    except Exception:
-        pass
+    # （中继每 2 分钟签一次，那种场合用 quiet=True 免得日志全被这两行刷满）
+    if not quiet:
+        print("    JWT header  = %s" % hdr)
+        print("    JWT payload = %s" % pay)
+        try:      # 顺手报一下"这把私钥对应的公钥"——401 时拿它跟控制台里那把对一眼
+            if not _PUB_SHOWN:
+                der = subprocess.run([find_openssl(), "pkey", "-in", pem_path, "-pubout",
+                                      "-outform", "DER"],
+                                     capture_output=True, check=True).stdout
+                print("    本机私钥对应的公钥 = %s" % der[-32:].hex())
+                _PUB_SHOWN = True
+        except Exception:
+            pass
     signing_input = b64(hdr.encode()) + "." + b64(pay.encode())
     with tempfile.TemporaryDirectory() as td:
         m = os.path.join(td, "m"); s = os.path.join(td, "s")
@@ -186,11 +254,14 @@ def make_jwt(pem_path: str, kid: str, sub: str, iss: str = "") -> str:
 
 
 def qweather_jwt(pem_path: str, kid: str, sub: str, lat: float, lon: float,
-                 host: str = "devapi.qweather.com", iss: str = ""):
+                 host: str = "devapi.qweather.com", iss: str = "",
+                 token: str = "", quiet: bool = False):
+    """token 传进来就复用它（中继要拿同一个 token 再查一次预警，别签两遍）"""
     url = ("https://%s/v7/weather/now?location=%.4f,%.4f&lang=zh&unit=m"
            % (host, lon, lat))
+    tok = token or make_jwt(pem_path, kid, sub, iss, quiet=quiet)
     try:
-        return qweather_url(url, bearer=make_jwt(pem_path, kid, sub, iss))
+        return qweather_url(url, bearer=tok)
     except RuntimeError as e:
         # 401/403 十有八九是**两个 ID 填反了** —— 控制台里"凭据 ID"和"项目 ID"
         # 长得一模一样（都是 10 来位大写字母数字）。这里自动换个顺序再试一次，
@@ -199,7 +270,8 @@ def qweather_jwt(pem_path: str, kid: str, sub: str, lat: float, lon: float,
             raise
         print("    （第一次 401/403 —— 换一下 kid/sub 顺序再试一遍…）")
         try:
-            now, upd = qweather_url(url, bearer=make_jwt(pem_path, sub, kid, iss))
+            now, upd = qweather_url(url, bearer=make_jwt(pem_path, sub, kid, iss,
+                                                         quiet=quiet))
             print("    ⚠⚠ **两个 ID 填反了**！正确的用法是：")
             print("         --qweather-kid %s --qweather-sub %s" % (sub, kid))
             return now, upd
@@ -297,6 +369,45 @@ def main() -> int:
         print("（没给和风凭据，跳过和风：--qweather-jwt-key + --qweather-kid + --qweather-sub，")
         print("  或者先用 API key：--qweather-key）")
         print("")
+
+    # ---- 天气预警（2026-10-02 补：老接口 /v7/warning/now 被和风下架了）----------
+    _bearer = ""
+    _key = ""
+    if args.qweather_jwt_key and args.qweather_kid and args.qweather_sub \
+            and args.qweather_dev_id:
+        _bearer = make_jwt(args.qweather_jwt_key, args.qweather_kid, args.qweather_sub,
+                           args.qweather_dev_id)
+    elif args.qweather_key:
+        _key = args.qweather_key
+
+    if _bearer or _key:
+        try:
+            alerts = qweather_alert(args.qweather_host, args.lat, args.lon,
+                                    bearer=_bearer, key=_key)
+            if not alerts:
+                print("★ 和风天气预警：**当前没有生效中的预警**（zeroResult）")
+            else:
+                print("★ 和风天气预警（生效中 %d 条）:" % len(alerts))
+                for i, a in enumerate(alerts, 1):
+                    ev = (a.get("eventType") or {}).get("name") or "?"
+                    col = ((a.get("color") or {}).get("code") or "") or "?"
+                    print("    [%d] %s%s预警   severity=%s   发布 %s   到期 %s"
+                          % (i, ev, {"white": "白色", "blue": "蓝色", "yellow": "黄色",
+                                     "orange": "橙色", "red": "红色"}.get(col, col),
+                             a.get("severity"), a.get("issuedTime"), a.get("expireTime")))
+                    print("        %s" % (a.get("headline") or ""))
+                s = alert_summary(alerts)
+                print("    ⇒ 最严重的一条：%s（%s）  →  给固件的字段："
+                      % (s["type"], s["color"] or "无级别"))
+                print("         alert=%d  alevel=%d(1白2蓝3黄4橙5红)  atype=%s  aend=%s"
+                      % (s["n"], s["level"], s["type"], s["until"]))
+                print("       全部：%s" % "、".join("%s(%s)" % (t, c) for t, c in s["all"]))
+            print("")
+        except Exception as e:
+            print("★ 和风天气预警取不到：%s" % e)
+            print("    · 404/403 → 控制台里没给这个项目开「天气预警」这个数据（免费版也有）")
+            print("    · 路径要注意是 /weatheralert/v1/current/{纬度}/{经度}（纬度在前！）")
+            print("")
 
     print("%-20s %-8s %-10s %-9s %-8s %s" %
           ("源 / 模型", "温度", "体感", "天气", "风", "时刻"))

@@ -156,6 +156,10 @@ static char     s_city[24];
 static int8_t   s_memo_mon;
 static int8_t   s_memo_day;
 static char     s_memo[40];
+/* build 71：**天气预警**（基站经 0x7C 发下来，见下面 case 0x7C 的注释）。
+   和风的预警按经纬度取，基站那边取回后顺手发过来；清空 = level 0。 */
+static int8_t   s_alert_level;
+static char     s_alert_type[24];
 
 /* 往纪念日文案后面接一段（build 68）。为什么要"接"：BLE 的 ATT 一次只能发
    MTU-3 字节，MTU=23 时只有 20 字节 —— 而一句祝福语 24+ 字节，基站只能分几次发。
@@ -840,6 +844,40 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             }
             break;
 
+        /* 0x7C SET_ALERT：**天气预警**（build 71）
+         *   7C <level> <utf8 类型名>   例：7C 04 + "暴雨"（橙色预警 → level=4）
+         *   只发 7C（或 level=0）= 清掉。
+         *   level：1白 2蓝 3黄 4橙 5红（和风的 color.code，基站那边映射好的）。
+         *   为什么这么设计（用户 2026-10-02）："手机上是局地雷暴雨而且有暴雨警报，
+         *   中继获取的是小雨"。和风老预警接口已下架，新的是
+         *   weatheralert/v1/current —— 由 NAS 上的中继取回，基站顺手 0x7C 发下来。
+         *   画法：表头那格"天气文字"被它顶掉（详见 zkgui.c 的 header_alert_text），
+         *   ≥3（黄/橙/红）用红、1~2（白/蓝）用黑。类型名只认 ALERT_CHARS 里的字。 */
+        case 0x7C:
+            s_alert_type[0] = 0;
+            if (len >= 2u)
+            {
+                uint16_t n = (uint16_t)(len - 2u);
+
+                s_alert_level = (int8_t)d[1];
+                if (n >= (uint16_t)sizeof(s_alert_type))
+                {
+                    n = (uint16_t)sizeof(s_alert_type) - 1u;
+                }
+                memcpy(s_alert_type, d + 2, n);
+                s_alert_type[n] = 0;
+            }
+            else
+            {
+                s_alert_level = 0;
+            }
+            g_dbg.alert_cmds++;
+            if (ZKGUI_MODE_PICTURE != s_mode)
+            {
+                s_need_gui = 1;
+            }
+            break;
+
         /* 0x75 SET_REFRESH_CTRL：**局刷实验开关**（build 49）
          *   75 <ctrl> [temp]   ctrl = 0x22 那个控制字：
          *                     0xC7 = 现在用的全刷；0xD7 = 原厂第二条路（带温度）
@@ -1234,6 +1272,8 @@ void zk_epd_svc_poll(uint32_t now_ms)
             info.memo_mon = s_memo_mon;      /* build 67：纪念日高亮（基站 0x7A 下发） */
             info.memo_day = s_memo_day;
             info.memo     = s_memo;
+            info.alert_level = s_alert_level;   /* build 71：天气预警（基站 0x7C 下发） */
+            info.alert_type  = s_alert_type;
             zkgui_draw((uint8_t *)ZK_IMG_BUF, &info);
 
             s_need_refresh = 1;                /* 交给下面的刷新分支去写屏 */

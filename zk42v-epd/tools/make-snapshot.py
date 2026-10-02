@@ -48,6 +48,9 @@ FILES = [
     ("outputs/firmware/zk42v-epd-app/Src/img/jieqi.c",                        "firmware/zk42v-epd-app/Src/img/jieqi.c"),
     ("outputs/firmware/zk42v-epd-app/Src/img/jieqi.h",                        "firmware/zk42v-epd-app/Src/img/jieqi.h"),
     ("outputs/firmware/docs/preview/preview-calendar-termbold.png",  "firmware/docs/preview/preview-calendar-termbold.png"),
+    # build 71：天气预警（表头那格"天气文字"改画预警名；上=没有预警 / 下=有）
+    ("outputs/firmware/docs/preview/preview-alert-header.png",  "firmware/docs/preview/preview-alert-header.png"),
+    ("outputs/firmware/docs/preview/preview-alert-calendar.png","firmware/docs/preview/preview-alert-calendar.png"),
     ("outputs/firmware/docs/preview/preview-calendar-2025-08.png",            "firmware/docs/preview/preview-calendar-2025-08.png"),
     ("outputs/firmware/tools/gen_wqy_bitmap.py",                            "firmware/tools/gen_wqy_bitmap.py"),
     ("outputs/firmware/tools/wqy_font.py",                                  "firmware/tools/wqy_font.py"),

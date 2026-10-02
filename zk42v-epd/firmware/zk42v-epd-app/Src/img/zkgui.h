@@ -44,6 +44,14 @@ typedef struct
     int8_t      memo_mon;
     int8_t      memo_day;
     const char *memo;
+    /* build 71：**天气预警**（基站经 0x7C 下发；和风的实时预警，走 NAS 中继取回）。
+       alert_level: 0 = 没有预警；1白 2蓝 3黄 4橙 5红（和风 color.code）。
+       alert_type : 类型名（"暴雨"/"雷电"/"雷雨大风"…），0 或空串 = 不画。
+       画法：有预警时**顶掉表头那个天气文字**（"雷阵雨"），改用类型名 + 级别色
+       —— 面板只有黑/白/红，所以 ≥3（黄/橙/红）用红，1~2（白/蓝）用黑。
+       字模只认 gen_font.py 的 ALERT_CHARS 那批字。 */
+    int8_t      alert_level;
+    const char *alert_type;
 } zkgui_info_t;
 
 #define ZK_TEMP_NONE  ((int16_t)(-32768))   /* "温度没读到" */

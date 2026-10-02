@@ -495,6 +495,79 @@ static int draw_text_small(uint8_t *buf, int x, int y, const char *s, int color)
     return x;
 }
 
+/* build 71：表头那格要画的**预警文字**（返回 0 = 没有预警 / 一个字都画不出来）。
+
+   为什么要有它：用户 2026-10-02 反馈"手机上是局地雷暴雨、还有暴雨警报，价签只有
+   小雨"。和风的实时预警（`weatheralert/v1/current`）由基站取回后经 0x7C 送下来，
+   表头**没有多余的格子**（年月 | 干支农历月 | 生肖 | 天气文字 温度 城市 | 电池
+   已经排满 400px），所以有预警时拿它**顶掉天气文字**那一格 —— 图标还在，
+   天气大类看图标就有，而"官方正在发的预警"更该占这个位置。
+
+   只取前 3 个汉字（现有"雷阵雨"就是 3 个，宽度刚好），并且遇到**字模里没有的字
+   就截到那儿** —— MCU 上没法现栅格化，见 tools/gen_font.py 的 ALERT_CHARS。 */
+static int small_index_of(uint32_t cp)
+{
+    int i;
+
+    for (i = 0; i < ZK_SMALL_NUM; i++)
+    {
+        if (zk_small_cp[i] == cp)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static const char *header_alert_text(const zkgui_info_t *info)
+{
+    static char buf[16];
+    const uint8_t *p;
+    int n = 0;
+
+    if (info->alert_level <= 0 || info->alert_type == 0 || info->alert_type[0] == 0)
+    {
+        return 0;
+    }
+    for (p = (const uint8_t *)info->alert_type; *p != 0 && n < 3; )
+    {
+        uint32_t cp;
+        int      len;
+
+        if (p[0] < 0x80)                        /* ASCII（预警名不该有）跳过 */
+        {
+            p++;
+            continue;
+        }
+        if ((p[0] & 0xE0) == 0xC0)
+        {
+            if (p[1] == 0) break;
+            cp  = ((uint32_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+            len = 2;
+        }
+        else
+        {
+            if (p[1] == 0 || p[2] == 0) break;
+            cp  = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) |
+                  (p[2] & 0x3F);
+            len = 3;
+        }
+        if (small_index_of(cp) < 0)
+        {
+            break;                              /* 没这个字的字模 → 画到这儿为止 */
+        }
+        memcpy(buf + n * 3, p, (size_t)len);
+        n++;
+        p += len;
+    }
+    if (n == 0)
+    {
+        return 0;
+    }
+    buf[n * 3] = 0;
+    return buf;
+}
+
 /* build 70：表头里**加粗**的字（用户："马年八月的马和八能加粗吗"）。
    不是描边加粗，是直接取**原厂 u8g2 wqy12 的 2px 字形**（跟星期条同一套来源）。
    目前只有生肖 + 农历月份那几个字要粗，所以查的是 zk_thick_cp 这张小表。 */
@@ -1152,7 +1225,23 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
             /* build 62b：天气文字也用小一号 —— 表头要同时塞下
                干支 + 农历月 + 生肖 + 天气 + 温度 + 城市名，16px 排不下。
                字直接从 zk_weather_name() 拿 UTF-8（跟那张 16px 图标表同一套名字）。 */
-            x = draw_text_small(buf, x, 7, zk_weather_name(info->wx_code), C_BLACK);
+            /* build 71：**有预警时这里改画预警**（用户："手机上是有暴雨警报，
+               价签只有小雨"）。表头是满的，没有多余的格子 —— 而"正在生效的官方预警"
+               显然比"当前天气叫什么"更该占这个位置（图标还在，天气大类看图标就知道）。
+               颜色：面板只有黑/白/红，≥3（黄/橙/红）用红，1~2（白/蓝）用黑。 */
+            const char *at = header_alert_text(info);
+
+            if (at != 0)
+            {
+                const int alv = (int)info->alert_level;
+
+                x = draw_text_small(buf, x, 7, at,
+                                    (alv >= 3) ? C_RED : C_BLACK);
+            }
+            else
+            {
+                x = draw_text_small(buf, x, 7, zk_weather_name(info->wx_code), C_BLACK);
+            }
         }
     }
 
