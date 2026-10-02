@@ -145,21 +145,29 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="和风天气局域网中继（给 ESP32 用纯 HTTP 取数）")
-    ap.add_argument("--bind", default="0.0.0.0", help="监听地址（默认所有网卡）")
-    ap.add_argument("--port", type=int, default=8788)
-    ap.add_argument("--cache", type=float, default=120.0,
+    env = os.environ.get
+    ap.add_argument("--bind", default=env("WX_RELAY_BIND", "0.0.0.0"),
+                    help="监听地址（默认所有网卡）")
+    ap.add_argument("--port", type=int, default=int(env("WX_RELAY_PORT", "8788")))
+    ap.add_argument("--cache", type=float, default=float(env("WX_RELAY_CACHE", "120")),
                     help="多少秒内不重复请求和风（默认 120 秒；ESP32 每 30 分钟才来一次）")
-    ap.add_argument("--host", default="devapi.qweather.com",
+    ap.add_argument("--host", default=env("QWEATHER_HOST", "devapi.qweather.com"),
                     help="和风的 API Host（控制台-设置里那串）")
-    ap.add_argument("--jwt-key", default="", help="Ed25519 私钥 PEM（kid/sub/dev-id 一起给）")
-    ap.add_argument("--kid", default="", help="凭据 ID")
-    ap.add_argument("--sub", default="", help="项目 ID")
-    ap.add_argument("--dev-id", default="", help="开发者 ID（iss，Q 开头）")
-    ap.add_argument("--qweather-key", default="", help="或者用 API key（不推荐，但没有 key 话更省事）")
-    ap.add_argument("--lat", type=float, default=22.7809)
-    ap.add_argument("--lon", type=float, default=113.8861)
+    ap.add_argument("--jwt-key", default=env("QWEATHER_JWT_KEY", ""),
+                    help="Ed25519 私钥 PEM（kid/sub/dev-id 一起给）")
+    ap.add_argument("--kid", default=env("QWEATHER_JWT_KID", ""), help="凭据 ID")
+    ap.add_argument("--sub", default=env("QWEATHER_JWT_SUB", ""), help="项目 ID")
+    ap.add_argument("--dev-id", default=env("QWEATHER_DEV_ID", ""),
+                    help="开发者 ID（iss，Q 开头）")
+    ap.add_argument("--qweather-key", default=env("QWEATHER_KEY", ""),
+                    help="或者用 API key（不推荐，但没有的话更省事）")
+    ap.add_argument("--lat", type=float, default=float(env("WX_RELAY_LAT", "22.7809")))
+    ap.add_argument("--lon", type=float, default=float(env("WX_RELAY_LON", "113.8861")))
     ap.add_argument("--model", default="", help="退到 Open-Meteo 时用的模型（空=best_match）")
     a = ap.parse_args()
+    a.port  = int(a.port)          # env 来的 default 不会被 argparse 转类型，自己转
+    a.cache = float(a.cache)
+    a.lat, a.lon = float(a.lat), float(a.lon)
 
     Handler.a = a
     print("和风中继启动：http://%s:%d/wx   （和风 Host=%s，%.4f,%.4f）"

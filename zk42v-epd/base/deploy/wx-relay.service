@@ -1,0 +1,44 @@
+# 和风天气局域网中继 —— systemd 单元（比 Docker 省资源：就一个 python 进程）
+#
+# 安装（NAS 上，root）：
+#   install -d -m 0755 /opt/wx-relay
+#   cp wx-relay.py wx-compare.py /opt/wx-relay/          # 两个文件都要（中继复用对比脚本里的取数逻辑）
+#   cp ed25519-private.pem /opt/wx-relay/ && chmod 600 /opt/wx-relay/ed25519-private.pem
+#   install -m 0644 wx-relay.env.example /etc/wx-relay.env   # 然后编辑里面的凭据
+#   chmod 600 /etc/wx-relay.env                          # 里面有私钥路径/凭据，别给人看
+#   cp wx-relay.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now wx-relay
+#   systemctl status wx-relay --no-pager
+#   ss -lntp | grep 8788                                 # 确认在监听
+#   curl -s http://127.0.0.1:8788/wx                     # 应返回一行 JSON
+
+[Unit]
+Description=ZK42V 价签天气中继（和风 HTTPS+JWT → 局域网纯 HTTP）
+Documentation=https://dev.qweather.com/docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/wx-relay.env
+WorkingDirectory=/opt/wx-relay
+ExecStart=/usr/bin/python3 /opt/wx-relay/wx-relay.py
+Restart=always
+RestartSec=10
+
+# 跑在无特权用户下（NAS 上系统自带 nobody 也行；想用别的就改这两行）
+User=nobody
+Group=nogroup
+
+# 只给最低权限：不能写系统、不能拿新权限、/tmp 私有
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+# 和风天气局域网中继 —— Docker 版（fnOS 的「Docker → 项目」可以直接粘这个）
+#
+# 为什么**不推荐**（除非你更看重隔离/图形化管理）：
+#   · 磁盘：要拉一个 python 镜像（slim 也要 ~120MB；脚本本身才 11KB）
+#   · 内存：同等的 python 进程外，多一层容器 shim/veth，实测多 5~15MB
+#   · systemd 版见同目录 wx-relay.service（一个进程、15MB、磁盘 0）
+#
+# 用法：
+#   1) 把 wx-relay.py / wx-compare.py / ed25519-private.pem 放进 ./wx-relay/
+#   2) 把 wx-relay.env.example 复制成 ./wx-relay.env 并改好
+#   3) docker compose up -d      （或 fnOS 图形界面里"新建项目"粘这份）
+
+services:
+  wx-relay:
+    image: python:3.12-slim
+    container_name: wx-relay
+    restart: unless-stopped
+    command: ["python3", "/app/wx-relay.py"]
+    working_dir: /app
+    env_file: ./wx-relay.env
+    volumes:
+      - ./wx-relay:/app:ro          # 脚本 + 私钥（私钥在宿主机上放好、chmod 600）
+    ports:
+      - "8788:8788"                 # ESP32 的 WX_RELAY_URL 用这个端口
+    mem_limit: 64m
+    security_opt:
+      - no-new-privileges:true
