@@ -148,12 +148,14 @@ def find_openssl() -> str:
 _PUB_SHOWN = False
 
 
-def make_jwt(pem_path: str, kid: str, sub: str) -> str:
+def make_jwt(pem_path: str, kid: str, sub: str, iss: str = "") -> str:
     global _PUB_SHOWN
     b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()   # noqa: E731
     now = int(time.time())
     hdr = json.dumps({"alg": "EdDSA", "kid": kid}, separators=(",", ":"))
-    pay = json.dumps({"sub": sub, "iat": now - 30, "exp": now + 900},
+    # ⚠ payload 必须是四个字段：iss（开发者 ID，Q 开头）/ sub（项目 ID）/ iat / exp。
+    #   我第一版漏了 iss —— 和风只回一句 "Authentication failed"，排了好久。
+    pay = json.dumps({"iss": iss, "sub": sub, "iat": now - 30, "exp": now + 900},
                      separators=(",", ":"))
     # 打印出"我到底签了什么"——排 401 的时候一眼就能看出 kid/sub 是不是填反了
     print("    JWT header  = %s" % hdr)
@@ -170,19 +172,25 @@ def make_jwt(pem_path: str, kid: str, sub: str) -> str:
     with tempfile.TemporaryDirectory() as td:
         m = os.path.join(td, "m"); s = os.path.join(td, "s")
         open(m, "w").write(signing_input)
-        subprocess.run([find_openssl(), "pkeyutl", "-sign", "-rawin",
-                        "-inkey", pem_path, "-in", m, "-out", s], check=True,
-                       capture_output=True)
+        r = subprocess.run([find_openssl(), "pkeyutl", "-sign", "-rawin",
+                            "-inkey", pem_path, "-in", m, "-out", s],
+                           capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(
+                "私钥文件用不了：%s\n"
+                "    → 签名必须用**私钥**（ed25519-private.pem）。"
+                "如果你给的是公钥（ed25519-public.pem / *-public.pem），它只能验证不能签名。"
+                % pem_path)
         sig = open(s, "rb").read()
     return signing_input + "." + b64(sig)
 
 
 def qweather_jwt(pem_path: str, kid: str, sub: str, lat: float, lon: float,
-                 host: str = "devapi.qweather.com"):
+                 host: str = "devapi.qweather.com", iss: str = ""):
     url = ("https://%s/v7/weather/now?location=%.4f,%.4f&lang=zh&unit=m"
            % (host, lon, lat))
     try:
-        return qweather_url(url, bearer=make_jwt(pem_path, kid, sub))
+        return qweather_url(url, bearer=make_jwt(pem_path, kid, sub, iss))
     except RuntimeError as e:
         # 401/403 十有八九是**两个 ID 填反了** —— 控制台里"凭据 ID"和"项目 ID"
         # 长得一模一样（都是 10 来位大写字母数字）。这里自动换个顺序再试一次，
@@ -191,7 +199,7 @@ def qweather_jwt(pem_path: str, kid: str, sub: str, lat: float, lon: float,
             raise
         print("    （第一次 401/403 —— 换一下 kid/sub 顺序再试一遍…）")
         try:
-            now, upd = qweather_url(url, bearer=make_jwt(pem_path, sub, kid))
+            now, upd = qweather_url(url, bearer=make_jwt(pem_path, sub, kid, iss))
             print("    ⚠⚠ **两个 ID 填反了**！正确的用法是：")
             print("         --qweather-kid %s --qweather-sub %s" % (sub, kid))
             return now, upd
@@ -228,17 +236,25 @@ def main() -> int:
     ap.add_argument("--qweather-kid", default=os.environ.get("QWEATHER_JWT_KID", ""),
                     help="凭据 ID（控制台建的 JWT 凭据）")
     ap.add_argument("--qweather-sub", default=os.environ.get("QWEATHER_JWT_SUB", ""),
-                    help="项目 ID（控制台里的项目 ID）")
+                    help="项目 ID（控制台-项目管理 里的「项目 ID」）")
+    ap.add_argument("--qweather-dev-id", default=os.environ.get("QWEATHER_DEV_ID", ""),
+                    help="**开发者 ID（iss）**：控制台-设置 里那个 Q 开头的 10 位。"
+                         "⚠ JWT 的 payload 必须有它，少了就和风一句 Authentication failed")
     args = ap.parse_args()
 
     print("坐标 %.4f, %.4f（跟基站 WX 请求完全一致）" % (args.lat, args.lon))
     print("")
 
+    if args.qweather_jwt_key and args.qweather_kid and args.qweather_sub and \
+            not args.qweather_dev_id:
+        print("⚠ 少了 --qweather-dev-id（开发者 ID，iss）：去 控制台-设置 复制那个 Q 开头的 10 位。")
+        print("  和风的 JWT payload 必须是 {iss, sub, iat, exp} 四个字段，缺 iss 一定 401。")
+        print("")
     if args.qweather_jwt_key and args.qweather_kid and args.qweather_sub:
         try:
             now, upd = qweather_jwt(args.qweather_jwt_key, args.qweather_kid,
                                     args.qweather_sub, args.lat, args.lon,
-                                    args.qweather_host)
+                                    args.qweather_host, args.qweather_dev_id)
             print("★ 和风天气（**JWT 认证**，实况）: %s°C  体感 %s°C  %s  ↦ 固件码 %d"
                   % (now.get("temp"), now.get("feelsLike"), now.get("text"),
                      qweather_code(now.get("text"))))

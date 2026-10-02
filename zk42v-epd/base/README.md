@@ -1,5 +1,26 @@
 # Mac 当基站：价签一上电就自己拿到时间 + 天气
 
+## 🚨 2026-10-02：JWT 报 401 的真凶是 **payload 少了 `iss`**（我的 bug）
+
+用户换上正确的 API Host 后，错误从 `Invalid Host` 变成 `401 Unauthorized`。
+对照官方示例才发现 —— **JWT 的 payload 必须是四个字段**：
+
+```json
+{ "iss": "Q12345ABCD",   ← 开发者 ID（**控制台-设置**，Q 开头的 10 位）
+  "sub": "ABCDE23456",   ← 凭据的项目 ID（控制台-项目管理）
+  "iat": 1703912400,     ← 建议 = 当前时间 - 30 秒
+  "exp": 1703912940 }    ← 最长 24 小时
+```
+
+我第一版只写了 `{sub, iat, exp}`，**漏了 `iss`** → 和风只回一句
+"Authentication failed, check your KEY/Token or Host."（既不说是哪个字段，也不说缺什么，
+所以绕了很久）。**已经补上**：`wx-compare.py --qweather-dev-id`、ESP32 的
+`QWEATHER_JWT_ISS`，两边都打印"我到底签了什么"（header/payload 原文）方便对账。
+
+> 另：`keygen` 之前把公钥写成 `ed25519-private-public.pem` —— 名字太坑，用户拿去签名了
+> （公钥不能签名）。现在公钥就是 **`ed25519-public.pem`**；`wx-compare.py` 也会在
+> "给了公钥去签名"时报一句明白话。
+
 ## 🚨 2026-10-01：和风报 403 的真凶是 **API Host**（不是 key/JWT）
 
 用户实机 403。我用假凭据探了路，发现**不管 key 错还是 JWT 错，和风回的都是同一句**：

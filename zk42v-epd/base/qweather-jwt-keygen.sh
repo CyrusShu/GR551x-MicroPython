@@ -23,7 +23,13 @@ set -euo pipefail
 #   ed25519-private.pem  私钥（自己留着，签名用）
 #   ed25519-public.pem   公钥（**上传到和风控制台**的就是这个文件）
 PEM="${1:-ed25519-private.pem}"
-PUB_PEM="${PEM%.pem}-public.pem"
+# 公钥文件名：默认就叫 ed25519-public.pem（跟和风文档一致）。
+# ⚠ 上一版我写成 `${PEM%.pem}-public.pem`，于是默认生成的是
+#   **ed25519-private-public.pem** —— 用户拿它去签名（那其实是公钥），白白折腾一轮。
+case "$PEM" in
+    *-private.pem) PUB_PEM="${PEM%-private.pem}-public.pem" ;;
+    *)             PUB_PEM="${PEM%.pem}-public.pem" ;;
+esac
 
 # ⚠ 必须找一个**支持 Ed25519** 的 openssl：
 #   macOS 自带的 /usr/bin/openssl 是 **LibreSSL**，不支持 ed25519
@@ -119,4 +125,5 @@ echo "       #define QWEATHER_JWT_KID  \"你拿到的凭据ID\""
 echo "       #define QWEATHER_JWT_SUB  \"你拿到的项目ID\""
 echo "       #define QWEATHER_JWT_HEX  \"上面 ③ 那串\""
 echo "  3) 刷基站，串口应出现「天气源 = **和风天气（实况）**」"
-echo "  （私钥文件 $PEM 别进 git、别乱发；要换钥匙就重跑这个脚本 + 控制台重传公钥）"
+echo "  · 签名要用**私钥** $PEM；上传控制台的是**公钥** $PUB_PEM（名字别再搞混）"
+echo "  （私钥别进 git、别乱发；要换钥匙就重跑这个脚本 + 控制台重传公钥）"

@@ -183,6 +183,10 @@ extern "C" size_t tinfl_decompress_mem_to_mem(void *pOut_buf, size_t out_buf_len
      避免"要签名得先有时间、要时间得先能请求"的鸡生蛋问题。 */
 #define QWEATHER_JWT_KID   "KMWDYQGERV"                        /* 凭据 ID（kid） */
 #define QWEATHER_JWT_SUB   "29TNG35JCC"                        /* 项目 ID（sub） */
+#define QWEATHER_JWT_ISS   ""                        /* **开发者 ID（iss）**：控制台-**设置**里那个 Q 开头的 10 位 —— 必须填！
+                                                         JWT payload 是 {iss, sub, iat, exp}，
+                                                         少了 iss 和风只回 "Authentication failed"
+                                                         （2026-10-02 就是漏了它） */
 #define QWEATHER_JWT_HEX   "06dd2ed05252dd91b8266bfa6a7da85f6c0b95f1af6a639e375c4f4d6f03c60a"                        /* Ed25519 私钥 seed 的 64 个十六进制字符 */
 
 #define MODE_CALENDAR   1
@@ -621,8 +625,9 @@ static bool qweatherMakeJwt(String &tokenOut)
         return false;
     }
     snprintf(hdr, sizeof(hdr), "{\"alg\":\"EdDSA\",\"kid\":\"%s\"}", QWEATHER_JWT_KID);
-    snprintf(pay, sizeof(pay), "{\"sub\":\"%s\",\"iat\":%d,\"exp\":%d}",
-             QWEATHER_JWT_SUB, (int)(now - 30), (int)(now + 900));
+    /* payload 四件套：iss（开发者 ID）+ sub（项目 ID）+ iat + exp —— 一个都不能少 */
+    snprintf(pay, sizeof(pay), "{\"iss\":\"%s\",\"sub\":\"%s\",\"iat\":%d,\"exp\":%d}",
+             QWEATHER_JWT_ISS, QWEATHER_JWT_SUB, (int)(now - 30), (int)(now + 900));
     b64urlEnc((const uint8_t *)hdr, strlen(hdr), hdrB64);
     b64urlEnc((const uint8_t *)pay, strlen(pay), payB64);
     snprintf(msg, sizeof(msg), "%s.%s", hdrB64, payB64);
@@ -644,7 +649,7 @@ static bool qweatherMakeJwt(String &tokenOut)
 static bool qweatherJwtConfigured(void)
 {
     return (strlen(QWEATHER_JWT_KID) > 0 && strlen(QWEATHER_JWT_SUB) > 0 &&
-            strlen(QWEATHER_JWT_HEX) > 0);
+            strlen(QWEATHER_JWT_ISS) > 0 && strlen(QWEATHER_JWT_HEX) > 0);
 }
 
 static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
@@ -1196,7 +1201,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-13");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-14");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),

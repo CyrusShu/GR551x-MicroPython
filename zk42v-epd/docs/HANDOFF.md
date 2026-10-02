@@ -121,6 +121,14 @@
 > 认证的一部分**；老的公共地址 `api/devapi/geoapi.qweather.com` **2026 年起停服**。
 > → `QWEATHER_HOST` 必须填**控制台里那串**（代码注释、README、`wx-compare.py` 的
 > 帮助和报错提示都已按这个改）。教训：**只看 HTTP 状态码等于没看 —— 要把响应体打出来**。
+>
+> 🚨 **第三次更正（2026-10-02）**：换上正确 Host 后变成 **401 Unauthorized**。
+> 对照官方示例才发现 **JWT payload 必须是四个字段 `{iss, sub, iat, exp}`，我漏了 `iss`**
+> （开发者 ID，**控制台-设置**里 Q 开头的 10 位）—— 和风只回一句 "Authentication failed"，
+> 不说缺哪个字段，所以绕了很久。已补：`wx-compare.py --qweather-dev-id` /
+> ESP32 `QWEATHER_JWT_ISS`；两端都会打印"我签了什么"（header/payload 原文）。
+> 另外 `keygen` 的公钥文件名从坑人的 `ed25519-private-public.pem` 改成
+> **`ed25519-public.pem`**（用户拿那个"private-public"去签名了，白折腾一轮）。
 
 * Mac 版 `zk_ble_base.py`：`probe / sync / watch / raw`，坐标已改**深圳公明广场 22.7809,113.8861**。
   `raw` 发原始字节给面板（`03`=命令 `04`=数据）。
