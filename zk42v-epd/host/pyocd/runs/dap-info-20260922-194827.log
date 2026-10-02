@@ -1,0 +1,84 @@
+Setting SWD clock to 240 kHz
+
+==================================================================
+  DAP 体检（判断读通路到底通不通）
+==================================================================
+
+  把 RST 按住接地，我数到 0 再松手：
+      8 ...
+      7 ...
+      6 ...
+      5 ...
+      4 ...
+      3 ...
+      2 ...
+      1 ...
+  >>> 现在松手！ <<<
+  connect() 成功（复位后 1523 ms，试了 336 次）
+  注意：pyOCD 的 ST-Link connect() 不校验 IDCODE，所以这三个字不代表通路是好的。
+
+  --- 调试器 ---
+    unique_id  : 34FF74064D56383350302243
+    description: STM32 STLink
+    link._jtag_version  = 37
+    link._hw_version    = 2
+    link._protocol      = Protocol.SWD
+
+  --- 分辨试验：DP IDR 连读 8 次 ---
+  两条完全不同的路：ST-Link 的连接命令（JTAG_ENTER_SWD，它自己会读并校验
+  IDCODE，读不到就报 'Get IDCODE error'）vs 读寄存器命令（JTAG_READ_DAP_REG）。
+  如果连接能过、但下面的值次次一样，那就是后面这条读命令坏了。
+    第 1 次: 0x2BA01477
+    第 2 次: 0x2BA01477
+    第 3 次: 0x2BA01477
+    第 4 次: 0x2BA01477
+    第 5 次: 0x2BA01477
+    第 6 次: 0x2BA01477
+    第 7 次: 0x2BA01477
+    第 8 次: 0x2BA01477
+    8 次里有 1 个不同的值
+    -> 值完全固定：更像**读寄存器这条命令坏了**，或者读到的是个死值
+
+  --- DP 寄存器（诊断器直接问，不经过缓存的）---
+    probe.read_dp(0x0) = 0x2BA01477
+    probe.read_dp(0x4) = 0xF0000040
+    probe.read_dp(0x8) = 0x01010000
+    probe.read_dp(0xC) = 0x01010000
+    再读一次 DP IDR    = 0x2BA01477   
+    pyOCD 记下的 DP IDR = 0x00000000  partno=0 version=0 revision=0
+      （正常 SW-DP 的 IDR 长这样：0x2BA01477 / 0x6BA02477 / 0x0BC11477）
+  目标     : CoreSightTarget (soc)
+  CPU 状态 : State.RUNNING
+
+  --- AP 寄存器 ---
+    AP 地址   : 0x00000000  AHB-AP#0
+    AP CSW  0x00 = 0x23000052
+    AP TAR  0x04 = 0xE000EDF4
+    AP DRW  0x0C = 0x00000000
+    AP BASE 0xF8 = 0xE00FF003
+    AP IDR  0xFC = 0x24770011
+      （正常 AHB-AP 的 IDR 长这样：0x04770031 / 0x24770011 / 0x34770031）
+
+  --- 关键试验：halt 前后读 DHCSR，看 bit 会不会变 ---
+    halt 前 DHCSR(0xE000EDF0) = 0x01010001
+    target.halt() 调完了，没报错
+    halt 后 DHCSR(0xE000EDF0) = 0x01030003
+    S_HALT 位 0 -> 1   变了！读通路是活的 ✅
+
+  --- 地址扫描（经典单字读，看不同地址会不会给出不同值）---
+    0x00000000 = 0x00804000
+    0x01000000 = 0xF7C83400
+    0x01003000 = 0xF7C83400
+    0x0100A000 = 0xF7C83400
+    0x0100A200 = 0xF7C83400
+    0x0107F000 = 0xF7C83400
+    0x30000000 = 0x00000000
+    0xE000ED00 = 0x410FC241
+    0xE00FF000 = 0xFFF0F003
+    0x40000000 = ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x40000000-0x40000003
+
+  --- 结论怎么读 ---
+    1) DP IDR 不是 0x2BA01477 那类正常值   -> SWD 读通路本身有问题
+    2) DP IDR 正常、AP IDR/CSW 是垃圾      -> AP 访问有问题（APSEL/电源/bank）
+    3) halt 前后 DHCSR 有 bit 变化          -> 通路是活的，问题在 flash 那几个地址
+    4) 所有地址都返回同一个值 + bit 不变    -> 调试器那条 DAP 读命令是坏的（换线/换调试器）

@@ -1,0 +1,34 @@
+Setting SWD clock to 240 kHz
+
+================================================================
+  写 flash —— 只读：把自研 APP 那一段读回来，跟本地镜像对账
+================================================================
+  MODE    : appverify
+  基地址  : 0x01000000 + 0x80000 (512 KB)
+  扇区/页 : 0x1000 / 0x1000
+  算法    : /Users/mac/Documents/Codex/2026-09-15/a/GR551x-SDK/build/keil/GR5xxx_16MB_Flash.FLM
+  备份    : /Users/mac/Documents/Codex/2026-09-15/a/outputs/firmware/zk42v-custom-512k.bin
+
+
+  把 RST 按住接地，我数到 0 再松手：
+      3 ...
+      2 ...
+      1 ...
+  >>> 现在松手！ <<<
+  connect() 成功（复位后 11 ms，试了 1 次）
+
+  本地这份镜像的账面：
+  0x02000 那条 APP 镜像信息：
+    pattern   = 0x4744
+    version   = 1
+    bin_size  = 0x1468C (83596 字节)
+    check_sum = 0x0080FE44
+    load/run  = 0x0100A000 / 0x0100A000
+    comments  = b'zk_esl_goodi'
+    实测这 83596 字节逐字节和 = 0x0080FE44
+    APP 头两个字：SP=0x3001F000  复位向量=0x0100CA31
+    镜像里有标记字符串 ZK42V-EPD-CUSTOM-FW ✅
+    -> 自洽，可以刷：APP 在 0x0100A000，83596 字节。
+
+  等 flash 窗口活过来（XIP 开了才读得到真数据）...
+  窗口没活。把价签的 RST 碰一下 GND 再松开，重跑一次。

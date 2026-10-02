@@ -1,0 +1,11 @@
+Setting SWD clock to 240 kHz
+
+  推图  ——  B2-B：SWD -> 共享内存信箱 -> 固件刷屏
+    文件    : /Users/mac/Documents/Codex/2026-09-15/a/outputs/pyocd/last-push.epd
+    长度    : 30000 字节，逐字节和 0x00291807
+    信箱    : 0x30014000（图在 +0x100）
+    帧号    : 1790444415
+
+  !!! 打不开 /dev/cu.usbserial-210 当复位源: [Errno 2] No such file or directory: '/dev/cu.usbserial-210'
+      看看 ls /dev/cu.*，或者先跑 rst-ttl.py 量一下那根线。
+0000408 C Error: [Errno 2] No such file or directory: '/dev/cu.usbserial-210' [__main__]

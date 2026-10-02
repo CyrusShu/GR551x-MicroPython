@@ -1,0 +1,89 @@
+Setting SWD clock to 240 kHz
+
+  自研固件体检 0x3001F000
+  规矩：每次都先 halt 再读；隔一小会儿采几个点，判断它是在跑、在复位、还是卡住了
+
+  先不复位，直接连 SWD（最多等 1500 ms）...
+  直接连上了，CPUID 也读得出来（试了 1 次）
+  —— 说明现在这个状态里调试口是开的（原厂 APP 跑起来会关）
+  （每行：PC 落在哪 · 符号 · stage · DHCSR 的粘滞位。RST_ST=1 表示「上次读 DHCSR 之后芯片复位过」）
+
+  #1  PC=0x0081CF60  [RAM 里（在 RAM 执行代码，可疑）]         -                        stage=0  RST_ST=0 RETIRE=0
+  #2  PC=0x0081CF60  [RAM 里（在 RAM 执行代码，可疑）]         -                        stage=0  RST_ST=0 RETIRE=0
+  #3  PC=0x0081CF60  [RAM 里（在 RAM 执行代码，可疑）]         -                        stage=0  RST_ST=0 RETIRE=0
+  #4  PC=0x0081CF60  [RAM 里（在 RAM 执行代码，可疑）]         -                        stage=0  RST_ST=0 RETIRE=0
+  #5  PC=0x0081CF60  [RAM 里（在 RAM 执行代码，可疑）]         -                        stage=0  RST_ST=0 RETIRE=0
+
+  ---------------- 最后一次成功采样的细节 ----------------
+  CPUID     : 0x410FC241 (Cortex-M4，读通路是活的)
+  DHCSR     : 0x00030003  S_HALT=1
+  PC        : 0x0081CF60  ← RAM 里（在 RAM 执行代码，可疑）
+  LR / SP   : 0x0081CF61 / 0x0081AF60
+  CFSR/HFSR : 0x00000000 / 0x00000000
+  BFAR/MMFAR: 0xE000EDF8 / 0xE000EDF8
+
+  AON 寄存器（这块是「永远在线」域，软复位不丢）：
+    SOFTWARE_0 = 0x00010003   （冷启动/热启动相关的标志，SDK 用来判 boot mode）
+    SOFTWARE_1 = 0x00000000   （低 16 位 = 0x0000）
+      → 里面没有 0xF175 这个标志，平台那条「超深睡唤醒就复位整个系统」的路径**不成立**。
+    SOFTWARE_2 = 0x00000000
+    SNSADC_CFG = 0x0708070A   （ADC 唯一的配置寄存器）
+      通道 P=1(MSIO1)  N=0(?)   参考=1.60V   VBAT_EN=0  TEMP_EN=0
+    WDT LOAD/VALUE/CTRL/RIS = 0xFFFFFFFF 0xFFFFFFFF 0x00000000 0x00000000
+
+  PSC（电源状态控制器，就在 AON 里）—— 自研固件就是卡在这里：
+    PSC_CMD     = 0x00000000   MCU_PWR_REQ=0  MCU_PWR_BUSY=0 
+    PSC_CMD_OPC = 0x0000000A   opcode=0x0A (LD_MEM_WKUP_CFG)
+    MCU_RELEASE = 0x0181213A
+
+  BLE 子系统（comm core）状态：
+    AON PWR_RET01 = 0x3F12032A
+      comm core  电源 = 0    comm timer 电源 = 0
+      comm core  隔离 = 1    comm timer 隔离 = 1   （0 = 没隔离，正常）
+      comm core  复位(1=已放开) = 0    comm timer 复位(1=已放开) = 0
+      → **BLE 子系统压根没上电/还在复位**：这个状态下链路层不会执行任何
+        东西，射频自然一点动静都没有。要查的就是「谁负责给它上电」——
+        原厂固件同一处的调用序列（反汇编里找 comm core 上电那段）。
+    NVIC ISER0 = 0x00001000
+      IRQ1 BLE_SDK（协议栈调度）= **没使能**    IRQ2 BLE = **没使能**    IRQ25 BLESLP = **没使能**
+      → 协议栈的调度中断没使能：命令会被收下（API 返回 0），但队列永远
+        没人处理，事件一个都不会递上来。这跟「命令全接受、事件全不回」
+        的症状完全对得上，是要重点怀疑的一条。
+
+  B2-B 共享内存信箱 0x30014000：
+    magic     = 0xC26FC605 ✗ 不是 0x5A4B4D42 —— 要么没人写过，要么写的地址不对
+    seq       = 2792139186
+    len / sum = 93370438 / 0x2B19E71B
+    status    = 1296584981    ack_seq = 3874674534    ms_refresh = 1927039002
+
+  屏的 7 根脚（GPIO0，0xA0010000）—— 自研固件空闲时留下的状态：
+    脚     输出值  实际电平  是输出吗
+    CS       0       0        否（输入）
+    SCLK     0       0        否（输入）
+    SDI      0       0        否（输入）
+    DC       0       0        否（输入）
+    BUSY     0       0        否（输入）
+    RST      0       0        否（输入）
+    AUX      0       0        否（输入）   （在 GPIO1 上：编号 24 = P1_8）
+    （BUSY 是输入脚：空闲时不忙的话应该是 0；一直是 1 可能是脚悬空/接错）
+
+  AON 定时器（跑在低功耗时钟上）：读两次（隔 250ms）
+    0  ->  0    （差 0）
+    → **没走**：低功耗时钟（32.768kHz 那一路）没有在跑。
+      这也解释了 PSC 为什么完不成 RTC_CLK 命令。
+
+  状态块 0x3001F000：
+    magic = 0x00000000 ✗（期望 0x5A4B3401）—— 我们的固件没写过这里
+    stage = 0  → 还没开始（要么固件没跑，要么这块 RAM 里是别的东西）
+    heart = 0   flags = 0x0   build = 0
+    BUSY 线：见过低=否 见过高=否  轮询=0  超时=0  GPIO 错=0
+    耗时(ms)：复位+初始化 0 / 传图 0 / 刷新 0
+    （这一版固件是 build=0，**还没有** boot_count/uds_seen 这两个计数器，
+      状态块里 +0x30 往后那两个数是没被写过的 RAM 垃圾值，别当真；
+      要看这两个数，刷 B1.1 及以后的固件。）
+
+  ---------------- 结论 ----------------
+  ▶ **没看到复位**：5 次采样里 S_RESET_ST 全是 0。
+  ▶ 状态块里没有我们的印记 —— 固件没跑到 main_init，或者根本没被执行。
+
+  （采样结束时我把 CPU 恢复成运行状态了，没把它按住不放。）

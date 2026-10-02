@@ -1,0 +1,42 @@
+Setting SWD clock to 240 kHz
+
+  自研固件体检 0x3001F000
+  规矩：每次都先 halt 再读；隔一小会儿采几个点，看芯片是不是在反复复位
+
+  先不复位，直接连 SWD（最多等 1500 ms）...
+  直接连上了，CPUID 也读得出来（试了 1 次）
+  —— 说明现在这个状态里调试口是开的（原厂 APP 跑起来会关）
+  #1  PC=0x30004E1E [RAM 里（在 RAM 执行代码，可疑）]                         magic=0x5A4B3401 stage=64
+  #2  PC=0x30004E1A [RAM 里（在 RAM 执行代码，可疑）]                         magic=0x5A4B3401 stage=64
+  #3  读不到 —— 调试口这会儿不在了
+       重连之后读得回来（PC=0x0000B92C）
+       说明刚才那次'读不到'是**调试口被重置过**（芯片复位），
+       不是固件把 SWD 关掉了。
+  #4  PC=0x0000B930 [ROM（掩膜 ROM：芯片刚启动，或刚从复位里出来）]                   magic=0x5A4B3401 stage=64
+  #5  PC=0x30004E18 [RAM 里（在 RAM 执行代码，可疑）]                         magic=0x5A4B3401 stage=64
+
+  ---------------- 最后一次成功采样的细节 ----------------
+  CPUID     : 0x410FC241 (Cortex-M4，读通路是活的)
+  DHCSR     : 0x01030003  S_HALT=1
+  PC        : 0x30004E18  ← RAM 里（在 RAM 执行代码，可疑）
+  LR / SP   : 0x0100CEAF / 0x3001EF88
+  CFSR/HFSR : 0x00000000 / 0x00000000
+  BFAR/MMFAR: 0xE000EDF8 / 0xE000EDF8
+
+  AON 寄存器（这块是「永远在线」域，软复位不丢）：
+    SOFTWARE_0 = 0x00010003   （冷启动/热启动相关的标志，SDK 用来判 boot mode）
+    SOFTWARE_1 = 0x00000000   （低 16 位 = 0x0000）
+    SOFTWARE_2 = 0x00000050
+    WDT LOAD/VALUE/CTRL/RIS = 0xFFFFFFFF 0xFFFFFFFF 0x00000000 0x00000000
+
+  状态块 0x3001F000：
+    magic = 0x5A4B3401 ✅ 我们的固件确实往这儿写过东西
+    stage = 64  → Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，卡在 soc_init / hal_flash_init 这一带）
+    heart = 2024215127   flags = 0x4AB95096   build = 1
+    BUSY 线：见过低=是 见过高=否  轮询=1562257522  超时=165644290  GPIO 错=2995790417
+    耗时(ms)：复位+初始化 2153799085 / 传图 1448227265 / 刷新 66859031
+
+  ---------------- 结论 ----------------
+  ▶ 我们的固件至少跑到了 main_init（magic 在），但 PC 不在 APP 里。
+
+  （采样结束时我把 CPU 恢复成运行状态了，没把它按住不放。）

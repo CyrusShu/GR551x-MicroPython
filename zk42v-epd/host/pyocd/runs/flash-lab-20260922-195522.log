@@ -1,0 +1,68 @@
+Setting SWD clock to 240 kHz
+
+==================================================================
+  flash 定位实验（全程只读）
+==================================================================
+
+  把 RST 按住接地，我数到 0 再松手：
+      8 ...
+      7 ...
+      6 ...
+      5 ...
+      4 ...
+      3 ...
+      2 ...
+      1 ...
+  >>> 现在松手！ <<<
+  connect() 成功（复位后 1196 ms）
+  先确认通路是活的：
+    CPUID    0xE000ED00 = 0x410FC241   应 0x410FC241
+    ROM 表   0xE00FF000 = 0xFFF0F003   应像 0xFFF0F003
+
+  --- 1) CPU 还在跑（没 halt）时，同地址连读 4 次 ---
+    0x01000000 x4 = 0xF7C83440  0xF7C83440  0xF7C83440  0xF7C83440
+    0x0100A000 x4 = 0xF7C83440  0xF7C83440  0xF7C83440  0xF7C83440
+    0x00000000 x4 = 0x00804000  0x00804000  0x00804000  0x00804000
+
+  --- 2) halt 之后再读同样几个地址（同地址连读 4 次）---
+    halt 完成
+    0x01000000 x4 = 0xF7C83440  0xF7C83440  0xF7C83440  0xF7C83440
+    0x0100A000 x4 = 0xF7C83440  0xF7C83440  0xF7C83440  0xF7C83440
+    0x00000000 x4 = 0x00804000  0x00804000  0x00804000  0x00804000
+
+  --- 3) 同一个地址：字读 vs 逐字节读 ---
+    0x0100A000  字读=0xF7C83440   逐字节=0x00000040 0x00000034 0x000000C8 0x000000F7
+    0x00000000  字读=0x00804000   逐字节=0x00000000 0x00000040 0x00000080 0x00000000
+    0x01000000  字读=0xF7C83440   逐字节=0x00000040 0x00000034 0x000000C8 0x000000F7
+
+  --- 4) 候选地址窗口扫描（每个地址读 8 个字，看有没有变化）---
+    0x00000000 : 0x00804000 0x00000145 0x00000153 0x00000155 0x00000157 0x00000159 0x0000015B 0x00000000  ← 有变化
+    0x00003000 : 0xE008F0F0 0x68124A08 0x0207F002 0x2002F81D 0xFBB2434A 0xE8BDF0F0 0xF7FD401C 0xBD1CB8A9  ← 有变化
+    0x0000A000 : 0xE00A6E05 0x0004EB0B 0x1D0088AA 0xF7FA1DA9 0x88A8FE3C 0xB2844420 0x2D00682D 0x4658D1F2  ← 有变化
+    0x0000A200 : 0x00384607 0xE02FD002 0xE7F52104 0x464088E5 0xFF04F00A 0x42851EC0 0x4628D200 0x2006B286  ← 有变化
+    0x00010000 : 0x460CB570 0x461E4615 0xFD38F7FA 0xF7FA4620 0x4628FD23 0xFD2CF7FA 0xE8BD4630 0xF7FA4070  ← 有变化
+    0x00020000 : 0xF8D1D106 0xF42002AC 0xF8C15080 0xE00802AC 0x42904A40 0xF8D1D105 0xF42002AC 0xF8C15000  ← 有变化
+    0x00040000 : 0x60484901 0x00004770 0x00800334 0x4FF8E92D 0x460F4604 0x25004616 0x2AE0F04F 0x8100F8DA  ← 有变化
+    0x00060000 : 0x20796361 0x3A564441 0x6F6E4120 0x6F6D796E 0x61207375 0x4520646E 0x6E657478 0x20646564  ← 有变化
+    0x00800000 : 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000  ← 一个死值
+    0x01000000 : 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440  ← 一个死值
+    0x01003000 : 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440  ← 一个死值
+    0x0100A000 : 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440  ← 一个死值
+    0x0107F000 : 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440 0xF7C83440  ← 一个死值
+    0x02000000 : ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x02000000-0x02000003 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x02000004-0x02000007 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x02000008-0x0200000b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x0200000c-0x0200000f ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x02000010-0x02000013 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x02000014-0x02000017 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x02000018-0x0200001b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x0200001c-0x0200001f
+    0x08000000 : ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x08000000-0x08000003 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x08000004-0x08000007 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x08000008-0x0800000b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x0800000c-0x0800000f ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x08000010-0x08000013 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x08000014-0x08000017 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x08000018-0x0800001b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x0800001c-0x0800001f
+    0x10000000 : ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x10000000-0x10000003 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x10000004-0x10000007 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x10000008-0x1000000b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x1000000c-0x1000000f ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x10000010-0x10000013 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x10000014-0x10000017 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x10000018-0x1000001b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x1000001c-0x1000001f
+    0x18000000 : ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x18000000-0x18000003 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x18000004-0x18000007 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x18000008-0x1800000b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x1800000c-0x1800000f ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x18000010-0x18000013 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x18000014-0x18000017 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x18000018-0x1800001b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x1800001c-0x1800001f
+    0x20000000 : ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x20000000-0x20000003 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x20000004-0x20000007 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x20000008-0x2000000b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x2000000c-0x2000000f ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x20000010-0x20000013 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x20000014-0x20000017 ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x20000018-0x2000001b ERR:Memory transfer fault (STLink error (21): DP fault) @ 0x2000001c-0x2000001f
+    0x30000000 : 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000  ← 一个死值
+
+  --- 5) 别名猜想（如果 flash 在 0x00000000 也有别名）---
+    0x0000A000 = 0xE00A6E05   （flash 偏移 0xA000，应用入口）
+    0x0000A200 = 0x00384607   （flash 偏移 0xA200，app_info，期望 0x47525858）
+    0x00003000 = 0xE008F0F0   （flash 偏移 0x3000，bootloader 入口）
+
+  --- 6) 结论怎么读 ---
+    · 哪一行有多个不同值 -> 那块地址是真能读的，就从那儿读
+    · 如果 0x0000A200 读到 0x47525858 -> flash 在 0x00000000 有别名，
+      那么整片就按 0x00000000 + 偏移 来读（app_info 在 0x0000A200 = 0x0100A200）
+    · 如果所有窗口都是一个死值 -> flash 对调试器彻底不开放，得改走 CPU 搬运/UART

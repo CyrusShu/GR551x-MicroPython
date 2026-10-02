@@ -8,6 +8,10 @@ firmware/zk42v-epd-app/GCC/out/
 # 运行日志
 *.log
 !docs/runs/**/*.log
+# 2026-10-02：用户要"esp32 和价签的工程相关全部上传" —— 主机侧（pyocd/flash/status）
+# 跑出来的记录也一起留档。放行 host/pyocd/runs/，其余地方的 *.log 仍旧不入库
+# （脚本每次跑都会生成一个，不收的话仓库会被日志淹掉）。
+!host/pyocd/runs/**/*.log
 
 # macOS
 .DS_Store

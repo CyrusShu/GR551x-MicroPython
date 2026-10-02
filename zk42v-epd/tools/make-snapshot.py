@@ -48,6 +48,15 @@ FILES = [
     ("outputs/firmware/zk42v-epd-app/Src/img/jieqi.c",                        "firmware/zk42v-epd-app/Src/img/jieqi.c"),
     ("outputs/firmware/zk42v-epd-app/Src/img/jieqi.h",                        "firmware/zk42v-epd-app/Src/img/jieqi.h"),
     ("outputs/firmware/docs/preview/preview-calendar-termbold.png",  "firmware/docs/preview/preview-calendar-termbold.png"),
+    # build 41 的太阳图标方案对比（当时选型留下的）
+    ("outputs/firmware/docs/preview/preview-sun-options.png",  "firmware/docs/preview/preview-sun-options.png"),
+    ("outputs/firmware/docs/preview/preview-sun-variants-in-header.png",  "firmware/docs/preview/preview-sun-variants-in-header.png"),
+    # Mac 版基站的表头排版实验图 + 生成脚本
+    ("outputs/ble-base/preview/make_header_mock.py",   "base/preview/make_header_mock.py"),
+    ("outputs/ble-base/preview/header-now.png",        "base/preview/header-now.png"),
+    ("outputs/ble-base/preview/header-place-after-temp.png",  "base/preview/header-place-after-temp.png"),
+    ("outputs/ble-base/preview/header-place-rightaligned.png","base/preview/header-place-rightaligned.png"),
+    ("outputs/ble-base/preview/header-place-worstcase.png",   "base/preview/header-place-worstcase.png"),
     # build 71：天气预警（表头那格"天气文字"改画预警名；上=没有预警 / 下=有）
     ("outputs/firmware/docs/preview/preview-alert-header.png",  "firmware/docs/preview/preview-alert-header.png"),
     ("outputs/firmware/docs/preview/preview-alert-calendar.png","firmware/docs/preview/preview-alert-calendar.png"),
@@ -179,6 +188,19 @@ FILES = [
     ("outputs/pyocd/test-flashlab2.py",                 "host/pyocd/test-flashlab2.py"),
     ("outputs/pyocd/test-dapinfo.py",                   "host/pyocd/test-dapinfo.py"),
     ("outputs/pyocd/test-led-user.py",                  "host/pyocd/test-led-user.py"),
+    # 2026-10-02（用户："esp32 和价签的工程相关全部上传"）：pyocd 那一整摊
+    # 脚本/小工具/运行日志以前靠人肉一条条列，漏过 dump-diag.sh / dump-mac.sh /
+    # test-symbols.py 这些。改成通配，以后新加脚本自动就进库。
+    #   · *.sh / *.py / *.md  → host/pyocd/（工具本体）
+    #   · *.log               → host/pyocd/runs/（跑出来的记录，跟 docs/runs/ 一个性质）
+    #   · 明确不要：*.bin（整片 flash 镜像，几十万字节且含原厂固件）、*.bak、*.progress
+    ("outputs/pyocd/*.sh",                              "host/pyocd/"),
+    ("outputs/pyocd/*.py",                              "host/pyocd/"),
+    ("outputs/pyocd/*.md",                              "host/pyocd/"),
+    ("outputs/pyocd/*.log",                             "host/pyocd/runs/"),
+    # 最后一次推图的产物（调试用的小文件，留着能复现当时屏上是什么）
+    ("outputs/pyocd/last-push.epd",                     "host/pyocd/last-push.epd"),
+    ("outputs/pyocd/last-push.preview.png",              "host/pyocd/last-push.preview.png"),
     ("outputs/pyocd/test-symbols.py",                   "host/pyocd/test-symbols.py"),
 
     # ---- 文档 ---------------------------------------------------------------------
@@ -206,7 +228,14 @@ FILES = [
     ("outputs/ble-base/esp32/zk_base_esp32/zk_base_esp32.ino",
                                                         "base/esp32/zk_base_esp32/zk_base_esp32.ino"),
     #  2026-10-02：和风那部分整体挪到 NAS 中继后，sketch 里那份 TweetNaCl 已挪到
-    #  ../_removed/（不再参与编译）—— 快照里也就不再收它。历史版本见 git。
+    #  ../_removed/（不再参与编译）。**归档放在 _removed/ 下**，不要放回 sketch 目录 ——
+    #  Arduino 会编译 sketch 根目录下所有 .c/.cpp，放回去就等于又把它编进固件。
+    ("outputs/ble-base/esp32/_removed/tweetnacl.c",     "base/esp32/_removed/tweetnacl.c"),
+    ("outputs/ble-base/esp32/_removed/tweetnacl.h",     "base/esp32/_removed/tweetnacl.h"),
+    #  基站侧的自测：从 .ino 里抠出那几个手写 JSON 查找函数、配一个极小的 Arduino
+    #  String 替身，把真实报文喂进去（2026-10-02 那个"冒号后空格"的坑就是它钉住的）。
+    ("outputs/ble-base/esp32/tests/test_json_fields.py",
+                                                        "base/esp32/tests/test_json_fields.py"),
 
     ("outputs/pyocd/BACKUP-zk42v.md",                   "docs/BACKUP-zk42v.md"),
     ("outputs/pyocd/WRITE-zk42v.md",                    "docs/WRITE-zk42v.md"),
@@ -251,6 +280,32 @@ def main(argv=None):
     for rel_src, rel_dst in FILES:
         src = os.path.join(src_root, rel_src)
         dst = os.path.join(dst_root, rel_dst)
+
+        # 通配：源里带 * 时展开成多个文件；目标以 / 结尾 = "放进这个目录、保留文件名"。
+        # 为什么要有它：pyocd 那一堆脚本/日志是"整个目录都该归档"的，一个个列不现实
+        # （2026-10-02 用户："esp32 和价签的工程相关全部上传"）。
+        # 过滤掉构建产物/垃圾：.bin/.elf/.bak/.progress/.DS_Store。
+        if "*" in rel_src:
+            import glob as _glob
+
+            DROP = (".bin", ".elf", ".bak", ".progress", ".DS_Store")
+            for f in sorted(_glob.glob(src)):
+                if os.path.isdir(f) or f.endswith(DROP):
+                    continue
+                d = dst
+                if rel_dst.endswith("/"):
+                    d = os.path.join(dst_root, rel_dst, os.path.basename(f))
+                elif not d:
+                    d = os.path.join(dst_root, os.path.basename(f))
+                n = os.path.getsize(f)
+                total_bytes += n
+                print("  %-64s %7d B" % (os.path.relpath(d, dst_root), n))
+                if not args.dry_run:
+                    os.makedirs(os.path.dirname(d), exist_ok=True)
+                    shutil.copy2(f, d)
+                    copied += 1
+            continue
+
         if not os.path.exists(src):
             missing.append(rel_src)
             continue

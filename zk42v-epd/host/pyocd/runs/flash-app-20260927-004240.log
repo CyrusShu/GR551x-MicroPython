@@ -1,0 +1,44 @@
+Setting SWD clock to 240 kHz
+
+================================================================
+  写 flash —— 只读：把自研 APP 那一段读回来，跟本地镜像对账
+================================================================
+  MODE    : appverify
+  基地址  : 0x01000000 + 0x80000 (512 KB)
+  扇区/页 : 0x1000 / 0x1000
+  算法    : /Users/mac/Documents/Codex/2026-09-15/a/GR551x-SDK/build/keil/GR5xxx_16MB_Flash.FLM
+  备份    : /Users/mac/Documents/Codex/2026-09-15/a/outputs/firmware/zk42v-custom-512k.bin
+
+
+  把 RST 按住接地，我数到 0 再松手：
+      3 ...
+      2 ...
+      1 ...
+  >>> 现在松手！ <<<
+  connect() 成功（复位后 1345 ms，试了 318 次）
+
+  本地这份镜像的账面：
+  0x02000 那条 APP 镜像信息：
+    pattern   = 0x4744
+    version   = 1
+    bin_size  = 0x1457C (83324 字节)
+    check_sum = 0x008084C8
+    load/run  = 0x0100A000 / 0x0100A000
+    comments  = b'zk_esl_goodi'
+    实测这 83324 字节逐字节和 = 0x008084C8
+    APP 头两个字：SP=0x3001F000  复位向量=0x0100C91D
+    镜像里有标记字符串 ZK42V-EPD-CUSTOM-FW ✅
+    -> 自洽，可以刷：APP 在 0x0100A000，83324 字节。
+
+  等 flash 窗口活过来（XIP 开了才读得到真数据）...
+  窗口活了。读回 0x0100A000 + 0x1457C，再读 0x01002000 那条信息 ...
+
+  芯片里那条信息：bin_size=0x1457C  check_sum=0x008084C8  load/run=0x0100A000/0x0100A000
+  芯片里这段 83324 字节：逐字节和 = 0x008084C8
+  本地镜像的账    ：bin_size=0x1457C  check_sum=0x008084C8
+  跟本地这份镜像逐字节一样 ✅
+  芯片里那段的标记字符串 ZK42V-EPD-CUSTOM-FW 在 ✅
+
+  >>> 芯片里的 APP 跟本地镜像一致，而且自洽  APP_VERIFY_OK
+  >>> 下一步：接上串口不用管，直接看屏上有没有那四条横带；
+      再用 bash status.sh 读 0x3001F000 的调试状态块。

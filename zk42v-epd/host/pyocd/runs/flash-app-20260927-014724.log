@@ -1,0 +1,21 @@
+Setting SWD clock to 240 kHz
+
+================================================================
+  写 flash —— 只写自研 APP 那一段 + 更新镜像信息（不动 bootloader）
+================================================================
+  MODE    : app
+  基地址  : 0x01000000 + 0x80000 (512 KB)
+  扇区/页 : 0x1000 / 0x1000
+  算法    : /Users/mac/Documents/Codex/2026-09-15/a/GR551x-SDK/build/keil/GR5xxx_16MB_Flash.FLM
+  备份    : /Users/mac/Documents/Codex/2026-09-15/a/outputs/firmware/zk42v-custom-512k.bin
+
+  FLM 里写的：name=GR5xxx_16MB_Flash  start=0x00100000  size=0x1000000  page=0x1000  擦完=0xFF
+  （start 是给 IDE 看的占位值；算法真正认哪一段，Init 之后从 RAM 里读）
+
+
+  把 RST 按住接地，我数到 0 再松手：
+      3 ...
+      2 ...
+      1 ...
+  >>> 现在松手！ <<<
+  没抢到窗口（试了 1865 次），再跑一次。

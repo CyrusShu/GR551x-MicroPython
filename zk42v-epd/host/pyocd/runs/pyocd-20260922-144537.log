@@ -1,0 +1,8 @@
+=== 探测到的调试器 ===
+  #   Probe/Board    Unique ID                  Target  
+--------------------------------------------------------
+  0   STM32 STLink   34FF74064D56383350302243   n/a     
+
+=== 连接 + 状态 ===
+Setting SWD clock to 500 kHz
+0000350 E Error while initing target: STLink error (9): Get IDCODE error [commander]

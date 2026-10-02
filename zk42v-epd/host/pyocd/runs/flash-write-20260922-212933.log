@@ -1,0 +1,24 @@
+Setting SWD clock to 240 kHz
+
+================================================================
+  写 flash —— 只读：把现在的 flash 读回来跟备份逐字节比
+================================================================
+  MODE    : verify
+  基地址  : 0x01000000 + 0x80000 (512 KB)
+  扇区/页 : 0x1000 / 0x1000
+  算法    : /Users/mac/Documents/Codex/2026-09-15/a/GR551x-SDK/build/keil/GR5xxx_16MB_Flash.FLM
+  备份    : /Users/mac/Documents/Codex/2026-09-15/a/outputs/pyocd/zk42v-factory-backup-run1.bin
+
+
+  把 RST 按住接地，我数到 0 再松手：
+      3 ...
+      2 ...
+      1 ...
+  >>> 现在松手！ <<<
+  connect() 成功（复位后 960 ms，试了 225 次）
+
+  等 flash 窗口活过来（XIP 开了才读得到真数据）...
+  窗口活了，整片读回比对 ...
+    芯片里 : 1dfab92f558352642f5c477b22d1e66d12efc1be959d5e676ae27fe05cedb704
+    备份里 : 1dfab92f558352642f5c477b22d1e66d12efc1be959d5e676ae27fe05cedb704
+  >>> 逐字节一样（524288 字节全部对上） VERIFY_OK
