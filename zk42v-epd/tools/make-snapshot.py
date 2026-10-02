@@ -193,6 +193,7 @@ FILES = [
     ("outputs/ble-base/deploy/wx-relay.service",        "base/deploy/wx-relay.service"),
     ("outputs/ble-base/deploy/wx-relay.env.example",    "base/deploy/wx-relay.env.example"),
     ("outputs/ble-base/deploy/docker-compose.yml",      "base/deploy/docker-compose.yml"),
+    ("outputs/ble-base/deploy/install-remote.sh",       "base/deploy/install-remote.sh"),
     ("outputs/ble-base/qweather-jwt-keygen.sh",         "base/qweather-jwt-keygen.sh"),
     ("outputs/ble-base/run.sh",                         "base/run.sh"),
     ("outputs/ble-base/setup.sh",                       "base/setup.sh"),
