@@ -745,6 +745,9 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
         logf("        （401/403 三类原因：① 响应体里是 Invalid Host → QWEATHER_HOST "
              "要换成控制台-设置里的 API Host；② token/kid 相关 → kid/sub 填错或公钥没传上去；"
              "③ 凭据类型不是 JWT）");
+        https.end();                 /* ⚠ 先把上一次的 socket 关掉，再做下面的对照探测 ——
+                                        不然探测是在"socket 还占着"的状态下做的，结论会被污染
+                                        （2026-10-02 第一版就吃了这个亏） */
         if (code < 0)
         {
             /* 连都连不上时的**现场判别**（2026-10-02 加）：
@@ -786,7 +789,6 @@ static bool fetchQWeatherNow(int *codeOut, int *tempT10Out, int *windOut,
             logf("  ⇒ 结论：①=%d ②=%d   （①0=IP 不通看路由；①1②0=ESP32 的 TLS 不行；"
                  "①1②1=和风这台主机被单独挡/或它自己的 TLS 参数）", (int)ok80, (int)okTlsOther);
         }
-        https.end();
         return false;
     }
     dateHdr = https.header("Date");
@@ -942,6 +944,8 @@ static bool fetchFromRelay(String *dateOut)
     return true;
 }
 
+static bool g_skipQweather = false;      /* 中继失败这一轮就别再直连和风了 */
+
 static bool fetchWeatherAndTimeInner()
 {
     String dateHdr;
@@ -957,10 +961,14 @@ static bool fetchWeatherAndTimeInner()
             {
                 applyDateHeader(relayDate);
             }
+            g_skipQweather = false;
             lastFetchOkMs = millis();
             return true;
         }
-        logf("中继没取到 → 继续走直连那条路（Open-Meteo 兜底）");
+        /* ⚠ 配了中继就**不再直连和风**：这台板子的 TLS 起不来（2026-10-02 实测
+           连"发出去"都做不到），直连只会白等几秒。直接去走 Open-Meteo 兜底。 */
+        logf("中继没取到 → 直接走 Open-Meteo 兜底（不再试直连和风：这台板子 TLS 起不来）");
+        g_skipQweather = true;
     }
 
     /* ⚠ 顺序很重要（2026-10-01 实机踩到）：
@@ -1066,7 +1074,7 @@ static bool fetchWeatherAndTimeInner()
     }
 
     /* ② 时间到手了 → 再问和风（JWT 的 iat/exp 要"现在几点"）。成功就覆盖天气。 */
-    if (qweatherJwtConfigured() || strlen(QWEATHER_KEY) > 0)
+    if (!g_skipQweather && (qweatherJwtConfigured() || strlen(QWEATHER_KEY) > 0))
     {
         int c2 = 0, t102 = 0, wind2 = 0;
         String dateHdr2;
@@ -1434,7 +1442,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-20");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-21");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),
