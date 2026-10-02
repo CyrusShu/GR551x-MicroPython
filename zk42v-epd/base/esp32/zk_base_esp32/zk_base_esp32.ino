@@ -1356,6 +1356,13 @@ void loop()
             wxSentTemp     = -999;
             citySent[0]    = 0;          /* 城市名也要重发（价签掉电后 RAM 里那个没了） */
             memoSent       = false;      /* 纪念日同理 */
+            /* ⚠ build-24 补：**预警也要重发** —— 2026-10-02 实测漏了这一条。
+               价签掉电后它 RAM 里的 s_alert_level/s_alert_type 也没了（屏上退回天气文字），
+               而基站这边 alertSentLevel 还留着 4 + "暴雨"，于是判断"没变化、不用发"，
+               结果那条红色「暴雨」**不会回来**，一直到预警本身变化为止。
+               城市名/纪念日当初就清对了，预警是我加 0x7C 时漏的。 */
+            alertSentLevel  = -1;
+            alertSentType[0] = 0;
             tagSeenAtMs    = millis();   /* B：从这一刻起算"最多等 60 秒" */
         }
         tagPresent = true;
