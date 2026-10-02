@@ -68,6 +68,7 @@ CMD_READ_BAT = 0x72             # 立刻重读电池 + 重画一页
 CMD_SET_CITY = 0x79             # [0x79, utf8 城市名]（build 61：表头温度后面那个）
 CMD_SET_MEMO = 0x7A             # [0x7A, mon, day, utf8 祝福语]（build 67：纪念日高亮）
 CMD_SET_ALERT = 0x7C            # [0x7C, level, utf8 类型名]（build 71：和风的天气预警）
+CMD_SET_ALERT_ICON = 0x7D       # [0x7D, hi, lo]（build 74：和风的预警图标编号）
 
 MODE_KEEP = 0                   # build 60 起的固件认这个：只对表、别动页面
 MODE_CALENDAR = 1
@@ -163,6 +164,42 @@ def qweather_text_to_code(text: str) -> int:
     return WX_CLOUDY
 
 
+# 2026-10-02：**优先用和风的 icon 编号**判天气码（跟 wx-compare.py 同一张表）。
+# 为什么：文字匹配（"雷"→雷阵雨、"大雨/暴雨"→大雨…）碰到"雨夹雪/冻雨/阵雨"很容易猜歪，
+# 而 icon 编号是枚举、没有歧义（305 小中雨 / 307 大雨 / 302 雷阵雨 / 404 雨夹雪）。
+QW_ICON_TO_CODE = {
+    100: WX_SUN, 150: WX_SUN,
+    101: WX_CLOUDY, 102: WX_CLOUDY, 103: WX_CLOUDY,
+    151: WX_CLOUDY, 152: WX_CLOUDY, 153: WX_CLOUDY,
+    104: WX_OVERCAST,
+    300: WX_LIGHT_RAIN, 305: WX_LIGHT_RAIN, 309: WX_LIGHT_RAIN, 313: WX_LIGHT_RAIN,
+    314: WX_LIGHT_RAIN, 350: WX_LIGHT_RAIN, 399: WX_LIGHT_RAIN,
+    301: WX_HEAVY_RAIN, 306: WX_HEAVY_RAIN, 307: WX_HEAVY_RAIN, 308: WX_HEAVY_RAIN,
+    310: WX_HEAVY_RAIN, 311: WX_HEAVY_RAIN, 312: WX_HEAVY_RAIN, 315: WX_HEAVY_RAIN,
+    316: WX_HEAVY_RAIN, 317: WX_HEAVY_RAIN, 318: WX_HEAVY_RAIN, 351: WX_HEAVY_RAIN,
+    302: WX_THUNDER, 303: WX_THUNDER, 304: WX_THUNDER,
+    400: WX_SNOW, 401: WX_SNOW, 402: WX_SNOW, 403: WX_SNOW, 404: WX_SNOW,
+    405: WX_SNOW, 406: WX_SNOW, 407: WX_SNOW, 408: WX_SNOW, 409: WX_SNOW,
+    410: WX_SNOW, 456: WX_SNOW, 457: WX_SNOW, 499: WX_SNOW,
+    500: WX_FOG, 501: WX_FOG, 502: WX_FOG, 503: WX_FOG, 504: WX_FOG,
+    507: WX_FOG, 508: WX_FOG, 509: WX_FOG, 510: WX_FOG, 511: WX_FOG,
+    512: WX_FOG, 513: WX_FOG, 514: WX_FOG, 515: WX_FOG,
+    900: WX_CLOUDY, 901: WX_CLOUDY,
+}
+
+
+def qweather_code_of_now(now):
+    """实况对象 -> 固件码：优先 icon 编号，缺了/认不出才退回文字匹配。
+    返回 (码, 判据) —— 判据用来打日志（"icon" / "text"）。"""
+    try:
+        c = QW_ICON_TO_CODE.get(int((now or {}).get("icon")))
+    except (TypeError, ValueError):
+        c = None
+    if c:
+        return c, "icon"
+    return qweather_text_to_code((now or {}).get("text")), "text"
+
+
 def fetch_weather_qweather(lat: float, lon: float, key: str,
                            host: str = "devapi.qweather.com", timeout: float = 10.0):
     """和风天气的**实况**。返回跟 fetch_weather() 一样的 (码, 温度, WMO占位, 风速)。"""
@@ -180,10 +217,10 @@ def fetch_weather_qweather(lat: float, lon: float, key: str,
     now = j["now"]
     temp = int(round(float(now["temp"])))
     wind = float(now.get("windSpeed") or 0.0)
-    code = qweather_text_to_code(now.get("text"))
+    code, _by = qweather_code_of_now(now)          # 优先 icon 编号（见上面的表）
     if code in (WX_SUN, WX_CLOUDY) and wind >= 30.0:
         code = WX_WIND
-    return code, temp, None, wind
+    return code, temp, now.get("icon"), wind
 
 
 def fetch_weather_any(args, lat: float, lon: float):
@@ -229,7 +266,7 @@ def fetch_from_relay(args, url: str):
     # 中继发的温度"整数就是整数度、带小数就是模型值"——跟固件的两条载荷格式对齐
     has_tenths = abs(temp - round(temp)) >= 0.05
     setattr(args, "_relay_alert", (int(j.get("alert") or 0), int(j.get("alevel") or 0),
-                                   str(j.get("atype") or "")))
+                                   str(j.get("atype") or ""), int(j.get("aicon") or 0)))
     return code, temp, None, 0.0, "局域网中继(" + url + ")", has_tenths
 
 
@@ -271,7 +308,9 @@ def fetch_alert_qweather(lat: float, lon: float, key: str,
     #   解析器随即在 for 处报 SyntaxError（Mac 自带 Python 3.9.6 上踩过）。
     return (ALERT_LEVEL.get(col, 0),
             (top.get("eventType") or {}).get("name") or "",
-            len(alerts))
+            len(alerts),
+            # 和风的预警图标编号（1003 暴雨 / 1014 雷电…）—— 固件拿它画表头那格
+            int(top.get("icon") or 0))
 
 
 def fetch_alert_any(args, lat: float, lon: float):
@@ -279,8 +318,8 @@ def fetch_alert_any(args, lat: float, lon: float):
     # 走中继的话，预警是刚才那次请求顺手带回来的（同一个 JSON），不用再问一遍
     ra = getattr(args, "_relay_alert", None)
     if ra is not None:
-        n, lv, atype = ra
-        return (lv, atype, n) if n > 0 and lv > 0 else (0, "", 0)
+        n, lv, atype, aic = ra
+        return (lv, atype, n, aic) if n > 0 and lv > 0 else (0, "", 0, 0)
 
     key = (getattr(args, "qweather_key", "") or os.environ.get("QWEATHER_KEY", "")).strip()
     host = getattr(args, "qweather_host", "devapi.qweather.com")
@@ -388,6 +427,7 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
     # 挨着发至少有机会被合并；先取天气则少 2 秒的中间等待。
     wx_payload = None
     alert_payload = None
+    alert_icon_payload = None       # build 74：预警图标编号单独一条命令
     if do_weather and not args.no_weather:
         try:
             code, temp, wmo, wind, wsrc, has_tenths = fetch_weather_any(args, args.lat,
@@ -427,11 +467,14 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
         # 只在"有 / 没有"或"类型名或级别变了"时才发，不然每轮都白刷一屏。
         alert = fetch_alert_any(args, args.lat, args.lon)
         if alert is not None:
-            lv, atype, an = alert
+            lv, atype, an, aic = alert
             prev_a = (last_alert or {}).get("a")
             if prev_a != (lv, atype):
                 if lv > 0:
                     alert_payload = bytes([CMD_SET_ALERT, lv & 0xFF]) + atype.encode("utf-8")
+                    if aic > 0:      # build 74：预警图标编号（单独一条 0x7D，老固件会忽略）
+                        alert_icon_payload = bytes([CMD_SET_ALERT_ICON,
+                                                    (aic >> 8) & 0xFF, aic & 0xFF])
                     log("  · 天气预警[" + str(an) + " 条]：最严重的是 " + atype
                         + {1: "白色", 2: "蓝色", 3: "黄色", 4: "橙色", 5: "红色"}.get(lv, "")
                         + "预警 → 表头那格改画它（" + ("红色" if lv >= 3 else "黑色") + "）",
@@ -537,6 +580,9 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                 try:
                     await cli.write_gatt_char(WR_UUID, alert_payload, response=True)
                     log("  → 天气预警  载荷=" + alert_payload.hex(" "), args.log)
+                    if alert_icon_payload is not None:
+                        await cli.write_gatt_char(WR_UUID, alert_icon_payload, response=True)
+                        log("  → 预警图标  载荷=" + alert_icon_payload.hex(" "), args.log)
                 except Exception as e:
                     log("  天气预警发送失败（不影响）：" + explain(e), args.log)
 

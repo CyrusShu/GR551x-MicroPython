@@ -161,6 +161,10 @@ static char     s_memo[40];
    和风的预警按经纬度取，基站那边取回后顺手发过来；清空 = level 0。 */
 static int8_t   s_alert_level;
 static char     s_alert_type[24];
+/* build 74：和风的预警图标编号（1003 暴雨 / 1014 雷电…），0 = 没有/不知道。
+   单独一条命令（0x7D）下发 —— 这样老固件（不认识 0x7D）会**直接忽略**，
+   只是画不出图标，不会把预警名弄乱。 */
+static int16_t  s_alert_code;
 
 /* --------------------------------------------------- build 72：**合并刷新窗口**
 
@@ -885,6 +889,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
          *   ≥3（黄/橙/红）用红、1~2（白/蓝）用黑。类型名只认 ALERT_CHARS 里的字。 */
         case 0x7C:
             s_alert_type[0] = 0;
+            s_alert_code    = 0;            /* 预警换/清了 → 图标编号也一起作废 */
             if (len >= 2u)
             {
                 uint16_t n = (uint16_t)(len - 2u);
@@ -900,6 +905,26 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             else
             {
                 s_alert_level = 0;
+            }
+            g_dbg.alert_cmds++;
+            if (ZKGUI_MODE_PICTURE != s_mode)
+            {
+                gui_request_redraw();
+            }
+            break;
+
+        /* 0x7D SET_ALERT_ICON：**预警图标编号**（build 74）
+         *   7D <hi> <lo>    和风的预警 icon 编号，例 7D 03 EB = 1003（暴雨）
+         *   7D（空）= 清掉，回到画天气图标。
+         *   ⚠ 为什么单独一条命令而不是塞进 0x7C：**向后兼容** —— 老固件收到
+         *   没见过的 0x7D 直接走 default 忽略，屏上只是没图标，预警名照旧；
+         *   要是把两个字节塞进 0x7C，老固件会把它当成预警名的前两个字节 → 乱码。
+         *   固件端拿这个编号去 alert_icons.c 查表（认不出走"通用预警"）。 */
+        case 0x7D:
+            s_alert_code = 0;
+            if (len >= 3u)
+            {
+                s_alert_code = (int16_t)(((uint16_t)d[1] << 8) | d[2]);
             }
             g_dbg.alert_cmds++;
             if (ZKGUI_MODE_PICTURE != s_mode)
@@ -1315,6 +1340,7 @@ void zk_epd_svc_poll(uint32_t now_ms)
             info.memo     = s_memo;
             info.alert_level = s_alert_level;   /* build 71：天气预警（基站 0x7C 下发） */
             info.alert_type  = s_alert_type;
+            info.alert_code  = s_alert_code;    /* build 74：预警图标编号（基站 0x7D 下发） */
             zkgui_draw((uint8_t *)ZK_IMG_BUF, &info);
 
             s_need_refresh = 1;                /* 交给下面的刷新分支去写屏 */

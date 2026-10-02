@@ -48,6 +48,7 @@ $(SDK_ROOT)/external/segger_rtt/SEGGER_RTT.c \
 ../Src/img/lunar.c \
 ../Src/img/jieqi.c \
 ../Src/img/weather.c \
+../Src/img/alert_icons.c \
 ../Src/img/zk_opt.c \
 ../Src/ble/zk_ble.c \
 ../Src/ble/zk_epd_svc.c \

@@ -87,6 +87,45 @@ def qweather_code(text: str) -> int:
     return 2
 
 
+# ---- 和风 icon 编号 -> 固件那 9 个码（2026-10-02：**不再靠文字猜**）-------------
+#  为什么换：上面那个 qweather_code() 是拿**文字**做关键字匹配，"雨夹雪/冻雨/阵雨/
+#  雾转霾"这类很容易猜歪。而 weather/now 的响应里直接带 **icon 编号**
+#  （305 小中雨 / 307 大雨 / 302 雷阵雨 / 404 雨夹雪…），编号是枚举、没有歧义。
+#  编号表：https://dev.qweather.com/docs/api/weather/weather-conditions/
+#  ⚠ 认不出来时返回 0，调用方再退回文字匹配（老版本接口/兜底源可能没有 icon）。
+QW_ICON_TO_CODE = {
+    100: 1, 150: 1,                                           # 晴 / 晴（夜）
+    101: 2, 102: 2, 103: 2, 151: 2, 152: 2, 153: 2,           # 多云 / 少云 / 晴间多云（含夜间）
+    104: 3,                                                   # 阴
+    300: 4, 305: 4, 309: 4, 313: 4, 314: 4, 350: 4, 399: 4,   # 阵雨/小雨/毛毛雨/冻雨/小到中雨
+    301: 5, 306: 5, 307: 5, 308: 5, 310: 5, 311: 5, 312: 5,   # 中雨/大雨/暴雨/极端降雨
+    315: 5, 316: 5, 317: 5, 318: 5, 351: 5,                   # 中到大雨/大到暴雨…
+    302: 6, 303: 6, 304: 6,                                   # 雷阵雨 / 强雷阵雨 / 雷阵雨伴冰雹
+    400: 7, 401: 7, 402: 7, 403: 7, 404: 7, 405: 7, 406: 7,   # 雪 / 雨夹雪 / 雨雪 / 阵雪…
+    407: 7, 408: 7, 409: 7, 410: 7, 456: 7, 457: 7, 499: 7,
+    500: 8, 501: 8, 502: 8, 503: 8, 504: 8, 507: 8, 508: 8,   # 薄雾/雾/霾/沙/尘/沙尘暴
+    509: 8, 510: 8, 511: 8, 512: 8, 513: 8, 514: 8, 515: 8,   # 浓雾/强浓雾/中度霾…特强浓雾
+    900: 2, 901: 2,                                           # 热 / 冷（天空状况不明 → 中性，跟旧逻辑一致）
+}
+
+
+def qweather_code_from_icon(icon) -> int:
+    """和风的 icon 编号 -> 固件 9 个码；认不出来返回 0（调用方退回文字匹配）"""
+    try:
+        return QW_ICON_TO_CODE.get(int(icon), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def qweather_code_of_now(now) -> int:
+    """实况对象 -> 固件码：**优先用 icon 编号**，没有/不认识才退回文字匹配。
+    返回 (码, 用了什么) —— 第二项用来在日志里说清"这条是编号定的还是文字猜的"。"""
+    c = qweather_code_from_icon((now or {}).get("icon"))
+    if c:
+        return c, "icon"
+    return qweather_code((now or {}).get("text")), "text"
+
+
 def qweather(key: str, lat: float, lon: float, host: str = "devapi.qweather.com"):
     """注意 location 是**经度,纬度**（跟 Open-Meteo 反着来，踩过一次）"""
     return qweather_url("https://%s/v7/weather/now?location=%.4f,%.4f&key=%s&lang=zh&unit=m"
@@ -187,6 +226,9 @@ def alert_summary(alerts):
         "type":  (top.get("eventType") or {}).get("name") or "",   # 暴雨 / 雷电 / 台风
         "title": top.get("headline") or "",
         "until": top.get("expireTime") or "",
+        # 2026-10-02：和风预警也带 icon 编号（1003 暴雨 / 1014 雷电 / 1006 大风…），
+        # 固件拿它去挑一张预警图标（表头那格改成"图标 + 名字"）。
+        "icon":  int(top.get("icon") or 0),
         "all":   pairs,
     }
 
@@ -333,9 +375,10 @@ def main() -> int:
             now, upd = qweather_jwt(args.qweather_jwt_key, args.qweather_kid,
                                     args.qweather_sub, args.lat, args.lon,
                                     args.qweather_host, args.qweather_dev_id)
-            print("★ 和风天气（**JWT 认证**，实况）: %s°C  体感 %s°C  %s  ↦ 固件码 %d"
+            _c, _by = qweather_code_of_now(now)
+            print("★ 和风天气（**JWT 认证**，实况）: %s°C  体感 %s°C  %s  icon=%s  ↦ 固件码 %d（按%s判定）"
                   % (now.get("temp"), now.get("feelsLike"), now.get("text"),
-                     qweather_code(now.get("text"))))
+                     now.get("icon"), _c, "icon 编号" if _by == "icon" else "文字匹配"))
             print("    观测时刻 %s   更新 %s" % (now.get("obsTime"), upd))
             print("    ✅ JWT 这套（私钥 + iss/kid/sub）是通的 —— 把下面三行抄进 ESP32：")
             print("         #define QWEATHER_JWT_ISS   \"%s\"" % args.qweather_dev_id)
@@ -355,9 +398,10 @@ def main() -> int:
     elif args.qweather_key:
         try:
             now, upd = qweather(args.qweather_key, args.lat, args.lon, args.qweather_host)
-            print("★ 和风天气（实况，跟手机同一路）: %s°C  体感 %s°C  %s  ↦ 固件码 %d"
+            _c, _by = qweather_code_of_now(now)
+            print("★ 和风天气（实况，跟手机同一路）: %s°C  体感 %s°C  %s  icon=%s  ↦ 固件码 %d（按%s判定）"
                   % (now.get("temp"), now.get("feelsLike"), now.get("text"),
-                     qweather_code(now.get("text"))))
+                     now.get("icon"), _c, "icon 编号" if _by == "icon" else "文字匹配"))
             print("    观测时刻 %s   更新 %s   风 %s km/h   湿度 %s%%"
                   % (now.get("obsTime"), upd, now.get("windSpeed"), now.get("humidity")))
             print("    ↑ 想让它成为价签的源：ESP32 里 QWEATHER_KEY 填同一个 key")

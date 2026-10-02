@@ -1341,7 +1341,7 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 117
+ZK_DBG_WORDS = 118
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4832,6 +4832,12 @@ def _zk_say_epd_service(words):
                 % (words[116],
                    "（有预警时表头那格「天气文字」会换成预警名，≥黄色用红色）"
                    if words[116] else "（还没收到过 → 表头照常显示天气文字）"))
+        # build 74：预警图标编号（和风的 icon：1003 暴雨 / 1014 雷电…，0x7D 下发）
+        if len(words) > 117:
+            say("      预警图标 0x7D：收到 %d 次%s"
+                % (words[117],
+                   "（有图标编号时，表头那格画预警图标 —— 顶掉天气图标，红色 ≥黄色）"
+                   if words[117] else "（还没收到过 → 那格继续画天气图标）"))
         if gui_mode in (1, 2) and gui_draws == 0:
             say("      → 网页点了「日历/时钟模式」但我们还没画出来（看下一行的屏状态）")
 

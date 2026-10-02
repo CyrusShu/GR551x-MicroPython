@@ -44,13 +44,16 @@ def build(tmpdir):
            os.path.join(IMG, 'zkgui.c'),
            os.path.join(IMG, 'lunar.c'),
            os.path.join(IMG, 'jieqi.c'),
-           os.path.join(IMG, 'weather.c'), '-o', exe]
+           os.path.join(IMG, 'weather.c'),
+           os.path.join(IMG, 'alert_icons.c'),   # build 74：预警图标
+           '-o', exe]
     subprocess.run(cmd, check=True)
     return exe
 
 
 def render(exe, mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp_c=-128,
-           city='', memo_spec='', memo_text='', alert_lv=0, alert_type=''):
+           city='', memo_spec='', memo_text='', alert_lv=0, alert_type='',
+           alert_code=0):
     """opt：选项位，跟固件 zk_opt.h 的 ZK_OPT_xxx 对齐（这里只用到 0x04 = 不画农历）
        bat_mv / temp_c10：电池毫伏、温度×10（0 = 按"没读到"画，右上角就不显示）
        city：build 61 起表头温度后面那个城市名（基站 0x79 下发；空 = 不画）
@@ -61,7 +64,7 @@ def render(exe, mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp_c=-12
     out = subprocess.run([exe, str(mode), str(ts), str(opt),
                           str(bat_mv), str(temp_c10), str(wx_code),
                           str(env_temp_c), city, memo_spec, memo_text,
-                          str(alert_lv), alert_type], check=True,
+                          str(alert_lv), alert_type, str(alert_code)], check=True,
                          stdout=subprocess.PIPE).stdout
     assert len(out) == BYTES + 2 * GUARD, len(out)
     head, body, tail = out[:GUARD], out[GUARD:GUARD + BYTES], out[GUARD + BYTES:]
@@ -118,12 +121,13 @@ def main(argv):
     memo_t   = argv[12] if len(argv) > 12 else ''         # 祝福语
     alert_lv = int(argv[13]) if len(argv) > 13 else 0     # 预警级别（build 71；0 = 没有）
     alert_t  = argv[14] if len(argv) > 14 else ''         # 预警类型名（"暴雨"…）
+    alert_ic = int(argv[15]) if len(argv) > 15 else 0     # 预警图标编号（build 74；0 = 不画）
     ts += tz * 3600
 
     with tempfile.TemporaryDirectory(prefix='zkgui-') as td:
         exe = build(td)
         body = render(exe, mode, ts, opt, bat_mv, temp_c10, wx_code, env_temp, city,
-                      memo_s, memo_t, alert_lv, alert_t)
+                      memo_s, memo_t, alert_lv, alert_t, alert_ic)
     rows = to_rgb(body)
     write_png(out, rows)
 

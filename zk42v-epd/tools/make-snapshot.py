@@ -64,6 +64,13 @@ FILES = [
     ("outputs/firmware/docs/preview/preview-wx-icons-qweather.png", "firmware/docs/preview/preview-wx-icons-qweather.png"),
     ("outputs/firmware/docs/preview/preview-wx-alert-icons.png",    "firmware/docs/preview/preview-wx-alert-icons.png"),
     ("outputs/firmware/tools/wx_icon_compare.py",                   "firmware/tools/wx_icon_compare.py"),
+    # build 74：预警图标（生成器 + 生成物 + 自测 + 预览）
+    ("outputs/firmware/tools/gen_alert_icons.py",                   "firmware/tools/gen_alert_icons.py"),
+    ("outputs/firmware/tools/test_alert_icons.py",                  "firmware/tools/test_alert_icons.py"),
+    ("outputs/firmware/zk42v-epd-app/Src/img/alert_icons.c",        "firmware/zk42v-epd-app/Src/img/alert_icons.c"),
+    ("outputs/firmware/zk42v-epd-app/Src/img/alert_icons.h",        "firmware/zk42v-epd-app/Src/img/alert_icons.h"),
+    ("outputs/firmware/docs/preview/preview-alert-header-icons.png", "firmware/docs/preview/preview-alert-header-icons.png"),
+    ("outputs/firmware/docs/preview/preview-alert-icon-set.png",    "firmware/docs/preview/preview-alert-icon-set.png"),
     ("outputs/firmware/docs/preview/preview-calendar-2025-08.png",            "firmware/docs/preview/preview-calendar-2025-08.png"),
     ("outputs/firmware/tools/gen_wqy_bitmap.py",                            "firmware/tools/gen_wqy_bitmap.py"),
     ("outputs/firmware/tools/wqy_font.py",                                  "firmware/tools/wqy_font.py"),

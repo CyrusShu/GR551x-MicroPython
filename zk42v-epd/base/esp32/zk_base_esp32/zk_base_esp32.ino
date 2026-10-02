@@ -67,6 +67,7 @@
 //    数据来源 = NAS 上 wx-relay 取的和风实时预警（老接口 /v7/warning/now 已下架，
 //    新的是 /weatheralert/v1/current/{纬度}/{经度}）；我们不直连，只读中继的 JSON。
 #define CMD_SET_ALERT   0x7C
+#define CMD_SET_ALERT_ICON 0x7D   // 预警图标编号（和风的 icon：1003 暴雨 / 1014 雷电…）
 
 // ③ 价签：按广播名找（各平台看到的 MAC 不一样，名字最稳）
 #define TAG_NAME        "ZK42V-EPD"
@@ -211,6 +212,7 @@ static int   wxSentTemp = -999;
 static int   wxAlertLevel = 0;
 static char  wxAlertType[24] = "";
 static char  wxAlertEnd[32]  = "";
+static int   wxAlertIcon = 0;  /* 和风的预警图标编号（1003 暴雨/1014 雷电…），0 = 没有 */
 static unsigned long wxAlertAtMs = 0;   /* 上次从中继拿到预警的时刻（判断"过期了没有"） */
 static const unsigned long ALERT_STALE_MS = 12UL * 3600UL * 1000UL;
 
@@ -224,6 +226,7 @@ static char    citySent[24] = "";   // 上次发出去的城市名（build 61；
 static bool    memoSent = false;    // 纪念日发过没有（build 67）
 static int     alertSentLevel = -1; // 上次发出去的预警级别（build 71；-1 = 还没发过）
 static char    alertSentType[24] = "";   // 上次发出去的预警类型名
+static int     alertSentIcon = -1;  // 上次发出去的预警图标编号（-1 = 还没发过）
 
 /* ------------------------------ 小工具 ---------------------------------- */
 
@@ -667,6 +670,7 @@ static bool fetchFromRelay(String *dateOut)
             wxAlertLevel  = 0;
             wxAlertType[0] = 0;
             wxAlertEnd[0]  = 0;
+            wxAlertIcon   = 0;
             if (findJsonNumber(body, "alert", &n) && n > 0 &&
                 findJsonNumber(body, "alevel", &lv))
             {
@@ -674,6 +678,11 @@ static bool fetchFromRelay(String *dateOut)
                 wxAlertAtMs  = millis();
                 findJsonString(body, "atype", wxAlertType, sizeof(wxAlertType));
                 findJsonString(body, "aend", wxAlertEnd, sizeof(wxAlertEnd));
+                {
+                    float ai = 0;          /* aicon：和风的预警图标编号（老中继没这个字段 → 0） */
+
+                    wxAlertIcon = findJsonNumber(body, "aicon", &ai) ? (int)ai : 0;
+                }
                 /* 自检：有预警却读不出类型名 = JSON 的字段名/写法跟我们约定不一样
                    （2026-10-02 就是这么静默失效的：数字读到了、字符串全空，
                    屏上画不出预警，只有盯着串口才发现）。 */
@@ -700,8 +709,8 @@ static bool fetchFromRelay(String *dateOut)
         logf("天气源 = **局域网中继** %.1f℃ %s（%s）",
              wxTemp / 10.0, wxName(wxCode), WX_RELAY_URL);
         if (wxAlertLevel > 0)
-            logf("  ⚠ 预警 %s%s 到 %s（中继一并带上来的）",
-                 wxAlertType, alertLevelName(wxAlertLevel), wxAlertEnd);
+            logf("  ⚠ 预警 %s%s 到 %s（中继一并带上来的）图标=%d",
+                 wxAlertType, alertLevelName(wxAlertLevel), wxAlertEnd, wxAlertIcon);
     }
     return true;
 }
@@ -1186,7 +1195,11 @@ static bool doSync(BLEAdvertisedDevice &dev)
     //     载荷 = 7C <level> <utf8 类型名>，最多 2+15=17 字节（< MTU-3，不用分片）。
     {
         int  lv  = alertLevelNow();
-        bool chg = (lv != alertSentLevel) || (strcmp(wxAlertType, alertSentType) != 0);
+        /* build-24b：图标编号也算"变了没" —— 换了预警类型但级别一样时（比如蓝色雷电 →
+           蓝色大风）只比 level+名字可能漏掉图标变化。 */
+        int  ic  = (lv > 0) ? wxAlertIcon : 0;
+        bool chg = (lv != alertSentLevel) || (strcmp(wxAlertType, alertSentType) != 0) ||
+                   (ic != alertSentIcon);
 
         if (chg && (lv > 0 || alertSentLevel > 0))
         {
@@ -1200,13 +1213,29 @@ static bool doSync(BLEAdvertisedDevice &dev)
             memcpy(p + n, wxAlertType, tl);
             n += tl;
             wr->writeValue(p, n, true);
+
+            /* ③c' 预警**图标编号**（build-74 固件起支持；单独一条 0x7D，见固件里的注释）：
+               和风的 icon 字段 —— 1003 暴雨 / 1014 雷电 / 1001 台风 / 1015 冰雹 /
+               1009 高温。**老固件不认识这条命令会直接忽略**，所以屏上只是没图标，
+               预警名照旧 —— 这就是把它做成单独一条命令的原因（塞进 0x7C 会变乱码）。 */
+            if (lv > 0 && ic > 0)
+            {
+                uint8_t a[3];
+
+                a[0] = CMD_SET_ALERT_ICON;
+                a[1] = (uint8_t)((ic >> 8) & 0xFF);
+                a[2] = (uint8_t)(ic & 0xFF);
+                wr->writeValue(a, 3, true);
+            }
             alertSentLevel = lv;
+            alertSentIcon  = ic;
             strncpy(alertSentType, wxAlertType, sizeof(alertSentType) - 1);
             alertSentType[sizeof(alertSentType) - 1] = 0;
             wroteAlert = true;
             if (lv > 0)
             {
-                logf("→ 天气预警 %s%s（表头那格改画它）", wxAlertType, alertLevelName(lv));
+                logf("→ 天气预警 %s%s（表头那格改画它）%s", wxAlertType, alertLevelName(lv),
+                     ic > 0 ? "＋预警图标" : "");
             }
             else
             {
@@ -1363,6 +1392,7 @@ void loop()
                城市名/纪念日当初就清对了，预警是我加 0x7C 时漏的。 */
             alertSentLevel  = -1;
             alertSentType[0] = 0;
+            alertSentIcon   = -1;         /* 图标编号也要重发（价签掉电后它那份也没了） */
             tagSeenAtMs    = millis();   /* B：从这一刻起算"最多等 60 秒" */
         }
         tagPresent = true;

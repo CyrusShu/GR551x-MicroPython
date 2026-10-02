@@ -546,6 +546,8 @@ int main(void)
     g_dbg.memo_cmds = 0;
     /* build 71：天气预警（命令 0x7C）收到了几次 */
     g_dbg.alert_cmds = 0;
+    /* build 74：预警图标编号（命令 0x7D）收到了几次 */
+    g_dbg.alert_icon_cmds = 0;
     {
         volatile uint32_t *st = &g_dbg.ble_adv_st0;
         uint32_t           i;

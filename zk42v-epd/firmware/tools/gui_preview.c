@@ -53,6 +53,8 @@ int main(int argc, char **argv)
         info.alert_level = (int8_t)atoi(argv[11]);
         info.alert_type  = (argc > 12) ? argv[12] : "";
     }
+    /* build 74：argv[13] = 和风的预警图标编号（1003 暴雨 / 1014 雷电…），0 = 不画 */
+    info.alert_code = (argc > 13) ? (int16_t)atoi(argv[13]) : 0;
     if (argc > 10)
     {
         int mm = 0, dd = 0;

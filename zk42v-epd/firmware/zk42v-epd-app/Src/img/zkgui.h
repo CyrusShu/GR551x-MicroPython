@@ -52,6 +52,10 @@ typedef struct
        字模只认 gen_font.py 的 ALERT_CHARS 那批字。 */
     int8_t      alert_level;
     const char *alert_type;
+    /* build 74：和风的**预警图标编号**（1003 暴雨 / 1014 雷电 / 1001 台风…），
+       基站经 0x7D 下发。有预警且这个不为 0 时，表头那一格画**预警图标**
+       （顶掉天气图标），编号认不出的走"通用预警"兜底图。0 = 不画（老基站没这条）。 */
+    int16_t     alert_code;
 } zkgui_info_t;
 
 #define ZK_TEMP_NONE  ((int16_t)(-32768))   /* "温度没读到" */

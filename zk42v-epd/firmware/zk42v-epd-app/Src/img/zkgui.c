@@ -12,6 +12,7 @@
 #include "lunar.h"           /* 农历（表来自原厂，见 tools/gen_lunar.py） */
 #include "jieqi.h"           /* 二十四节气（表和算法也来自原厂，见 tools/gen_jieqi.py） */
 #include "weather.h"         /* 天气图标（手机经 BLE 下发天气码，见 tools/gen_weather.py） */
+#include "alert_icons.h"     /* build 74：预警图标（基站经 BLE 0x7D 下发和风的预警编号） */
 
 #include <string.h>
 
@@ -1202,6 +1203,21 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
     {
         const uint8_t *ic = zk_weather_icon(info->wx_code);
         const uint32_t *tx = zk_weather_text(info->wx_code);
+        int            ic_color = C_BLACK;
+
+        /* build 74：**有预警时，这一格改画预警图标**（2026-10-02 用户："预警上图标"）。
+           为什么换图标而不是另找地方：表头 400px 是满的，这一格本来就是 20×20 的
+           天气图标位 —— 预警图标同尺寸，换上去**不占一点额外宽度**，零布局风险。
+           颜色跟旁边预警名一致：≥3（黄/橙/红）用红，1~2（白/蓝）用黑。
+           编号由基站经 BLE 0x7D 送下来（和风的 icon 字段：1003 暴雨 / 1014 雷电…），
+           认不出的编号在 alert_icons.c 里走"通用预警"那张兜底图。
+           alert_code == 0（老基站没发这条）= 保持原样，继续画天气图标。 */
+        if (info->alert_level > 0 && info->alert_type != 0 &&
+            info->alert_type[0] != 0 && info->alert_code != 0)
+        {
+            ic       = zk_alert_icon((int)info->alert_code);
+            ic_color = ((int)info->alert_level >= 3) ? C_RED : C_BLACK;
+        }
 
         if (ic != 0)
         {
@@ -1214,7 +1230,7 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
                 {
                     if (ic[cy * stride + (cx >> 3)] & (0x80u >> (cx & 7)))
                     {
-                        fill_rect(buf, x + cx, CAL_HDR_ICON_Y + cy, 1, 1, C_BLACK);
+                        fill_rect(buf, x + cx, CAL_HDR_ICON_Y + cy, 1, 1, ic_color);
                     }
                 }
             }

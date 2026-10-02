@@ -91,8 +91,13 @@ def fetch_once(a) -> dict:
         else:
             raise RuntimeError("没配和风凭据（--jwt-key+--kid+--sub+--dev-id 或 --qweather-key）")
         text = now.get("text") or ""
-        out = {"code": W.qweather_code(text), "temp": float(now["temp"]),
-               "text": text, "src": "qweather", "obs": now.get("obsTime", "")}
+        # build-24 起**优先用和风的 icon 编号**判天气码（305 小中雨 / 307 大雨 / 302 雷阵雨…），
+        # 编号是枚举、没有歧义；只有编号缺失/认不出（比如月相 800-807）才退回文字匹配。
+        code, by = W.qweather_code_of_now(now)
+        out = {"code": code, "temp": float(now["temp"]),
+               "text": text, "src": "qweather", "obs": now.get("obsTime", ""),
+               "icon": int(now.get("icon") or 0),          # 原始编号，留着以后细分图标用
+               "by": by}                                   # "icon" / "text"（排查时一眼看出判据）
         out.update(alert_fields(alerts))
         return out
     except Exception as e:
@@ -120,7 +125,10 @@ def alert_fields(alerts) -> dict:
         return {}
     if not s:
         return {"alert": 0}
-    return {"alert": s["n"], "alevel": s["level"], "atype": s["type"], "aend": s["until"]}
+    # aicon = 和风的预警图标编号（1003 暴雨 / 1014 雷电 / 1006 大风…），
+    # 固件拿它去挑一张预警图标画在表头（2026-10-02）。
+    return {"alert": s["n"], "alevel": s["level"], "atype": s["type"],
+            "aend": s["until"], "aicon": s.get("icon", 0)}
 
 
 def _code_of(wmo) -> int:
@@ -153,11 +161,16 @@ class Handler(BaseHTTPRequestHandler):
                 print("[relay] %s %.1f℃ %s（%s）"
                       % (body["src"], body["temp"], body["text"], body.get("obs", "")),
                       end="")
+                if body.get("icon"):
+                    print("  icon=%s/%s→码%d"
+                          % (body["icon"], body.get("by", "?"), body.get("code", 0)),
+                          end="")
                 if body.get("alert"):
-                    print("   ⚠ %s%s预警 到 %s" % (body.get("atype", ""),
-                                                   {1: "白", 2: "蓝", 3: "黄", 4: "橙",
-                                                    5: "红"}.get(body.get("alevel"), ""),
-                                                   body.get("aend", "")))
+                    print("   ⚠ %s%s预警(icon=%s) 到 %s"
+                          % (body.get("atype", ""),
+                             {1: "白", 2: "蓝", 3: "黄", 4: "橙", 5: "红"}.get(
+                                 body.get("alevel"), ""),
+                             body.get("aicon", 0), body.get("aend", "")))
                 else:
                     print("   无预警")
             except Exception as e:
