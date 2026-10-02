@@ -138,6 +138,7 @@ static uint64_t s_ts_ms;             /* 设时间那一刻的 zk_tick_ms64()，�
 static uint32_t s_drawn_day;         /* 上次画的是哪一天（cur/86400） */
 static uint32_t s_drawn_min;         /* 上次画的是哪一分钟（cur/60） */
 static uint8_t  s_need_gui;          /* 立刻重画一次 */
+static uint32_t s_gui_due_ms;        /* build 72：预约重画的时刻（合并窗口，见下） */
 static uint8_t  s_opt;               /* 画面选项位 ZK_OPT_xxx（命令 0x70 设） */
 /* 天气（手机经 0x71 下发）：这块板子上没有天气/温度传感器，天气只能从外面来 */
 static uint8_t  s_wx_code;           /* 0 = 不显示 */
@@ -160,6 +161,35 @@ static char     s_memo[40];
    和风的预警按经纬度取，基站那边取回后顺手发过来；清空 = level 0。 */
 static int8_t   s_alert_level;
 static char     s_alert_type[24];
+
+/* --------------------------------------------------- build 72：**合并刷新窗口**
+
+   用户 2026-10-02："价签开机刷的次数太多了，有没有办法精简。"
+   实机数出来的是这样（基站 build-23 开机那一轮）：
+       18s  0x79 城市名            → 整页重画 1 次
+       18s  0x7A 纪念日 + 0x7B 续传 → 整页重画 2 次
+       78s  0x20 时间+天气          → 整页重画 1 次
+       79s  0x7C 天气预警           → 整页重画 1 次
+   一共 5 次全刷 ≈ 80 秒在闪。根因是**每条命令都立刻整页重画**：
+
+       gui_request_redraw();   ……  poll 每 5ms 看一次：if (s_need_gui) { 清标志; 画; 刷 16 秒 }
+
+   标志在**开始重画的那一刻**就被清掉，而刷新是阻塞的十几秒 —— 所以后面来的命令
+   一律变成"下一次重画"。一次连接里连发 3 条 = 刷 3 次。
+
+   改法：命令不再"立刻画"，而是把预约时间推到 now + 2 秒；poll 里到点才画。
+   2 秒内有新命令就一直往后推 —— 同一条连接里的那几条就被合并成**一次**刷新。
+   ⚠ 注意这不会漏掉刷新：基站一次连接内部的命令间隔是几十毫秒到 1 秒，
+     2 秒窗口足够；而"下一轮连接"（几十秒后）早过了窗口，照样各刷各的。
+   代价：屏上更新最多晚 2 秒（日历页完全看不出来）。 */
+#define ZK_GUI_COALESCE_MS  2000u
+
+/* 所有"需要重画"的命令都改调它（原来是直接写 s_need_gui = 1） */
+static void gui_request_redraw(void)
+{
+    s_need_gui   = 1;
+    s_gui_due_ms = zk_tick_ms() + ZK_GUI_COALESCE_MS;
+}
 
 /* 往纪念日文案后面接一段（build 68）。为什么要"接"：BLE 的 ATT 一次只能发
    MTU-3 字节，MTU=23 时只有 20 字节 —— 而一句祝福语 24+ 字节，基站只能分几次发。
@@ -587,7 +617,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 }
                 else
                 {
-                    s_need_gui = 1;         /* 日历/时钟：重画一页（选项已生效） */
+                    gui_request_redraw();         /* 日历/时钟：重画一页（选项已生效） */
                 }
 
                 memcpy(buf, "opt=", 4);
@@ -635,7 +665,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
 
                 if (ZKGUI_MODE_PICTURE != s_mode)
                 {
-                    s_need_gui = 1;          /* 日历/时钟页：重画一版 */
+                    gui_request_redraw();          /* 日历/时钟页：重画一版 */
                 }
 
                 /* 回一条通知，网页日志里能看到设成了什么 */
@@ -730,7 +760,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                      那条一样加护栏 —— 否则基站推一次天气就把用户的图顶掉了） */
                 if (ZKGUI_MODE_PICTURE != s_mode)
                 {
-                    s_need_gui = 1;
+                    gui_request_redraw();
                 }
                 g_dbg.ble_gui_mode = s_mode;
                 g_dbg.ble_gui_ts   = s_ts;
@@ -754,7 +784,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             s_bat_notify = 1;
             if (ZKGUI_MODE_PICTURE != s_mode)
             {
-                s_need_gui = 1;
+                gui_request_redraw();
             }
             break;
 
@@ -780,7 +810,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 g_dbg.city_cmds++;
                 if (ZKGUI_MODE_PICTURE != s_mode)
                 {
-                    s_need_gui = 1;
+                    gui_request_redraw();
                 }
                 /* 回一条通知 "city=深圳" —— 基站日志里能直接看到价签收下了什么
                    （排"屏上怎么没有城市名"时，这一行能立刻分清是"基站没发"还是"固件没画"） */
@@ -826,7 +856,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             g_dbg.memo_cmds++;
             if (ZKGUI_MODE_PICTURE != s_mode)
             {
-                s_need_gui = 1;
+                gui_request_redraw();
             }
             break;
 
@@ -874,7 +904,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             g_dbg.alert_cmds++;
             if (ZKGUI_MODE_PICTURE != s_mode)
             {
-                s_need_gui = 1;
+                gui_request_redraw();
             }
             break;
 
@@ -887,14 +917,14 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
          *   （13:54 实测：`raw "03 22 | 04 C7 | 03 20"` 完全不闪）。
          *   这条则走**能工作的那条路径**（build 48 的写图+刷新整轮重试），
          *   于是可以干净地 A/B 对比 C7 / D7 到底闪多久、忙多久。
-         *   发完立刻重画一页（s_need_gui=1），不需要额外的刷新命令。 */
+         *   发完立刻重画一页（build 72 起走合并窗口），不需要额外的刷新命令。 */
         case 0x75:
             if (len >= 2u)
             {
                 s_refresh_ctrl = d[1];
             }
             s_refresh_temp = (len >= 3u) ? d[2] : 0u;
-            s_need_gui     = 1;
+            gui_request_redraw();
             {
                 uint8_t nb[20];
                 uint8_t *q = nb;
@@ -914,7 +944,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
          * 依据：原厂 func 0x0100FE84 + 表 0x0100D8A0（见 epd_zk42v.c 的 epd_refresh_fast）。 */
         case 0x76:
             s_fast_refresh = (len >= 2u) ? d[1] : 1u;
-            s_need_gui     = 1;
+            gui_request_redraw();
             break;
 
         /* 0x77 SET_PARTIAL：**只刷一个矩形**（build 52，实验用）
@@ -933,7 +963,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 s_partial_on   = 0;
                 s_fast_refresh = 0;
             }
-            s_need_gui = 1;
+            gui_request_redraw();
             break;
 
         /* 0x78 SET_DRIVE：**快刷驱动强度**（build 53，局刷参数扫描）
@@ -948,7 +978,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 s_drv          = d[1];
                 s_fast_refresh = 1;
             }
-            s_need_gui = 1;
+            gui_request_redraw();
             break;
 
         case 0x91:      /* SYS_RESET */
@@ -1227,9 +1257,12 @@ void zk_epd_svc_poll(uint32_t now_ms)
         int      why  = 0;
         int      redraw = 0;
 
-        if (s_need_gui)
+        /* build 72：**到点才画**（合并窗口）—— 命令只把预约时间往后推，
+           这里等 2 秒内没有新命令了才真画。一次连接里连发的几条会被并成一次全刷。
+           比较用减法再转 int32：毫秒计数器是 32 位、会绕圈，直接比大小会出错。 */
+        if (s_need_gui && (int32_t)(zk_tick_ms() - s_gui_due_ms) >= 0)
         {
-            redraw = 1;                        /* 刚设完时间，立刻画一页 */
+            redraw = 1;                        /* 合并窗口到点了，画一页 */
             why    = 1;
         }
         else if (ZKGUI_MODE_CALENDAR == s_mode)

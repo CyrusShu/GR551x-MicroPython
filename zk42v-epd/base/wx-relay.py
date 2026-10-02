@@ -175,7 +175,11 @@ class Handler(BaseHTTPRequestHandler):
         t = body["temp"]
         out = dict(body)
         out["temp"] = int(round(t)) if abs(t - round(t)) < 0.05 else round(t, 1)
-        data = json.dumps(out, ensure_ascii=False).encode()
+        # ⚠ 用**紧凑**写法（默认的 json.dumps 会在冒号后加空格：`"atype": "暴雨"`）。
+        #   2026-10-02 实机就是这么坑了 ESP32 一次：它那个手写的字符串查找当时只认
+        #   `"atype":"`，于是数字字段全对、字符串字段全空（预警名画不出来）。
+        #   那边已经改成"跳空格"了，这里也跟着紧凑输出：省几个字节，也少一类坑。
+        data = json.dumps(out, ensure_ascii=False, separators=(",", ":")).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))

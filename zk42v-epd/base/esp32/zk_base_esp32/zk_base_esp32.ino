@@ -1,5 +1,5 @@
 /* ===========================================================================
- *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-23）
+ *  ZK42V 价签「基站」—— ESP32 / ESP32-S3 通用固件（build-24）
  *
  *  干什么：让一块 ESP32 当 BLE central，扫到价签就连上去，把
  *          · 时间（0x20：UTC 秒 + 时区 + 模式）
@@ -145,8 +145,8 @@
          A 记录（2026-10-02 已加：weather.swimbirds.com -> 192.168.100.221）。
     所以默认用 **NAS 的局域网 IP**（最稳、不依赖 DNS）；想用域名就把下面那行注释换上来
     （端口仍旧直连中继自己的 8788，不走 Lucky 的 443）。 */
-#define WX_RELAY_URL       "http://192.168.100.221:8788/wx"   /* 飞牛 NAS 上的 wx-relay（2026-10-02 部署） */
-/* #define WX_RELAY_URL    "http://weather.swimbirds.com:8788/wx"   局域网域名（要上面那条 A 记录） */
+/* #define WX_RELAY_URL       "http://192.168.100.221:8788/wx"   /* 飞牛 NAS 上的 wx-relay（2026-10-02 部署） */
+#define WX_RELAY_URL    "http://weather.swimbirds.com:8788/wx"   /* 局域网域名（要上面那条 A 记录） */
 
 #define MODE_CALENDAR   1
 
@@ -164,6 +164,15 @@ static unsigned long lastEpochMs    = 0;   /* utcEpoch 是**哪一刻**的表（
                                               发之前用它把"这几秒/几分钟"补回来 */
 static unsigned long lastPushMs     = 0;   /* 上次"没变化也推一次"的时刻（PUSH_EVERY_MS 用） */
 #define RESYNC_BEFORE_SEND_MS 300000UL     /* 发的时侯表比这个旧就先重新对一次（5 分钟） */
+
+/* build-24（B）：**手里没有有用数据时先别连** —— 用户："价签开机刷的次数太多了"。
+   实机（build-23）第一轮连接发生在 17~19 秒，那会儿 WiFi/HTTP 还没成：手里既没有时间
+   也没有天气，连上去只能发**城市名 + 纪念日**这两条静态配置 —— 却让价签整页重画了 3 次
+   （≈48 秒在闪），而屏上那 60 秒照样是一张没有正确时间的日历。
+   所以：没时间、没天气 → 这一轮不连，等第一份数据到手再连。
+   但要留兜底：价签出现后最多等 TAG_FIRST_WAIT_MS，到点还是连一次（至少把静态配置送过去、
+   顺便验证链路），免得"中继和 Open-Meteo 同时不通"时它什么都不做。 */
+#define TAG_FIRST_WAIT_MS     60000UL      /* 价签出现后最多等这么久（还是没数据就先连一次） */
 
 /* WiFi 关联的状态机：关联本身可能要几十秒（信号弱时实测 ~100 秒），
    所以记下"什么时候开始喊的"，30 秒内不重复 WiFi.begin()。 */
@@ -201,6 +210,7 @@ static const unsigned long ALERT_STALE_MS = 12UL * 3600UL * 1000UL;
 static int32_t utcEpoch = 0;        // UTC 秒（0 = 还没拿到）
 static bool    tagPresent = false;  // 上一轮扫描有没有看到价签
 static bool    forceTimeSync = true;
+static unsigned long tagSeenAtMs = 0;   // 这一轮"价签在线"是从什么时候开始的（B 的兜底计时）
 static bool    everSynced = false;  // 开机后至少连过一次（验证链路用）
 static char    citySent[24] = "";   // 上次发出去的城市名（build 61；没变就不重发）
 static bool    memoSent = false;    // 纪念日发过没有（build 67）
@@ -322,26 +332,50 @@ static bool findJsonStringInCurrent(const String &body, const char *key, char *o
     int c = body.indexOf("\"current\":");
     if (c < 0) return false;
     String s   = body.substring(c);
-    String pat = String("\"") + key + "\":\"";
+    String pat = String("\"") + key + "\":";
     int i = s.indexOf(pat);
-    if (i < 0) return false;
-    int j = s.indexOf('"', i + (int)pat.length());
-    if (j < 0) return false;
-    s.substring(i + (int)pat.length(), j).toCharArray(out, n);
-    return true;
+    while (i >= 0)
+    {
+        int p = i + (int)pat.length();
+        while (p < (int)s.length() && (s[p] == ' ' || s[p] == '\t')) p++;
+        if (p < (int)s.length() && s[p] == '"')
+        {
+            int j = s.indexOf('"', p + 1);
+            if (j < 0) return false;
+            s.substring(p + 1, j).toCharArray(out, n);
+            return true;
+        }
+        i = s.indexOf(pat, i + 1);
+    }
+    return false;
 }
 
 /* 顶层取字符串字段（中继那套平铺 JSON 用的，比如 "atype":"暴雨"）。
-   ⚠ 不能复用上面那个：那个会先找 "current":，中继的返回里没有这一段。*/
+   ⚠ 不能复用上面那个：那个会先找 "current":，中继的返回里没有这一段。
+
+   ⚠⚠ 冒号后面的**空格一定要跳过**（2026-10-02 实机踩到）：中继是 Python 的
+   json.dumps 出来的，默认写法是 `"atype": "暴雨"`（冒号后带空格）。原来这里找的是
+   `"atype":"`（没有空格），于是**数字字段（那个函数本来就跳空格）全对、字符串字段全空** ——
+   串口里显示成"⚠ 预警 橙色预警 到"（类型名和到期时间都是空的），屏上也就画不出预警。
+   下面这个写法跟 findJsonNumber 一样：找到 key 后跳空格、再看是不是引号，不是就继续往下找。 */
 static bool findJsonString(const String &body, const char *key, char *out, size_t n)
 {
-    String pat = String("\"") + key + "\":\"";
+    String pat = String("\"") + key + "\":";
     int i = body.indexOf(pat);
-    if (i < 0) return false;
-    int j = body.indexOf('"', i + (int)pat.length());
-    if (j < 0) return false;
-    body.substring(i + (int)pat.length(), j).toCharArray(out, n);
-    return true;
+    while (i >= 0)
+    {
+        int p = i + (int)pat.length();
+        while (p < (int)body.length() && (body[p] == ' ' || body[p] == '\t')) p++;
+        if (p < (int)body.length() && body[p] == '"')
+        {
+            int j = body.indexOf('"', p + 1);
+            if (j < 0) return false;
+            body.substring(p + 1, j).toCharArray(out, n);
+            return true;
+        }
+        i = body.indexOf(pat, i + 1);
+    }
+    return false;
 }
 
 // 现在该不该校时 / 该不该发天气（连之前先算，没事就不连）
@@ -632,6 +666,14 @@ static bool fetchFromRelay(String *dateOut)
                 wxAlertAtMs  = millis();
                 findJsonString(body, "atype", wxAlertType, sizeof(wxAlertType));
                 findJsonString(body, "aend", wxAlertEnd, sizeof(wxAlertEnd));
+                /* 自检：有预警却读不出类型名 = JSON 的字段名/写法跟我们约定不一样
+                   （2026-10-02 就是这么静默失效的：数字读到了、字符串全空，
+                   屏上画不出预警，只有盯着串口才发现）。 */
+                if (wxAlertType[0] == 0)
+                {
+                    logf("  !! 有预警但读不到 atype（JSON 写法变了？）前 120 字节：%s",
+                         body.substring(0, 120).c_str());
+                }
             }
         }
         wxCode = (int)wx;
@@ -1167,7 +1209,7 @@ void setup()
     delay(1200);                            // 等 USB 串口稳定
     Serial.println();
     Serial.println("=================================================");
-    Serial.println(" ZK42V 价签基站 (ESP32) build-23");
+    Serial.println(" ZK42V 价签基站 (ESP32) build-24");
     Serial.printf (" 芯片: %s rev%d %d 核 @%dMHz  Flash %uMB  PSRAM %s\n",
                    ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
                    ESP.getCpuFreqMHz(), (unsigned)(ESP.getFlashChipSize() / 1048576),
@@ -1231,9 +1273,16 @@ void loop()
         bool needWeather = (lastWeatherMs == 0) ||
                            (millis() - lastWeatherMs) > WEATHER_INTERVAL_MS;
         bool needTime    = (utcEpoch <= 0);
-        // 失败要退避：不然每一轮（约 10 秒）都去撞一次，日志刷屏、还费电
+        /* 失败要退避：不然每一轮（约 10 秒）都去撞一次，日志刷屏、还费电。
+           ⚠ build-24 修：`lastFetchTryMs` 初值是 0，而这里原来是
+           `(millis() - lastFetchTryMs) > 60000` —— **开机后 60 秒内一次都不会取**。
+           实机日志里第一份数据永远落在 61~71 秒（build-11/15/17/20/22/23 全是这样），
+           就是它：价签 8 秒就出现了，却要等一分钟才拿到时间和天气。
+           所以**第一次**要立刻取（lastFetchTryMs == 0 = 从来没试过）。 */
+        bool firstFetch = (lastFetchTryMs == 0UL);
+
         if ((needWeather || needTime) &&
-            (millis() - lastFetchTryMs) > FETCH_FAIL_BACKOFF_MS)
+            (firstFetch || (millis() - lastFetchTryMs) > FETCH_FAIL_BACKOFF_MS))
         {
             lastFetchTryMs = millis();
             if (fetchWeatherAndTime()) lastWeatherMs = millis();
@@ -1263,6 +1312,7 @@ void loop()
             wxSentTemp     = -999;
             citySent[0]    = 0;          /* 城市名也要重发（价签掉电后 RAM 里那个没了） */
             memoSent       = false;      /* 纪念日同理 */
+            tagSeenAtMs    = millis();   /* B：从这一刻起算"最多等 60 秒" */
         }
         tagPresent = true;
 
@@ -1273,7 +1323,13 @@ void loop()
         bool pushDueLoop = (PUSH_EVERY_MS != 0UL) &&
                            (lastPushMs == 0UL || (millis() - lastPushMs) > PUSH_EVERY_MS);
         bool haveData = (needTimeSyncNow() && utcEpoch > 0) || weatherChangedNow() || pushDueLoop;
-        if (BASE_MODE == 0 || haveData || !everSynced)
+        /* build-24（B）：手里有没有"值得为它连一次"的数据（时间或天气）。
+           ⚠ 城市名/纪念日**不算** —— 它们是静态配置，连上去换一次 16 秒整页刷新不划算，
+           等第一份数据一起来的时候顺手带上就行。 */
+        bool haveUsable = (utcEpoch > 0) || haveWeather;
+        bool firstDone  = everSynced || haveUsable ||
+                          (tagSeenAtMs != 0 && (millis() - tagSeenAtMs) > TAG_FIRST_WAIT_MS);
+        if (BASE_MODE == 0 || haveData || firstDone)
         {
             /* 发之前先看表"新不新"：手里的 utcEpoch 是上次取天气时拿的（可能几十分钟前），
                直接发就会把旧时刻写进价签 —— 实机踩过：慢了 67 分钟。
@@ -1289,16 +1345,32 @@ void loop()
             everSynced = true;
             delay(1000);
         }
-        else if (millis() - lastIdleLogMs > 300000UL)      // 5 分钟才提一次，别刷屏
+        else
         {
-            lastIdleLogMs = millis();
-            if (!wifiConfigured())
+            /* 没连的两种原因分开说，免得日志误导（build-24 起）：
+               ① 手里还没有时间/天气（正在等第一次取数）—— 这是 B 主动"先别连"的状态，
+                  有 60 秒兜底，值得每 20 秒提一次；
+               ② 单纯"没有新东西要发"（时间刚校过、天气没变）—— 5 分钟才提一次。 */
+            bool          waiting = !haveUsable;
+            unsigned long every   = waiting ? 20000UL : 300000UL;
+
+            if (millis() - lastIdleLogMs > every)
             {
-                logf("价签在，但没填 WIFI_SSID → 没东西可发，本轮不连接");
-            }
-            else
-            {
-                logf("价签在，但没有新东西要发（时间刚校过、天气没变）→ 本轮不连接");
+                lastIdleLogMs = millis();
+                if (!wifiConfigured())
+                {
+                    logf("价签在，但没填 WIFI_SSID → 没东西可发，本轮不连接");
+                }
+                else if (waiting)
+                {
+                    logf("价签在，但手里还没有时间/天气 → 先不连（省一次整页刷新；已等 %lu 秒，最多 %lu 秒）",
+                         (unsigned long)((millis() - tagSeenAtMs) / 1000UL),
+                         (unsigned long)(TAG_FIRST_WAIT_MS / 1000UL));
+                }
+                else
+                {
+                    logf("价签在，但没有新东西要发（时间刚校过、天气没变）→ 本轮不连接");
+                }
             }
         }
     }
