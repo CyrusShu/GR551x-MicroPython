@@ -1,6 +1,23 @@
 # 把天气中继装到 NAS 上（常驻）
 
-## 先用一句话回答：**systemd 更省**
+## 0. 实测结论（2026-10-02，登进那台飞牛 NAS 盘过之后）
+
+那台 NAS 的实际情况决定了这里该用哪套：
+
+| 项 | 实测 |
+|---|---|
+| 现有容器 | **3 个**（`devnet-homekit` / `lucky` / `homebox`），全是 compose 管的 |
+| 目录习惯 | `/vol1/1000/docker/<项目>/` + `docker-compose.yml` + `.env` |
+| 自建 systemd 服务 | 无（跑着的都是 fnOS 自带：ai_manager / imagesrv / mediasrv / postgresql@15 …） |
+| Python | ✅ 系统自带 3.11.2（`/usr/bin/python3`）—— systemd 那条路**不用装任何东西** |
+| sudo | ❌ **没有免密 sudo**（systemd 要写 `/etc/systemd/system`，每步都得输密码） |
+| 资源 | 内存 15GB / 空闲 11GB；数据盘空闲 12TB；负载 0.17；根盘剩 9.8GB |
+
+⇒ **那台 NAS 上建议用 Docker/compose**：① 跟现有三个服务一套管法、fnOS 界面能看日志
+② docker 对 `cyrus` 直接可用，不用 sudo ③ 资源差（~10MB 内存 + ~120MB 镜像）在这台机器上是噪声。
+**纯论资源仍然是 systemd 更省**（一个进程、磁盘 0），只是要输密码、且风格不统一。
+
+## 1. 资源上的取舍（两种方式的差别）
 
 | | **systemd**（推荐） | Docker |
 |---|---|---|
@@ -48,19 +65,24 @@ journalctl -u wx-relay -n 20 --no-pager # 看取数日志
 #define WX_RELAY_URL "http://<NAS 的局域网IP>:8788/wx"
 ```
 
-## 路线 B：Docker（fnOS 图形界面友好）
+## 路线 B：Docker（**这台 NAS 上推荐**，跟现有服务一套管法）
+
+目录就照 NAS 上现有习惯放 `/vol1/1000/docker/wx-relay/`：
 
 ```bash
-mkdir -p ~/wx-relay && cd ~/wx-relay
-cp /path/to/wx-relay.py /path/to/wx-compare.py ./
-cp /path/to/ed25519-private.pem . && chmod 600 ed25519-private.pem
-cp /path/to/wx-relay.env.example ../wx-relay.env   # 按注释改好
-# 把 docker-compose.yml 放到 ~/wx-relay 的上一层，然后：
+# NAS 上（cyrus 身份，docker 直用、不用 sudo）
+mkdir -p /vol1/1000/docker/wx-relay && cd /vol1/1000/docker/wx-relay
+# 把 wx-relay.py / wx-compare.py / ed25519-private.pem / docker-compose.yml / wx-relay.env.example
+# 拷进来（从 Mac 上 scp，或 fnOS 文件管理器拖）
+chmod 600 ed25519-private.pem
+cp wx-relay.env.example .env && vi .env && chmod 600 .env   # 改 Host/KID/SUB/DEV_ID
+
 docker compose up -d
-docker logs -f wx-relay
+docker compose logs -f          # 看到"和风中继启动：http://0.0.0.0:8788/wx"就对了
+curl -s http://127.0.0.1:8788/wx    # 应回一行 JSON
 ```
 
-fnOS 的「Docker → 项目 → 新建」也能直接把 `docker-compose.yml` 粘进去。
+fnOS 的「Docker → 项目 → 新建」也能直接把 `docker-compose.yml` 粘进去（一样的效果）。
 
 ## 两件要紧的事
 
