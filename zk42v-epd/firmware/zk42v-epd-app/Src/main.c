@@ -25,6 +25,9 @@
 
 #include "gr55xx.h"
 #include "gr55xx_sys.h"      /* sys_swd_enable() */
+#include "gr55xx_pwr.h"      /* 2026-10-03 省电：pwr_mgmt_mode_set(PMR_MGMT_SLEEP_MODE) */
+#include "app_timer.h"       /* 省电版的主循环节拍（建在 AON 睡眠定时器上） */
+#include "zk_pwr.h"          /* 省电旋钮（ZK_PWR_SAVE / ZK_TICK_MS / ZK_ADV_INTERVAL） */
 
 #include <string.h>          /* memset */
 
@@ -418,6 +421,24 @@ void main_init(void)
     __main();
 }
 
+#if ZK_PWR_SAVE
+/* 省电版的节拍 —— 2026-10-03（用户："价签是 2450 电池，需要省电"）。
+
+   为什么换成 app_timer：它建在 **AON 睡眠定时器**上，电源管理（pwr_mgmt_schedule）
+   知道"下一个定时器什么时候到"，于是能**精确地把 CPU 睡到那一刻**；而原来的
+   `epd_delay_ms(5)` 是忙等 —— CPU 一直在空转（200Hz），这是之前最大的耗电项。
+   回调跑在**中断**里，所以这里只置标志，真正的活留给主循环（跟 BLE 回调同一个约定）。 */
+static volatile uint8_t s_tick_flag;
+static app_timer_id_t   s_tick_timer;
+static uint8_t          s_psave_ready;      /* 节拍定时器起来了没（没起来就退回忙等） */
+
+static void zk_tick_cb(void *p_ctx)
+{
+    (void)p_ctx;
+    s_tick_flag = 1;
+}
+#endif
+
 int main(void)
 {
     uint32_t t_prev;
@@ -624,16 +645,47 @@ int main(void)
     zk_ble_start();
     zk_dbg_stage(ZK_STAGE_BLE);
 
-    /* 不睡觉，也不关外设：就停在这儿，心跳一直涨。
-       调试器随时进来都能看到「活着」的证据。 */
+#if ZK_PWR_SAVE
+    /* ① 主循环节拍（AON 睡眠定时器）。建不起来就**退回老行为**，不能让价签卡死：
+          那样 s_psave_ready 保持 0，主循环里照旧每圈 sleep 5ms 忙等。 */
+    if ((SDK_SUCCESS == app_timer_create(&s_tick_timer, ATIMER_REPEAT, zk_tick_cb)) &&
+        (SDK_SUCCESS == app_timer_start_api(&s_tick_timer, ZK_TICK_MS, NULL)))
+    {
+        s_psave_ready = 1;
+        g_dbg.flags |= ZK_FLAG_PSAVE;
+    }
+
+    /* ② 允许深睡。SDK 里的 PMR_MGMT_SLEEP_MODE 就是 "Deep sleep state"：
+          **RAM 保持**（s_ts、上一屏内容、连接状态都还在）、AON 域继续供电 ——
+          所以毫秒时基 zk_tick_ms64() 睡着的这几秒照样在涨，醒来算一下就知道
+          有没有换天。
+          ⚠ 刻意**不用 UDS（超深睡）**：原厂那种模式醒来等于**整个系统复位**，
+          必须先把"时间持久化"（写 flash）做了，否则每次醒来都是空日历。 */
+    pwr_mgmt_mode_set(PMR_MGMT_SLEEP_MODE);
+#endif
+
+    /* 停在这儿，心跳一直涨 —— 调试器随时进来都能看到「活着」的证据。 */
     zk_dbg_stage(ZK_STAGE_IDLE);
     for (;;)
     {
         g_dbg.heart++;
         /* 协议栈的事件靠这个泵出来（SDK 例程主循环里都有它）。
            少了它，BLE 的 BLE_COMMON_EVT_STACK_INIT 之类的事件永远递不上来，
-           表现就是"固件在跑，但一直不广播"。 */
+           表现就是"固件在跑，但一直不广播"。
+           ⚠ 省电版里它**还是睡觉的入口**：没事可干时就停在这里
+           —— 要么等到 AON 睡眠定时器（我们的节拍）、要么被 BLE 事件叫醒。 */
         pwr_mgmt_schedule();
+
+#if ZK_PWR_SAVE
+        if (s_psave_ready)
+        {
+            if (!s_tick_flag)
+            {
+                continue;               /* 还没到节拍 → 接着睡，别干活 */
+            }
+            s_tick_flag = 0;
+        }
+#endif
 
         /* B2-A.2：扫描/广播实验的状态机节拍 + 兜底超时。
            传进去的是 DWT 算的毫秒数（拿不到时基就是 0，函数里会退回数圈数）。 */
@@ -663,6 +715,14 @@ int main(void)
         zk_epd_svc_poll(tick_ms());
 
         zk_mailbox_poll();      /* B2-B：有新图就刷 */
+#if ZK_PWR_SAVE
+        if (!s_psave_ready)
+        {
+            epd_delay_ms(5);    /* 节拍定时器没起来 → 退回老行为（5ms 忙等） */
+        }
+        /* 起来了就什么都不用做：下一圈的 pwr_mgmt_schedule() 会一直睡到节拍到点 */
+#else
         epd_delay_ms(5);        /* 5ms 一圈 ≈ 200Hz：协议栈的活干得快一点 */
+#endif
     }
 }

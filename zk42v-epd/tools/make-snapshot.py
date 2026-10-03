@@ -77,6 +77,7 @@ FILES = [
     ("outputs/firmware/tools/test_alert_icons.py",                  "firmware/tools/test_alert_icons.py"),
     ("outputs/firmware/zk42v-epd-app/Src/img/alert_icons.c",        "firmware/zk42v-epd-app/Src/img/alert_icons.c"),
     ("outputs/firmware/zk42v-epd-app/Src/img/alert_icons.h",        "firmware/zk42v-epd-app/Src/img/alert_icons.h"),
+    ("outputs/firmware/zk42v-epd-app/Src/board/zk_pwr.h",            "firmware/zk42v-epd-app/Src/board/zk_pwr.h"),
     ("outputs/firmware/docs/preview/preview-alert-header-icons.png", "firmware/docs/preview/preview-alert-header-icons.png"),
     ("outputs/firmware/docs/preview/preview-alert-icon-set.png",    "firmware/docs/preview/preview-alert-icon-set.png"),
     ("outputs/firmware/docs/preview/preview-calendar-2025-08.png",            "firmware/docs/preview/preview-calendar-2025-08.png"),

@@ -39,6 +39,7 @@
 #include "zk_ble.h"
 #include "zk_dbg.h"
 #include "zk_epd_svc.h"      /* B2-A.2：GATT 服务 / 推图协议 */
+#include "zk_pwr.h"          /* 2026-10-03 省电：广播间隔 ZK_ADV_INTERVAL */
 
 #include "gr_includes.h"
 #include "ble.h"
@@ -392,8 +393,12 @@ static void zk_ble_gap_init(void)
     }
 
     memset(&s_adv_param, 0, sizeof(s_adv_param));
-    s_adv_param.adv_intv_max = 160;                 /* 100ms */
-    s_adv_param.adv_intv_min = 160;
+    /* 广播间隔：省电版 1000ms（=1600×0.625ms），老版本 100ms。
+       为什么敢放到 1 秒：基站/网页那边是"扫 6 秒、扫到就停"，1 秒的广播间隔
+       照样被抓到，只是连接建立慢最多 1 秒（屏刷本身 16 秒，察觉不出来）。
+       而射频开着的平均电流大致降一个数量级 —— 对 CR2450 来说这是关键的一刀。 */
+    s_adv_param.adv_intv_max = ZK_ADV_INTERVAL;
+    s_adv_param.adv_intv_min = ZK_ADV_INTERVAL;
     s_adv_param.adv_mode     = BLE_GAP_ADV_TYPE_ADV_IND;
     s_adv_param.chnl_map     = BLE_GAP_ADV_CHANNEL_37_38_39;
     s_adv_param.disc_mode    = BLE_GAP_DISC_MODE_GEN_DISCOVERABLE;

@@ -1543,6 +1543,10 @@ def _zkstatus_v1_disabled():
     say("    %s GPIO 初始化有失败" % ('☑' if flags & 0x0002 else '☐'))
     say("    %s DWT 周期计数器可用（延时是准的）" % ('☑' if flags & 0x0004 else '☐'))
     say("    %s sys_swd_enable() 调用成功" % ('☑' if flags & 0x0008 else '☐'))
+    say("    %s 毫秒时基在跑 AON 定时器（不是 CYCCNT）"
+        % ('☑' if flags & 0x0020 else '☐'))
+    say("    %s **省电版在跑**（主循环睡眠 + 广播 1 秒；2026-10-03 起）"
+        % ('☑' if flags & 0x0040 else '☐'))
     say("  BUSY 线：见过低电平=%s 见过高电平=%s；轮询 %d 次；等超时 %d 次"
         % ('是' if busy_levels & 1 else '否',
            '是' if busy_levels & 2 else '否',
