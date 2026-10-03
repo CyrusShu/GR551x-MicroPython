@@ -39,7 +39,8 @@ if errorlevel 1 (
         echo ❌ 装 bleak 失败（是不是没联网？） & pause & exit /b 1 )
 )
 
-echo 找价签中…（价签要上电；这个窗口别关，关了就停止工作）
+echo 正在启动服务…（浏览器会自动打开 http://localhost:8777/）
+echo 这个窗口别关，关了就停止工作。
 echo.
-.venv\Scripts\python.exe zk_ble_base.py watch --config kit\配置.json --log kit\运行日志.txt
+.venv\Scripts\python.exe serve.py --config kit\配置.json --open
 pause

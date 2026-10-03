@@ -51,6 +51,9 @@ if ! .venv/bin/python3 -c "import bleak" >/dev/null 2>&1; then
         echo "❌ 装 bleak 失败（是不是没联网？）"; read -r -p "按回车关闭…" _; exit 1; }
 fi
 
-echo "找价签中…（价签要上电；这个窗口别关，关了就停止工作）"
+echo "正在启动服务…（浏览器会自动打开）"
+echo "  · 网页：推图 / 切页面 / 发命令"
+echo "  · 面板：基站状态 / 改配置   ← 顶部那个链接"
+echo "这个窗口别关，关了就停止工作。"
 echo ""
-exec .venv/bin/python3 zk_ble_base.py watch --config kit/配置.json --log kit/运行日志.txt
+exec .venv/bin/python3 serve.py --config kit/配置.json --open

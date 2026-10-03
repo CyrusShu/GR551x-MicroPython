@@ -2,6 +2,41 @@
 
 ## 🎁 2026-10-03：价签要送人 —— "普通电脑当基站"的打包（kit/）
 
+### 🧩 同日再一步：把"网页服务"和"基站"并成一个（`serve.py`）
+
+用户："你之前做了一个服务 `cd work/github/epd-nrf5-user/html && python3 -m http.server 8777`，
+把刚才的服务整合到一起。" —— 那个 `http.server` 只是把**原版 EPD-nRF5 的网页**
+（浏览器用 Web Bluetooth 直连价签：推图 / 切页面 / 发命令）静态托管出来；
+而"基站"是另一个终端里跑的 `zk_ble_base.py`。现在合成**一个进程、一个端口**：
+
+```bash
+python3 serve.py --config kit/配置.json --open
+```
+
+| 路由 | 干什么 |
+|---|---|
+| `/` | 原来的「墨水屏日历」网页（一个字节没改，只在标题旁加了个链接） |
+| `/base` | **基站面板**（`kit/基站面板.html`）：价签在不在 / 上次推了啥 / 现在的天气和预警 / 最近日志 / 改配置 / **立刻重新推一次** |
+| `/api/status` | 上面那块面板的数据源（JSON） |
+| `/api/config` | GET 读、POST 写 `配置.json` |
+| `/api/sync` | 让基站下一轮**强行重推**（`FORCE_SYNC` 时间戳） |
+| `/wx` | 当前天气 JSON（跟 NAS 中继同一个格式，方便别的脚本接） |
+
+基站跑在一个**后台线程**里（自己的 asyncio 事件循环），HTTP 在主线程 —— 互不阻塞。
+`zk_ble_base.py` 为此加了一份只读的 `STATUS`（价签在不在、上次推送、天气、预警、
+最近 300 行日志）和一个 `FORCE_SYNC`；`log()` 顺手把每行喂进 STATUS 的环形缓冲。
+
+两个要注意的：
+1. **网页和基站都用蓝牙**。macOS/Windows 允许多路 central，但基站每几秒扫一次，
+   网页连接可能慢一点 —— 正在推图可以用 `serve.py --no-base` 只开网页。
+2. 那个网页来自 **EPD-nRF5（GPL-3.0）**，送人打包时要一起带上它的 LICENSE。
+
+> 沙箱里绑不了端口（`PermissionError: Operation not permitted`），所以这一版我
+> **只验了纯逻辑部分**：网页目录自动查找、配置读取、`/api/status` 的形状、MIME 表、
+> `--help`。HTTP 和蓝牙都要在你自己的终端里跑才算数。
+
+## 🎁 2026-10-03：价签要送人 —— "普通电脑当基站"的打包（kit/）
+
 用户要把价签送人，对方**没有 NAS、没有 ESP32**，只有一台普通电脑。
 电脑本来就能当基站（就是这个 `zk_ble_base.py` —— `bleak` 在 macOS / Windows /
 Linux 上都能跑），但让普通人敲命令行不现实，所以加了一层：

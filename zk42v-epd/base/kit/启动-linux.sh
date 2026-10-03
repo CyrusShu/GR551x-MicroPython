@@ -27,5 +27,6 @@ if ! .venv/bin/python3 -c "import bleak" >/dev/null 2>&1; then
     .venv/bin/python3 -m pip install --quiet bleak || exit 1
 fi
 
-echo "找价签中…（价签要上电；这个窗口别关，关了就停止工作）"
-exec .venv/bin/python3 zk_ble_base.py watch --config kit/配置.json --log kit/运行日志.txt
+echo "正在启动服务…（浏览器会自动打开 http://localhost:8777/）"
+echo "这个窗口别关，关了就停止工作。"
+exec .venv/bin/python3 serve.py --config kit/配置.json --open

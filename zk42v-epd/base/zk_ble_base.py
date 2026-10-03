@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import json
 import os
 import sys
@@ -53,6 +54,26 @@ import urllib.request
 from datetime import datetime, timezone
 
 from bleak import BleakClient, BleakScanner
+
+# ---------------------------------------------------------------- 对外状态（给网页看）
+#
+# 2026-10-03：把"基站"和"那个网页服务"（原版 EPD-nRF5 的 html/，浏览器用 Web Bluetooth
+# 直连价签）整合成一个服务时，网页要能显示：价签在不在 / 上次推了什么 / 现在的天气和预警。
+# 所以这里维护一份**只读的实时状态**，由 serve.py 通过 /api/status 暴露出去。
+# 写它的人只有本文件（单线程在跑 watch 循环），读的人是 HTTP 线程 —— 都是取一下就走，
+# 不做锁（最坏情况读到上一轮的快照，无所谓）。
+STATUS = {
+    "tag": False,            # 上一轮扫描看到价签没有
+    "tag_seen": 0.0,         # 最后一次看到价签的时间戳
+    "last_push": 0.0,        # 最后一次成功推送的时间戳
+    "pushed": "",            # 那次推了些什么（人话）
+    "weather": {},           # {code, temp, text, src, obs}
+    "alert": {},             # {level, type, n, icon}
+    "config": {},            # 生效的配置（city/lat/lon/...）
+    "started": time.time(),
+    "log": collections.deque(maxlen=300),
+}
+FORCE_SYNC = {"at": 0.0}     # 网页点"立刻同步"就置个时间戳，watch 循环看见就强推一次
 
 # ---------------------------------------------------------------- 协议常量
 # 服务/特征 UUID：跟固件 Src/ble/zk_epd_svc.c 里那张属性表一字不差
@@ -108,6 +129,7 @@ WX_NAME = {
 def log(msg: str, logfile=None) -> None:
     line = "[" + datetime.now().strftime("%H:%M:%S") + "] " + msg
     print(line, flush=True)
+    STATUS["log"].append(line)          # 顺便喂给网页（serve.py 的 /api/status）
     if logfile:
         try:
             with open(logfile, "a", encoding="utf-8") as f:
@@ -459,6 +481,8 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                     + "（Open-Meteo WMO=" + str(wmo) + " 风速=" + str(wind) + "km/h）", args.log)
                 if last_wx is not None:
                     last_wx["v"] = (code, t10)
+                STATUS["weather"] = {"code": code, "temp": temp, "text": WX_NAME.get(code, ""),
+                                     "src": wsrc, "obs": ""}
         except Exception as e:
             log("  ! 取天气失败：" + explain(e), args.log)
 
@@ -484,6 +508,8 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                     log("  · 天气预警已解除 → 发一条清掉屏上那条", args.log)
                 if last_alert is not None:
                     last_alert["a"] = (lv, atype)
+                STATUS["alert"] = {"level": lv, "type": atype, "n": an,
+                                   "icon": aic}
 
     # 2026-10-01（用户要求）：**只要这次要推天气，就把时间也一起带上** ——
     # 每次推天气都顺便对一次表，价签的钟一直是校准的；反正那条命令本来就要重画一页。
@@ -680,11 +706,14 @@ async def cmd_watch(args) -> int:
         if dev is None:
             if present:
                 log("价签从空中消失了（关机/走远了）。", args.log)
+            STATUS["tag"] = False
             present = set()
             await asyncio.sleep(args.poll)
             continue
 
         addr = dev.address
+        STATUS["tag"] = True
+        STATUS["tag_seen"] = time.time()
         now = time.monotonic()
         reappeared = addr not in present        # 刚上电/刚回来 → 立刻同步
         due_time = addr not in last_time or (now - last_time[addr]) >= args.time_interval
@@ -701,6 +730,7 @@ async def cmd_watch(args) -> int:
             do_time = reappeared or due_time or do_wx
             if await sync_once(dev, adv, args, do_time, do_wx, last_wx.setdefault(addr, {}),
                                last_alert.setdefault(addr, {})):
+                STATUS["last_push"] = time.time()
                 if do_time:
                     last_time[addr] = time.monotonic()
                 if do_wx:

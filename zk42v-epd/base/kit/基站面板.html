@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh">
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>价签基站</title>
+	<style>
+		:root { color-scheme: light dark; }
+		body { font: 15px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+		       max-width: 46em; margin: 0 auto; padding: 1.2em; }
+		h3 { margin: .2em 0 .8em; }
+		fieldset { border: 1px solid #bbb; border-radius: 8px; margin: 0 0 1em; padding: .8em 1em; }
+		legend { padding: 0 .4em; }
+		.big { font-size: 1.35em; font-weight: 600; }
+		.ok { color: #0a7d28; } .bad { color: #b3261e; }
+		table { border-collapse: collapse; width: 100%; }
+		td { padding: .15em .6em .15em 0; vertical-align: top; }
+		td.k { color: #666; white-space: nowrap; }
+		pre { background: #00000010; padding: .6em .8em; border-radius: 6px; overflow: auto;
+		      max-height: 16em; font-size: 12px; line-height: 1.45; }
+		label { display: block; margin: .4em 0 .1em; color: #666; font-size: .9em; }
+		input[type=text], input[type=number] { width: 100%; padding: .35em .5em; font: inherit;
+		      box-sizing: border-box; }
+		button { font: inherit; padding: .45em 1em; border-radius: 6px; cursor: pointer; }
+		.row { display: flex; gap: .6em; flex-wrap: wrap; align-items: center; }
+		.muted { color: #777; font-size: .9em; }
+	</style>
+</head>
+
+<body>
+	<h3>价签基站 <span class="muted">（这个页面由 ble-base/serve.py 提供）</span></h3>
+
+	<fieldset>
+		<legend>现在的情况</legend>
+		<div id="state" class="big">读取中…</div>
+		<div id="state2" class="muted"></div>
+		<div class="row" style="margin-top:.8em">
+			<button onclick="doSync()">立刻重新推一次</button>
+			<button onclick="loadLog()">刷新</button>
+			<a href="/" style="margin-left:auto">← 回到「墨水屏日历」网页（推图/切页面）</a>
+		</div>
+	</fieldset>
+
+	<fieldset>
+		<legend>基站看到的天气 / 预警</legend>
+		<table>
+			<tr><td class="k">天气</td><td id="wx">—</td></tr>
+			<tr><td class="k">天气源</td><td id="wxsrc">—</td></tr>
+			<tr><td class="k">预警</td><td id="alert">—</td></tr>
+		</table>
+		<div class="muted" id="wxnote"></div>
+	</fieldset>
+
+	<fieldset>
+		<legend>配置（改完保存，重启服务生效）</legend>
+		<label>城市名（显示在温度后面）</label>
+		<input type="text" id="cfg_城市名">
+		<label>纬度 / 经度</label>
+		<div class="row">
+			<input type="text" id="cfg_纬度" style="flex:1">
+			<input type="text" id="cfg_经度" style="flex:1">
+		</div>
+		<label>纪念日（格式 <code>10-05=生日快乐！</code>，留空=不要）</label>
+		<input type="text" id="cfg_纪念日">
+		<label>和风 key（不填也能用，只是天气是模型值、没有预警）</label>
+		<input type="text" id="cfg_和风key">
+		<label>和风 API Host</label>
+		<input type="text" id="cfg_和风API Host">
+		<div class="row" style="margin-top:.8em">
+			<button onclick="saveCfg()">保存配置</button>
+			<button onclick="loadCfg()">放弃修改</button>
+			<span class="muted" id="cfgnote"></span>
+		</div>
+	</fieldset>
+
+	<fieldset>
+		<legend>基站最近在干什么</legend>
+		<pre id="log">…</pre>
+	</fieldset>
+
+	<script>
+		const CFG_KEYS = ["城市名", "纬度", "经度", "纪念日", "和风key", "和风API Host"];
+
+		function q(id) { return document.getElementById(id); }
+
+		async function refresh() {
+			try {
+				const s = await (await fetch("/api/status")).json();
+				const tag = s.tag
+					? '<span class="ok">价签在</span>'
+					: '<span class="bad">没看到价签</span>';
+				q("state").innerHTML = tag;
+				let bits = [];
+				if (s.tag_seen_ago != null) bits.push("上次看到 " + s.tag_seen_ago + " 秒前");
+				if (s.last_push_ago != null) bits.push("上次推送 " + s.last_push_ago + " 秒前");
+				bits.push("服务已运行 " + Math.round(s.uptime_s) + " 秒");
+				q("state2").textContent = bits.join(" · ");
+
+				const w = s.weather || {}, a = s.alert || {};
+				if (w.text) {
+					const t = (typeof w.temp === "number") ? (Math.round(w.temp * 10) / 10) + "℃" : "";
+					q("wx").textContent = w.text + " " + t;
+				} else {
+					q("wx").textContent = "还没取到";
+				}
+				q("wxsrc").textContent = w.src || "—";
+				if (a.type) {
+					const lv = { 1: "白色", 2: "蓝色", 3: "黄色", 4: "橙色", 5: "红色" }[a.level] || "";
+					q("alert").innerHTML = '<b>' + a.type + lv + "预警</b>（图标编号 " + (a.icon || 0) + "）";
+				} else {
+					q("alert").textContent = "当前没有预警";
+				}
+				q("log").textContent = (s.log || []).slice(-25).join("\n") || "（还没有日志）";
+			} catch (e) {
+				q("state").innerHTML = '<span class="bad">连不上服务</span>';
+				q("state2").textContent = String(e);
+			}
+		}
+
+		async function loadLog() { refresh(); }
+
+		async function loadCfg() {
+			try {
+				const c = await (await fetch("/api/config")).json();
+				for (const k of CFG_KEYS) {
+					const el = q("cfg_" + k);
+					if (el) el.value = (c[k] === undefined || c[k] === null) ? "" : c[k];
+				}
+			} catch (e) { q("cfgnote").textContent = "读配置失败：" + e; }
+		}
+
+		async function saveCfg() {
+			const c = await (await fetch("/api/config")).json();
+			for (const k of CFG_KEYS) {
+				const el = q("cfg_" + k);
+				if (!el) continue;
+				c[k] = el.value.trim();
+			}
+			const r = await (await fetch("/api/config", {
+				method: "POST", headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(c)
+			})).json();
+			q("cfgnote").textContent = r.ok ? "已保存（重启服务生效）" : ("失败：" + r.error);
+		}
+
+		async function doSync() {
+			await fetch("/api/sync", { method: "POST" });
+			setTimeout(refresh, 1500);
+		}
+
+		loadCfg();
+		refresh();
+		setInterval(refresh, 5000);
+	</script>
+</body>
+
+</html>
