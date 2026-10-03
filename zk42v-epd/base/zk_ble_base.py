@@ -711,6 +711,74 @@ async def cmd_watch(args) -> int:
 
 
 # ---------------------------------------------------------------- 入口
+# ---------------------------------------------------------------- 配置文件（送人版）
+#
+# 2026-10-03：用户要把价签送人，对方**没有 NAS、没有 ESP32**，只有一台普通电脑。
+# 这台电脑本来就能当基站（就是本文件 —— bleak 在 macOS/Windows/Linux 上都能跑），
+# 但对着命令行敲参数不是普通人干的事，所以加一层**配置文件**：
+#
+#     python3 zk_ble_base.py watch --config 配置.json
+#
+# 配置文件里可以写中文键（给收礼的人看），例如：
+#     { "城市名": "深圳", "纬度": 22.7809, "经度": 113.8861,
+#       "时区": 8, "纪念日": "10-05=付婧文生日快乐！" }
+# 命令行参数**优先级更高**（写了 --city 就以 --city 为准），所以配置只是"默认值"。
+#
+# ⚠ 送人版没有 NAS 中继 → 和风那条路用不了，默认走 Open-Meteo（免费、不用 key）。
+#   对方要是自己注册一个免费的和风 key（个人额度 5 万次/月，我们一天几十次），
+#   就能拿到**实况值 + 天气预警**（电脑版能连和风的 HTTPS，这点跟 ESP32 相反）。
+CONFIG_KEYS = {
+    "城市名": "city", "纬度": "lat", "经度": "lon", "时区": "tz",
+    "纪念日": "memo", "天气源": "wx_source",
+    "和风key": "qweather_key", "和风API Host": "qweather_host",
+    "扫描秒数": "scan", "每轮间隔秒": "poll", "校时间隔秒": "time_interval",
+    "天气间隔秒": "weather_interval", "日志文件": "log",
+    # 英文键也认（有人更喜欢写英文）
+    "city": "city", "lat": "lat", "lon": "lon", "tz": "tz", "memo": "memo",
+    "wx_source": "wx_source", "qweather_key": "qweather_key",
+    "qweather_host": "qweather_host", "scan": "scan", "poll": "poll",
+    "time_interval": "time_interval", "weather_interval": "weather_interval",
+    "log": "log",
+}
+
+
+def load_config(args) -> None:
+    """把配置文件里的值填进 args —— **只覆盖命令行没显式给的那些**。"""
+    path = getattr(args, "config", "") or ""
+    if not path:
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        log("找不到配置文件 %s（忽略，按默认参数跑）" % path, getattr(args, "log", None))
+        return
+    except Exception as e:
+        log("配置文件读不了：%s（忽略）" % e, getattr(args, "log", None))
+        return
+
+    applied = []
+    for k, v in cfg.items():
+        if k.startswith("_"):            # "_说明" 这种注释键跳过
+            continue
+        dst = CONFIG_KEYS.get(k)
+        if dst is None:
+            log("配置文件里有个不认识的键：%s（跳过）" % k, getattr(args, "log", None))
+            continue
+        if isinstance(v, str) and v.strip() == "" and dst != "memo":
+            continue                      # 空字符串 = "没填"，别拿它去覆盖默认值
+                                          # （"和风API Host" 空着会把默认 host 冲掉）
+        # 命令行里显式写过的，以命令行为准
+        argv_has = any(a == "--" + dst.replace("_", "-") for a in sys.argv[1:])
+        if argv_has:
+            continue
+        setattr(args, dst, v)
+        applied.append("%s=%s" % (dst, v))
+    if applied:
+        log("配置文件 %s → %s" % (os.path.basename(path), "，".join(applied)),
+            getattr(args, "log", None))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="ZK42V 价签基站模拟器（Mac 当 BLE central）")
     p.add_argument("cmd", choices=["probe", "sync", "watch", "raw"])
@@ -760,11 +828,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dwell", type=float, default=2.0, help="同步后停留收通知的秒数")
     p.add_argument("--connect-timeout", type=float, default=20.0)
     p.add_argument("--log", default=None, help="同时把日志写进这个文件")
+    p.add_argument("--config", default="", help="配置文件（JSON）—— 送人版用这个，"
+                                                "里面可以写中文键，见 kit/配置.json")
     return p
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    load_config(args)
     runner = {"probe": cmd_probe, "sync": cmd_sync,
               "watch": cmd_watch, "raw": cmd_raw}[args.cmd]
     try:

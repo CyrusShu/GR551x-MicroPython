@@ -52,6 +52,12 @@ FILES = [
     ("outputs/firmware/docs/preview/preview-sun-options.png",  "firmware/docs/preview/preview-sun-options.png"),
     ("outputs/firmware/docs/preview/preview-sun-variants-in-header.png",  "firmware/docs/preview/preview-sun-variants-in-header.png"),
     # Mac 版基站的表头排版实验图 + 生成脚本
+    # 2026-10-03 送人版：普通电脑当基站的"傻瓜包"
+    ("outputs/ble-base/kit/配置.json",                 "base/kit/配置.json"),
+    ("outputs/ble-base/kit/README-给收礼的人.md",       "base/kit/README-给收礼的人.md"),
+    ("outputs/ble-base/kit/启动-mac.command",          "base/kit/启动-mac.command"),
+    ("outputs/ble-base/kit/启动-windows.bat",          "base/kit/启动-windows.bat"),
+    ("outputs/ble-base/kit/启动-linux.sh",             "base/kit/启动-linux.sh"),
     ("outputs/ble-base/preview/make_header_mock.py",   "base/preview/make_header_mock.py"),
     ("outputs/ble-base/preview/header-now.png",        "base/preview/header-now.png"),
     ("outputs/ble-base/preview/header-place-after-temp.png",  "base/preview/header-place-after-temp.png"),
