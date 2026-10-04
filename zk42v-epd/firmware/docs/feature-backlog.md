@@ -1004,3 +1004,41 @@ hal_sleep_timer_config_and_start(PWR_SLP_TIMER_MODE_SINGLE, lpcycles);   /* 单�
   第 4 步要加的 `CALENDAR` 就在这个字段里（`AON_PWR_REG01_WAKE_UP_SEL_CALENDAR`）。
 
 拿这两个读数 + `pwr_mgmt_get_wakeup_flag()` 的行为，就能定第 1、2 步的具体做法。
+
+### 探针实测（2026-10-04 18:38 的 status，build 77）
+
+```
+AON 日历/RTC（CALENDAR_TIMER_CTL = 0x00003100）:
+   EN=0   CLK_SEL=1   WRAP_CNT=0   闹钟中断=开   回绕中断=开
+   → 日历没在跑（EN=0）—— 这颗价签上现在没人用它。
+PWR_RET01 的 WAKE_UP_SEL = 0x05  → 允许的唤醒源：SLEEP_TIMER/BLE
+AON TIMER_VALUE（装载暂存）= 816874    （816874 ÷ 27230 = 29.99 秒）
+AON_PAD_CTL1 = 0x800000FF   TIMER_READ_SEL = 2 → SLP_TIMER
+```
+
+三条结论：
+
+1. **日历是空着的**（`EN=0`）—— 可以拿过来当我们的时基，第 1 步可行。
+   顺带注意：`ALARM_INT_EN/WRAP_INT_EN` 已经是 1（默认值），所以启动它之后
+   那两个中断标志会置位；`CALENDAR_IRQn`（33）没使能，不会跑 ISR，但别被标志骗了。
+2. **`TIMER_VALUE = 816874`（29.99 秒）** —— 这是**直接证据**：SDK 的 app_timer
+   刚把睡眠定时器按"下一次到期"装过。跟我们前两轮从日志算出来的
+   "30.00 秒 / 24.00 秒的固定装载值"是同一件事。
+3. **`WAKE_UP_SEL = 0x05`（SLEEP_TIMER | BLE）** —— 现在只有这两个能唤醒芯片。
+   第 4 步长睡要用的 `CALENDAR` 位（0x08）就在这个字段里，加进去即可。
+
+### 第 1 步待确认的一件事：**日历的走时精度**
+
+日历计数器跑在低功耗时钟上（`CLK_SEL` 选的那一档），而这颗价签**没有 32.768k 晶振**，
+走的是内部 RC —— 我们开机用 DWT 标定出来是 **27230 Hz**（标称 32768 的 **83%**）。
+
+如果 HAL 内部按"标称 32768"去折算计数器→秒，那 RTC 会**每天慢约 4 小时**，
+拿它当钟就废了；如果它用的是 `sys_lpclk_get()`/标定值，那就没问题。
+`drivers/src/` 里没有 calendar 的源码（在 `libble_sdk.a` 里），头文件也没写清 ——
+**只能实测**：
+
+* 让 RTC 跑起来、写进基站给的时间；
+* 同时记录"RTC 读回来的时间"和"我们现有 tick 推出来的时间"，两者都进状态块；
+* 隔 10 分钟再读一次，看 RTC 走了多少秒 —— 走对了说明它用的是标定频率，
+  慢 17% 说明它按标称 32768 折算，那我们就得自己换算（或者把 RTC 只当"计数器"用，
+  拿我们标定好的 27230 Hz 去折算）。
