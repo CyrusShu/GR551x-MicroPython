@@ -5463,25 +5463,47 @@ def zkstatus():
             say("      用 .map 查一下真地址：grep -n SystemCoreClock "
                 "outputs/firmware/zk42v-epd-app/GCC/out/lst/zk42v_epd.map")
 
-    # ---- build 59：**时基实测**（读两次状态块里的 zk_tick_ms，跟宿主的秒表对拍）----
+    # ---- build 59：**时基实测**（拿状态块里的 zk_tick_ms 跟宿主的秒表对拍）----
     #  判据就一条：增量 ÷ 真实秒数 ≈ 1.00。
     #  修之前这个比值是 3~4.8（CYCCNT 按 16 MHz 折算，而主频会变）；
     #  换成 AON 定时器以后应该贴着 1.00 走。
+    # ⚠ 2026-10-04 改：以前是"读两次、隔 5 秒" —— 但**价签每推送一次就阻塞刷屏 16 秒**，
+    #   这 5 秒正好落在刷屏里的话，两次读到同一个值，就误报"比值 0.000 ❌"。
+    #   连着误报了两轮（把"日历不会自己换天"这种假结论都带出来了）。
+    #   现在改成**密集采样，只统计"价签毫秒真的变了"的那些相邻间隔** ——
+    #   刷屏那 16 秒是常数，天然被跳过。判据没变：增量 ÷ 宿主真实秒数 ≈ 1.00。
     tb_build = rd(ZK_DBG_ADDR + 4 * 11)
     tb_now = rd(ZK_DBG_ADDR + 4 * 88)
     if (tb_build is not None and tb_build >= 59) and tb_now is not None:
-        r0 = rd(ZK_DBG_ADDR + 4 * 88)
-        h0 = time.monotonic()
-        time.sleep(float(_env_str('TICK_WATCH_S', '5')))
-        r1 = rd(ZK_DBG_ADDR + 4 * 88)
-        h1 = time.monotonic()
-        if r0 is not None and r1 is not None and h1 > h0:
-            dm = ((r1 - r0) & 0xFFFFFFFF) / 1000.0
-            dh = h1 - h0
+        n_pt = max(8, int(float(_env_str('TICK_WATCH_S', '12')) * 4))   # 每 250ms 采一个点
+        samples = []
+        for _ in range(n_pt):
+            samples.append((time.monotonic(), rd(ZK_DBG_ADDR + 4 * 88)))
+            time.sleep(0.25)
+        dm = 0.0
+        dh = 0.0
+        moved = 0
+        for (h0, v0), (h1, v1) in zip(samples, samples[1:]):
+            if v0 is None or v1 is None:
+                continue
+            d = (v1 - v0) & 0xFFFFFFFF
+            if 0 < d < 5000:                # 变了、而且是合理增量（<5 秒）
+                dm += d / 1000.0
+                dh += (h1 - h0)
+                moved += 1
+        if moved == 0 or dh <= 0:
+            say("")
+            say("  时基实测：采了 %d 个点（每 250ms 一个，共 %.1f 秒）—— **一次都没动** ❌"
+                % (n_pt, n_pt * 0.25))
+            say("    价签要么一直在刷屏/阻塞，要么时基真的停了。多跑一次，或看下面的 tb_* 那组。")
+        else:
             ratio = dm / dh
             say("")
-            say("  时基实测（拿状态块里的 zk_tick_ms 跟宿主秒表对拍，等了 %.1f 秒）：" % dh)
-            say("    价签走了 %.2f 秒 / 真实 %.2f 秒   ⇒ **比值 %.3f**" % (dm, dh, ratio))
+            say("  时基实测（密集采样，只算价签毫秒真的变了的那些间隔）：")
+            say("    %d/%d 个间隔里它在走：价签走了 %.2f 秒 / 真实 %.2f 秒   ⇒ **比值 %.3f**"
+                % (moved, n_pt - 1, dm, dh, ratio))
+            if moved < (n_pt - 1) // 3:
+                say("    （大半时间没动 —— 多半是在刷屏或者被别的事情堵着，不影响这份读数）")
             if 0.98 <= ratio <= 1.02:
                 say("    → 对上了 ✅ 日历/时钟的重画间隔现在是按真实时间走的。")
             elif ratio > 2.0:
@@ -5493,8 +5515,6 @@ def zkstatus():
             else:
                 say("    → 偏 %.0f%% ❌ （主要看 tb_hz 跟 tb_hz_cal / tb_hz_sdk 差多少）"
                     % ((ratio - 1.0) * 100.0))
-            if (r1 - r0) & 0xFFFFFFFF == 0:
-                say("      ⚠ 两次读到的毫秒一模一样：主循环可能卡住了（正好在刷屏？）")
 
     words = last['words']
     say("")

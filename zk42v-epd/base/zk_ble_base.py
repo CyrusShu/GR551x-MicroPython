@@ -423,7 +423,7 @@ async def find_tag(args, scan_s: float, quiet: bool = False):
 
 # ---------------------------------------------------------------- sync
 async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
-                    last_alert=None) -> bool:
+                    last_alert=None, may_skip_if_alive=False) -> bool:
     """连上去把时间和/或天气写进价签。
 
     ⚠ 固件的脾气（Src/ble/zk_epd_svc.c:930 起）：日历模式只在**换天**时自己重画，
@@ -515,6 +515,8 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
     # 每次推天气都顺便对一次表，价签的钟一直是校准的；反正那条命令本来就要重画一页。
     put_time = bool(do_time or (wx_payload is not None))
 
+    tag_report = {"t": None}     # 价签连上来之后会上报 t=<它的时间>，见下面 on_notify
+
     log("找到价签：" + repr(dev.name) + " rssi=" + str(adv.rssi) + " addr=" + dev.address + "；连接中…", args.log)
 
     try:
@@ -529,11 +531,37 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
             def on_notify(_h, data: bytearray):
                 txt = bytes(data).decode("latin-1", "replace")
                 log("  ← 价签：" + repr(txt) + "  (" + bytes(data).hex(" ") + ")", args.log)
+                # 2026-10-04：价签每次连上都报 `t=<它现在的时间>`（本地时间戳）。
+                # 拿它判断"这次到底是它重启了，还是我刚才只是没扫到" ——
+                # 省得把一次扫描抖动当成"价签刚上电"、整包重推、白刷一屏 16 秒。
+                if txt.startswith("t="):
+                    try:
+                        tag_report["t"] = int(txt[2:])
+                    except ValueError:
+                        pass
 
             try:
                 await cli.start_notify(WR_UUID, on_notify)
             except Exception as e:
                 log("  开通知失败（只影响回读日志）：" + explain(e), args.log)
+
+            # 用价签上报的 t= 核实它到底重启没重启（等最多 1.5 秒）。
+            # 判据：它报的时间 ≈ 现在 + 时区偏移 → 它的钟还在走 = 没重启。
+            # 报 0 / 差得离谱 → RAM 被清过 = 真重启了 → 该整包重推。
+            if may_skip_if_alive:
+                tz_h = args.tz if args.tz is not None else local_tz_hours()
+                expect = int(time.time()) + tz_h * 3600
+                for _ in range(30):                 # 30 × 50ms = 1.5s
+                    if tag_report["t"] is not None:
+                        break
+                    await asyncio.sleep(0.05)
+                got = tag_report["t"]
+                if got is not None and got > 0 and abs(got - expect) < 600:
+                    log("  = 价签没重启（它报的 t=%d，跟现在对得上）→ 这次**不写任何命令**，"
+                        "省一次 16 秒全刷" % got, args.log)
+                    return True
+                log("  ! 价签像是重启过（它报的 t=%s，现在应该是 %d）→ 按整包重推"
+                    % (got, expect), args.log)
 
             # 1) 时间 + 时区 + 模式 [+ 天气] —— 这条落地后价签会整页重画（约 16 秒）
             #    build 50 起支持把天气**一起带上**：20 <utc4> <tz> <mode> [wx] [temp]
@@ -721,7 +749,9 @@ async def cmd_watch(args) -> int:
         present = {addr}
 
         if reappeared:
-            log("价签出现了（应该是刚上电，它自己的时间是空的）→ 立刻校时。", args.log)
+            # 2026-10-04：不再无条件认定"它刚上电"。先按"可能要整包重推"准备，
+            # 连上之后用价签上报的 t= 核实（见 sync_once 里的 may_skip_if_alive）。
+            log("价签出现了（可能刚上电，也可能我刚才只是没扫到）→ 连上核实。", args.log)
 
         if reappeared or due_time or due_wx:
             do_wx = reappeared or due_wx
@@ -729,7 +759,8 @@ async def cmd_watch(args) -> int:
             # 这样每次推天气都顺便对一次表 —— 所以 do_wx 也就意味着 do_time。
             do_time = reappeared or due_time or do_wx
             if await sync_once(dev, adv, args, do_time, do_wx, last_wx.setdefault(addr, {}),
-                               last_alert.setdefault(addr, {})):
+                               last_alert.setdefault(addr, {}),
+                               may_skip_if_alive=(reappeared and not (due_time or due_wx))):
                 STATUS["last_push"] = time.time()
                 if do_time:
                     last_time[addr] = time.monotonic()
