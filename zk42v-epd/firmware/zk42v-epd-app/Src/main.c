@@ -451,6 +451,15 @@ void main_init(void)
            （build 80 第一次跑就是这样：warm_hits 读出来是 1262079302）。 */
         g_dbg.warm_magic = 0;
         g_dbg.warm_hits  = 0;
+        /* 同理：睡/醒那几个字只在回调里写，没睡过时从来没被写过 ->
+           露出来就是 RAM 垃圾（build 82 实测 app_prepare_for_sleep "调过
+           324286470 次"）。冷启动时一并清零，显示就干净了。 */
+        g_dbg.sleep_cnt    = 0;
+        g_dbg.sleep_before = 0;
+        g_dbg.sleep_after  = 0;
+        g_dbg.sleep_load   = 0;
+        g_dbg.sleep_ticks  = 0;
+        g_dbg.sleep_ms     = 0;
     }
 
     __main();
