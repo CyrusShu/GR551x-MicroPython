@@ -797,12 +797,13 @@ int main(void)
         pwr_mgmt_schedule();
 
 #if ZK_PWR_SAVE
-        if (s_psave_ready)
+        if (s_psave_ready && s_tick_flag)
         {
-            if (!s_tick_flag)
-            {
-                continue;               /* 还没到节拍 → 接着睡，别干活 */
-            }
+            /* ⚠ build 84 改法：**不能用 `continue` 把循环卡在节拍上**
+               —— build 75 就是这么写的（节拍 500ms），结果一轮里只跑一条活、
+               协议栈泵不动，heart 停在 1、连不上。
+               现在节拍只当"该干点慢活了吗"的旗子，循环照转；
+               真正的睡觉是下面 pwr_mgmt_schedule() 自己决定。 */
             s_tick_flag = 0;
         }
 #endif
