@@ -96,6 +96,9 @@ MODE_CALENDAR = 1
 MODE_CLOCK = 2
 
 # 温度要变这么多（十分之一度，10 = 1.0℃）才值得推一次
+# 天气推送的温差阈值：默认 1.0℃（=10 个十分之一度）。
+# 2026-10-05：做成可配置（配置.json 的「天气温差」/ --wx-temp-delta）——
+# 想让它少闪屏就调大（比如 2.0），想更跟手就调小。
 WX_TEMP_DELTA_T10 = 10
 
 WX_SUN, WX_CLOUDY, WX_OVERCAST = 1, 2, 3
@@ -464,7 +467,8 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
             changed = True
             if prev is not None:
                 pc, pt10 = prev
-                changed = (pc != code) or (abs(t10 - pt10) >= WX_TEMP_DELTA_T10)
+                delta10 = int(round(getattr(args, "wx_temp_delta", 1.0) * 10.0))
+                changed = (pc != code) or (abs(t10 - pt10) >= delta10)
             if not changed:
                 log("  = 天气没变（" + WX_NAME.get(code, str(code)) + " " + str(temp)
                     + "℃），不重发 —— 省一次全刷。", args.log)
@@ -844,11 +848,13 @@ CONFIG_KEYS = {
     "和风key": "qweather_key", "和风API Host": "qweather_host",
     "扫描秒数": "scan", "每轮间隔秒": "poll", "校时间隔秒": "time_interval",
     "天气间隔秒": "weather_interval", "日志文件": "log",
+    "天气温差": "wx_temp_delta",
     # 英文键也认（有人更喜欢写英文）
     "city": "city", "lat": "lat", "lon": "lon", "tz": "tz", "memo": "memo",
     "wx_source": "wx_source", "qweather_key": "qweather_key",
     "qweather_host": "qweather_host", "scan": "scan", "poll": "poll",
     "time_interval": "time_interval", "weather_interval": "weather_interval",
+    "wx_temp_delta": "wx_temp_delta",
     "log": "log",
 }
 
@@ -934,6 +940,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--poll", type=float, default=3.0, help="watch 模式每轮之间歇（秒）")
     p.add_argument("--time-interval", type=float, default=86400.0,
                    help="watch 里多久重新校一次时间（秒，默认 86400=一天）")
+    p.add_argument("--wx-temp-delta", type=float, default=1.0,
+                   help="weather push temp delta in C (default 1.0)")
     p.add_argument("--weather-interval", type=float, default=21600.0,
                    help="watch 里多久查一次天气（秒，默认 21600=6 小时；值没变不会发）")
     p.add_argument("--dwell", type=float, default=2.0, help="同步后停留收通知的秒数")
