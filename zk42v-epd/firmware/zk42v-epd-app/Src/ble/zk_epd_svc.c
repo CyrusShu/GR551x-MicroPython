@@ -47,8 +47,11 @@
 
 static const uint8_t s_svc_uuid[16] = ZK_UUID128(0x01, 0x00);
 
-/* 网页读这个判断固件新旧；他原厂是 0x1a，>= 0x16 才走新流程 */
-#define ZK_APP_VERSION   0x1au
+/* 网页读这个判断固件新旧；他原厂是 0x1a，>= 0x16 才走新流程。
+   build 77 起改成 0x1b：多了一条「连上就主动报 t=」的行为（见下面
+   s_need_time_report），基站靠版本号判断"这条价签一定会回话"——
+   不回的（<= 0x1a）只能沿用老的"没等到就整包重推"。 */
+#define ZK_APP_VERSION   0x1bu
 
 /* 写特征的值最大长度 = 对端 MTU - 3（ATT 写请求/通知的开销 3 字节）。
    网页拿到我们通知的 "mtu=N" 之后按 N-2 切图块（还得留 1 字节命令 + 1 字节 flags）。 */
@@ -120,6 +123,7 @@ static uint8_t  s_drv = 0x55;            /* 0x78：快刷驱动强度（0x1A 的
 static uint8_t  s_px0, s_py0, s_px1, s_py1;   /* 局刷窗口：x 是"字节列"(0~49)，y 是行(0~299) */
 static uint8_t  s_need_sleep;
 static uint8_t  s_need_cfg;          /* 该发「配置」那条通知了（见下面为什么不立刻发） */
+static uint8_t  s_need_time_report;  /* build 77：连上先主动报一次「我的钟还在走」 */
 static uint32_t s_wr_seen;           /* 这一条连接里收到第几块 WRITE_IMAGE（用来认老格式） */
 
 static uint8_t  s_plane;             /* 0 = 黑白面, 1 = 红面 */
@@ -1062,7 +1066,12 @@ void zk_epd_svc_on_write(uint8_t conn_idx, uint16_t handle,
                抢在前面发的那条通知有被丢掉的风险。 */
             if ((s_cccd & 0x0001u) && !s_cfg_sent)
             {
+                /* build 77：预约一次「报时间」。就放在这一支里 —— 这样"配置第一、
+                   t= 第二"的顺序在所有情况下都成立（网页是拿「第 0 条通知」当配置
+                   解析的）；同一条连接里重新订阅（这时 s_cfg_sent 已经是 1）也不再
+                   多发一条，免得网页把 t= 误当成配置。 */
                 s_need_cfg = 1;
+                s_need_time_report = 1;
             }
         }
     }
@@ -1118,6 +1127,7 @@ void zk_epd_svc_on_connect(uint8_t conn_idx)
     s_legacy    = 0;
     s_wr_seen   = 0;
     s_need_cfg  = 0;
+    s_need_time_report = 0;
     s_plane_pos[0] = 0;
     s_plane_pos[1] = 0;
     g_dbg.ble_conn_cnt++;
@@ -1257,6 +1267,24 @@ void zk_epd_svc_poll(uint32_t now_ms)
             zk_notify_config();
             s_cfg_sent = 1;
         }
+    }
+
+    /* build 77：紧接着配置那条，主动把「我的钟」报一次。
+       用处：基站连上来只想核实"你到底是不是刚上电" —— 没重启（s_ts 还在走）它
+       一条命令都不用写，省一次 16 秒全刷；真是刚上电/换过电池（s_ts = 0）就报
+       t=0，基站据此整包重推。必须排在配置那条之后：网页按「第 0 条通知」解析配置。 */
+    if (s_need_time_report)
+    {
+        s_need_time_report = 0;
+        /* s_ts 是 0 也照发（t=0）——"不回话"和"回话说我没时间"必须分得开：
+           前者说明它忙着刷屏（主循环被 16 秒的全刷占着），基站该**这轮先不动**；
+           后者才是真的刚上电、该整包重推。 */
+        uint8_t  tb[8];
+        uint8_t *q = tb;
+
+        memcpy(q, "t=", 2); q += 2;
+        q = zk_put_u32(q, s_ts);
+        zk_notify(tb, (uint16_t)(q - tb));
     }
 
     /* 0x72 的回报：电池刚被强制读了一次（主循环里 zk_bat_poll() 跑在我们前面），

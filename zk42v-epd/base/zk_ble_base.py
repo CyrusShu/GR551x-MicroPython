@@ -545,13 +545,25 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
             except Exception as e:
                 log("  开通知失败（只影响回读日志）：" + explain(e), args.log)
 
-            # 用价签上报的 t= 核实它到底重启没重启（等最多 1.5 秒）。
-            # 判据：它报的时间 ≈ 现在 + 时区偏移 → 它的钟还在走 = 没重启。
-            # 报 0 / 差得离谱 → RAM 被清过 = 真重启了 → 该整包重推。
+            # 用价签上报的 t= 核实它到底重启没重启。
+            # 判据：它报的时间 ≈ 现在 + 时区偏移 → 它的钟还在走 = 没重启
+            #       （这次**一条命令都不写**，省一次 16 秒全刷）；
+            #       报 0 / 差得离谱 → RAM 被清过 = 真重启了 → 该整包重推。
+            #
+            # ⚠ 2026-10-04 的坑：固件 build ≤76 那条 t= **是收到 0x20 之后的回包**，
+            #   "连上先等 t="永远等不到，只能耗满超时 → 还是整包重推 → 又刷 16 秒。
+            #   所以固件侧加了 build 77（协议 0x1b）：**连上主动报一次**，没时间就报
+            #   t=0。"不回话"和"回话说我没时间"这才分得开。
             if may_skip_if_alive:
                 tz_h = args.tz if args.tz is not None else local_tz_hours()
                 expect = int(time.time()) + tz_h * 3600
-                for _ in range(30):                 # 30 × 50ms = 1.5s
+                try:
+                    fw_new = int(ver[0]) >= 0x1B
+                except Exception:
+                    fw_new = False
+                # 那条通知得等它"订阅完 + 主循环转一圈"才发得出来：正常几十毫秒，
+                # 万一它正堵在 16 秒全刷里就得更久 —— 给 6 秒。
+                for _ in range(120):                # 120 × 50ms = 6s
                     if tag_report["t"] is not None:
                         break
                     await asyncio.sleep(0.05)
@@ -560,6 +572,13 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                     log("  = 价签没重启（它报的 t=%d，跟现在对得上）→ 这次**不写任何命令**，"
                         "省一次 16 秒全刷" % got, args.log)
                     return True
+                if got is None and fw_new:
+                    # 新固件"一定会回话"却没回 —— 只能是它正忙着刷屏（主循环被那 16 秒
+                    # 全刷占着）。这时候再写下去 = 又刷一屏 = 又错过一轮扫描，就是之前
+                    # 那个"每 27~36 秒白刷一次"的死循环。所以这轮什么都不做，下轮再看。
+                    log("  ? 价签没回话（新固件本该回 t=，多半正忙着刷屏）→ 这轮先不动它，"
+                        "下一轮再看", args.log)
+                    return False
                 log("  ! 价签像是重启过（它报的 t=%s，现在应该是 %d）→ 按整包重推"
                     % (got, expect), args.log)
 
