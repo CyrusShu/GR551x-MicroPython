@@ -664,7 +664,9 @@ int main(void)
     pwr_mgmt_mode_set(PMR_MGMT_SLEEP_MODE);
 #endif
 
-    /* 停在这儿，心跳一直涨 —— 调试器随时进来都能看到「活着」的证据。 */
+    /* 停在这儿，心跳一直涨 —— 调试器随时进来都能看到「活着」的证据。
+       （2026-10-04：睡眠那一路在这颗芯片上会卡死，见 board/zk_pwr.h 里的记录，
+         所以 ZK_PWR_SAVE=0，走回"忙等"；广播间隔仍然放宽到 1 秒。） */
     zk_dbg_stage(ZK_STAGE_IDLE);
     for (;;)
     {
