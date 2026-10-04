@@ -775,7 +775,12 @@ int main(void)
           有没有换天。
           ⚠ 刻意**不用 UDS（超深睡）**：原厂那种模式醒来等于**整个系统复位**，
           必须先把"时间持久化"（写 flash）做了，否则每次醒来都是空日历。 */
-    pwr_mgmt_mode_set(PMR_MGMT_SLEEP_MODE);
+    /* ⛔ build 84 实机结论：PMR_MGMT_SLEEP_MODE 在这颗价签上**又挂了一次**
+       （跟 build 75 同一个症状：能广播、连不上，基站 20 秒超时）。
+       build 85 改试 IDLE 档：它不是 SDK 那套深睡（不动 PMR/睡眠定时器），
+       只是让 CPU 在没事时进 WFE —— 目的是想把"200Hz 忙等"这笔账削掉，
+       而**不碰**已经失败两次的深睡路径。 */
+    pwr_mgmt_mode_set(PMR_MGMT_IDLE_MODE);
 #endif
 
     /* 停在这儿，心跳一直涨 —— 调试器随时进来都能看到「活着」的证据。
