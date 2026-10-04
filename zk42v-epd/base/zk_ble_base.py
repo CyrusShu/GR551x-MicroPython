@@ -568,7 +568,15 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                         break
                     await asyncio.sleep(0.05)
                 got = tag_report["t"]
-                if got is not None and got > 0 and abs(got - expect) < 600:
+                # ⚠ 容差从 600 秒放宽到 7200 秒（2026-10-04 深夜）：
+                #   "重启"的**真凭据是 t=0**（RAM 被清过就报 0），不是"差多少"。
+                #   600 秒那档太小了 —— build 85 开了 IDLE 之后价签的钟慢约 11%
+                #   （status 比值 0.896），一次同步过 50 分钟就差出 600 秒，
+                #   基站就会把"钟慢了"误判成"它重启了"→ 白刷一屏 16 秒。
+                #   21:59 那次就是这么来的：价签报 1791143462（它的钟 21:51），
+                #   基站期望 1791151196（21:59:56），差 7734 秒 → 误判重启。
+                #   现在只留一个"别离谱"的上限（2 小时），真正的判据是 got > 0。
+                if got is not None and got > 0 and abs(got - expect) < 7200:
                     log("  = 价签没重启（它报的 t=%d，跟现在对得上）→ 这次**不写任何命令**，"
                         "省一次 16 秒全刷" % got, args.log)
                     return True
