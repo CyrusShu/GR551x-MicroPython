@@ -1306,9 +1306,18 @@ void zk_epd_svc_poll(uint32_t now_ms)
     /* build 78 探路：AON 日历计数器一秒走多少 tick（判据见上面那段注释） */
     if (!s_rtc_on)
     {
+        /* build 78 第二版：光置 EN 它**不数**（实机读数一直是 0）—— 它是个
+           "可装载"的计数器，得照 SDK 的 ll_calendar_reload_counter() 那两步走：
+               ① AON->TIMER_VALUE = <初值>      ② CTL 里置 VAL_LOAD 让它装进去
+           然后才会开始跑。整段关中断，因为 TIMER_VALUE 也是睡眠定时器的暂存
+           寄存器（SDK 的 app_timer 会用它，不过我们这会儿不睡，抢一下没事）。 */
+        uint32_t pm0 = zk_tick_irq_save();
+
         s_rtc_on = 1;
         AON->CALENDAR_TIMER_CTL |= AON_CALENDAR_TIMER_CTL_EN;
+        ll_calendar_reload_counter(0u);
         g_dbg.rtc_state = 1;
+        zk_tick_irq_restore(pm0);
     }
     /* ⚠ build 78 第一版在这里踩了一下：用的是函数参数 now_ms，实机上那个值不对
        （build=78 那次 rtc_ctr/rtc_reads 全是没写过的值，等于这段没跑起来），
