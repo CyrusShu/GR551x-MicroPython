@@ -138,6 +138,7 @@ static uint8_t  s_need_time_report;  /* build 77：连上先主动报一次「�
 static uint8_t  s_rtc_on;
 static uint32_t s_rtc_ms;
 static uint32_t s_rtc_prev;
+static uint32_t s_rtc_calls;   /* 这段代码到底被跑了几次（诊断用） */
 
 static uint32_t s_wr_seen;           /* 这一条连接里收到第几块 WRITE_IMAGE（用来认老格式） */
 
@@ -1309,7 +1310,13 @@ void zk_epd_svc_poll(uint32_t now_ms)
         AON->CALENDAR_TIMER_CTL |= AON_CALENDAR_TIMER_CTL_EN;
         g_dbg.rtc_state = 1;
     }
-    if ((uint32_t)(now_ms - s_rtc_ms) >= 1000u)
+    /* ⚠ build 78 第一版在这里踩了一下：用的是函数参数 now_ms，实机上那个值不对
+       （build=78 那次 rtc_ctr/rtc_reads 全是没写过的值，等于这段没跑起来），
+       所以直接调 zk_tick_ms() —— 它同一份日志里是 34156、在正常涨。 */
+    s_rtc_calls++;
+    g_dbg.rtc_calls = s_rtc_calls;
+    g_dbg.rtc_now = (uint32_t)zk_tick_ms();
+    if ((uint32_t)(zk_tick_ms() - s_rtc_ms) >= 1000u)
     {
         uint32_t pm = zk_tick_irq_save();
         uint32_t c  = ll_calendar_get_counter();      /* ← 会改 PAD_CTL1 的选择子 */
@@ -1324,7 +1331,7 @@ void zk_epd_svc_poll(uint32_t now_ms)
             g_dbg.rtc_reads++;
         }
         s_rtc_prev = c;
-        s_rtc_ms   = now_ms;
+        s_rtc_ms   = (uint32_t)zk_tick_ms();
         g_dbg.rtc_ctr = c;
     }
 

@@ -1341,7 +1341,7 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 122
+ZK_DBG_WORDS = 124
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4938,8 +4938,11 @@ def _zk_say_epd_service(words, regs=None):
     # ---- build 78：AON 日历「探路」（啃睡眠第一步）----
     if len(words) > 121:
         st, ctr, d1, rd = words[118], words[119], words[120], words[121]
+        calls = words[122] if len(words) > 122 else 0
+        rnow  = words[123] if len(words) > 123 else 0
         say("")
         say("  AON 日历计数器探路（build 78）：")
+        say("    这段代码跑了 %d 次   它看到的 zk_tick_ms() = %d" % (calls, rnow))
         say("    状态 = %s   读到 %d 次   最新原始计数 = 0x%08X" % (
             {0: '还没动', 1: '已置 EN（EN=1，让它跑）'}.get(st, '0x%X' % st), rd, ctr))
         if rd:

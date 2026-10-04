@@ -102,7 +102,7 @@ typedef struct
 #define ZK_FLAG_AON_TB       0x0020u   /* build 59：毫秒时基在跑 AON 定时器（不是 CYCCNT） */
 #define ZK_FLAG_PSAVE        0x0040u   /* 2026-10-03：省电版在跑（主循环睡眠 + 广播放宽） */
 
-#define ZK_DBG_WORDS 122
+#define ZK_DBG_WORDS 124
 
 typedef struct
 {
@@ -308,7 +308,9 @@ typedef struct
     uint32_t rtc_ctr;             /* 119: 最近一次读到的日历计数器原始值 */
     uint32_t rtc_delta1s;         /* 120: 最近一次 1 秒间隔里它走了多少（关键数字） */
     uint32_t rtc_reads;           /* 121: 成功读到计数器的次数 */
-    uint32_t rsv[ZK_DBG_WORDS - 122];
+    uint32_t rtc_calls;           /* 122: build78 第二版：这段代码被跑了几次（诊断用） */
+    uint32_t rtc_now;             /* 123: build78 第二版：它看到的 zk_tick_ms()（诊断用） */
+    uint32_t rsv[ZK_DBG_WORDS - 124];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */
