@@ -741,6 +741,11 @@ async def cmd_watch(args) -> int:
     last_wx = {}        # addr -> {"v": (code, temp)} 上次真发出去的天气值
     last_alert = {}     # addr -> {"a": (level, 类型名)} 上次真发出去的预警
     present = set()     # 上一轮在广播的设备
+    pushed_day = {}     # addr -> 上次已经为"这一天"推过的本地日期（2026-10-05）
+                        # 2026-10-04 用户定的"哑终端"方案：价签不再依赖自己的钟，
+                        # 换天（日期翻页）改由基站负责 —— 本地日期一变就主动推一次，
+                        # 不然"到点推一次"是每 86400 秒（从上次推送算起），
+                        # 不卡在 0 点，屏上的日期可能旧将近一天。
 
     while True:
         try:
@@ -772,11 +777,19 @@ async def cmd_watch(args) -> int:
             # 连上之后用价签上报的 t= 核实（见 sync_once 里的 may_skip_if_alive）。
             log("价签出现了（可能刚上电，也可能我刚才只是没扫到）→ 连上核实。", args.log)
 
-        if reappeared or due_time or due_wx:
+        # 跨天：本地日期跟上次推过的不一样了 -> 主动推一次（时间+日期，顺带天气）
+        today    = time.strftime("%Y-%m-%d")
+        prev_day = pushed_day.get(addr)
+        new_day  = (prev_day is not None) and (prev_day != today)
+        if new_day:
+            log("跨到新的一天（本地 " + today + "，上次推的是 " + str(prev_day)
+                + "）→ 主动推一次，把日期/变天补齐", args.log)
+
+        if reappeared or due_time or due_wx or new_day:
             do_wx = reappeared or due_wx
             # 2026-10-01（用户要求）：推天气的时候把时间一起带上（合并成一条命令），
             # 这样每次推天气都顺便对一次表 —— 所以 do_wx 也就意味着 do_time。
-            do_time = reappeared or due_time or do_wx
+            do_time = reappeared or due_time or do_wx or new_day
             if await sync_once(dev, adv, args, do_time, do_wx, last_wx.setdefault(addr, {}),
                                last_alert.setdefault(addr, {}),
                                may_skip_if_alive=(reappeared and not (due_time or due_wx))):
@@ -785,6 +798,7 @@ async def cmd_watch(args) -> int:
                     last_time[addr] = time.monotonic()
                 if do_wx:
                     last_wx_t[addr] = time.monotonic()
+                pushed_day[addr] = today          # 这一天推完了，0 点后才会再触发
             else:
                 await asyncio.sleep(5)
         await asyncio.sleep(args.poll)
