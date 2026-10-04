@@ -4205,6 +4205,7 @@ ZK_AON_SW2    = ZK_AON_BASE + 0x78
 ZK_AON_PSC_CMD= ZK_AON_BASE + 0x80
 ZK_AON_PSC_OPC= ZK_AON_BASE + 0x84
 ZK_AON_MCUREL = ZK_AON_BASE + 0x88
+ZK_AON_TMRVAL = ZK_AON_BASE + 0x90   # TIMER_VALUE：往哪个计数器里"装"值的**暂存寄存器**
 ZK_AON_TIMERV = ZK_AON_BASE + 0x94
 
 # TIMER_VAL（0xA000C594）是个**复用**寄存器：它反映哪个计数器，由 AON_PAD_CTL1
@@ -4552,7 +4553,7 @@ def _zk_err_text(v):
     return ZK_BLE_ERR_NAME.get(v, '未知错误码 0x%02X' % v)
 
 
-def _zk_say_timebase(words, padctl1=None):
+def _zk_say_timebase(words, regs=None):
     """build 59：把时基那一组（word 104..111）翻译成人话
 
     背景：CYCCNT 数的是 **CPU 周期**，而 GR5513 的主频会变（空闲 16 MHz、刷屏/连
@@ -4595,24 +4596,43 @@ def _zk_say_timebase(words, padctl1=None):
         say("      ⚠ 两个来源都不靠谱，用的是名义值 %d —— 只能保证量级对。" % hz)
     say("    AON 计数器原始值 = %d   累计 tick = %d（÷ 频率 ≈ %d 秒）"
         % (raw, ticks, ticks // max(1, hz)))
-    say("    异常（计数器倒退/被复位）= %d 次   长阻塞补记（>1 秒）= %d 次"
-        % (bad, jumps))
+    say("    计数器「向上跳」= %d 次   长阻塞补记（>1 秒）= %d 次" % (bad, jumps))
+    regs = regs or {}
+    padctl1 = regs.get('padctl1')
     if padctl1 is not None:
         sel = (padctl1 >> 30) & 0x3
         say("    AON_PAD_CTL1 = 0x%08X   TIMER_READ_SEL = %d → %s"
             % (padctl1, sel, ZK_TIMER_READ_SEL.get(sel, '?')))
         if sel != 2:
             say("      ⚠ 选择子不是 SLP_TIMER —— 上面那个「AON 计数器」读的其实是"
-                "另一个计数器！")
+                "另一个计数器，这一整段都不可信！")
     if bad:
+        # 2026-10-04 实测对账（三组独立窗口）：
+        #   累计 tick 的增量 − 计数器净降量 = "向上跳"的总量；÷ bad 次数 =
+        #   每次跳多少 tick。两组窗口给出 653413 / 653432（差 0.003%），
+        #   换算过来正好是 **24.00 秒**；另一组是 816716 = 29.99 秒。
+        #   也就是说：**有人在周期性地把 AON 睡眠定时器重新装载**（24 秒 / 30 秒 一轮），
+        #   每次装载，计数器就"往上跳"一次 → 固件把它记成一次"异常"。
+        #   代价只有一个"读取间隔"（主循环 ~5 ms 一轮），不是把整段时间丢了 ——
+        #   同期对账：593 秒里累计 tick 走了 593.03 秒，对得上。
+        per = ticks // bad if bad else 0
+        if per and hz:
+            say("      累计 tick ÷ 向上跳次数 = %d tick ≈ %.1f 秒"
+                "（若这些跳都是「重新装载」，这就是平均装载值）"
+                % (per, per / float(hz)))
         if padctl1 is not None and ((padctl1 >> 30) & 0x3) != 2:
-            say("      ↑ 对上了：TIMER_VAL 是个**复用**寄存器（读哪个计数器由上面的"
-                "TIMER_READ_SEL 选），")
-            say("        固件直接读 AON->TIMER_VAL、从没设过这个选择子 —— 别的代码"
-                "（SDK 睡眠路径/看门狗/日历）")
-            say("        把选择子挪走一次，下一条读数就换了计数器，差值当然没意义 → bad++。")
+            say("      ↑ 先修上面那个选择子：读的不是 SLP_TIMER，这个数没意义。")
+        elif per and 0 < per / float(hz) < 120:
+            say("      → 这**不是故障**：有人在按 ~%.0f 秒的周期把睡眠定时器重新装载"
+                "（SDK 的电源管理/某个周期定时器）。"
+                % (per / float(hz)))
+            say("        每次只丢掉一个读取间隔（主循环 ~5 ms），所以时基照样准 ——")
+            say("        「时基实测 比值 ≈ 1.000」和上面的累计 tick 都能对上。")
         else:
-            say("      ⚠ bad 不是 0：要么计数器被复位过，要么方向搞反了（把这行发我）")
+            say("      ⚠ 这个数偏大/偏怪，把这行发我。")
+    tmrval = regs.get('tmrval')
+    if tmrval is not None:
+        say("    AON TIMER_VALUE（装载暂存）= %s" % (tmrval if tmrval else '读不回来/是 0'))
 
 
 def _zk_say_ble_experiment(words):
@@ -4734,7 +4754,7 @@ def _zk_say_ble_experiment(words):
                 say("      → 停了又没能重开，空中可能已经没有我们的包了 —— 把这段发我。")
 
 
-def _zk_say_epd_service(words, padctl1=None):
+def _zk_say_epd_service(words, regs=None):
     """build 21：网页连上来之后到底发生了什么（GATT 服务 / 推图 / 刷屏）"""
     (svc_err, svc_hdl, conn_cnt, conn_idx, cccd, cmd_cnt, last_cmd,
      chunks, last_flags, img_bw, img_red, rle_out, legacy,
@@ -4912,7 +4932,7 @@ def _zk_say_epd_service(words, padctl1=None):
     #  更高），于是"毫秒"快 3~4.8 倍 —— 日历每 ~8 小时跨一天就是这么来的。
     #  这一段把「标定 → 选用 → 现场」全译出来，好判断它到底有没有生效。
     if len(words) > 111:
-        _zk_say_timebase(words, padctl1)
+        _zk_say_timebase(words, regs)
 
     # ---- build 31：电池 + 片内温度（表头右上角那两个数）----
     if len(words) > 92:
@@ -5151,6 +5171,7 @@ def zkstatus():
         s['sw2'] = rd(ZK_AON_SW2)
         s['padctl0'] = rd(ZK_AON_PADCTL0)
         s['padctl1'] = rd(ZK_AON_PADCTL1)
+        s['tmrval']  = rd(ZK_AON_TMRVAL)
         s['snsadc'] = rd(ZK_AON_SNSADC)
         s['psc'] = rd(ZK_AON_PSC_CMD)
         s['psc_opc'] = rd(ZK_AON_PSC_OPC)
@@ -5608,7 +5629,8 @@ def zkstatus():
             if build >= 19 and len(words) >= 53:
                 _zk_say_ble_experiment(words)
             if build >= 21 and len(words) >= 77:
-                _zk_say_epd_service(words, last.get('padctl1'))
+                _zk_say_epd_service(words, {'padctl1': last.get('padctl1'),
+                                            'tmrval':  last.get('tmrval')})
         else:
             say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
                 % build)
