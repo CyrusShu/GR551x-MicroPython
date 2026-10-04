@@ -917,3 +917,90 @@ SDK 自己的每个访问点都是**先选再读**（`gr55xx_ll_calendar.h` 的
 而照单全收 —— 那才是"日历突然跨一天"的隐患。要彻底干净，得让固件
 **自己拥有一个计数器**（这正是 build 75 卡住的那个问题），或者至少把
 "向上跳"和"读取间隔补偿"分开计数。
+
+## 11. 啃睡眠（第二版，2026-10-04 晚）—— build 75 为什么挂死：**暖启动没接**
+
+用户："先啃睡眠吧，之前你趟过坑。" 这次把 build 75 的现场翻了个底朝天，找到了**确定性的根因**。
+
+### ① 直接根因：深睡唤醒是"暖启动"，而我们的 `main_init()` 无视了它
+
+GR551x 的启动链是：
+
+```
+Reset_Handler:  bl SystemInit  →  bl main_init        ← 注意：不是 main()
+```
+
+SDK 自带的 `main_init()`（`platform/soc/common/gr_platform.c`，`__WEAK`）长这样：
+
+```c
+void main_init(void) {
+    boot_mode_t boot_flag = pwr_mgmt_get_wakeup_flag();
+    if (COLD_BOOT == boot_flag) { __main(); }          /* 冷启动：正常跑 */
+    else { warm_boot_process(); for (;;) { } }         /* 暖启动：恢复现场，永不返回 */
+}
+```
+
+**深睡唤醒 = 从复位向量重新开始**（RAM 保持、上下文靠 `pwr_mgmt_warm_boot()` 恢复）。
+所以那条 else 分支是必需的。而**我们那份 `main_init()`（build 30 左右接管的）是
+故意不看这个 flag 的**（见 `Src/main.c` 里那段注释：怕从 bootloader 跳进来时判错、
+导致 `main()` 永远不被调用），永远走 `__main()`。
+
+后果：一开睡眠 → 睡下去 → 醒来（暖启动）→ 我们把暖启动当冷启动 →
+**重跑 C 运行时（`__main()` 会清 .bss、拷 .data）+ 重新初始化 BLE 协议栈** →
+状态全乱 → 卡死。
+
+**证据**（build 75 那两份 status）：
+
+| 现场 | 读数 | 说明 |
+|---|---|---|
+| `boot_count` | **2** | `main_init` 进了**两次**，而那次没有别的复位源 —— 一次冷启动 + 一次暖启动 |
+| PC 落点 | `0x30009C38` = `pwr_mgmt_schedule+0x4c`（正要 `bl save_context_and_enter_sleep`）| 第一次循环就进了睡眠 |
+| 另一份 PC | `0x3000999A` = `pwr_mgmt_shutdown_patch` 入口，栈上有 `pwr_enter_sleep_check`、`sys_device_sram_get` | 醒来后在 RAM patch 里打转 |
+| `heart` | 1 | 主循环只跑了一圈 |
+| `AON 计数器` | 连读两次 `0xFFFFFFFF` | 睡眠定时器被装成 `APP_TIMER_OVERFLOW_VALUE`（=0xFFFFFFFF），所以我们的时基读到死值 |
+
+### ② 第二个坑（还没踩到，但一定会踩）：**SDK 自己占着 AON 睡眠定时器**
+
+`platform/soc/src/gr_soc.c` 的 `soc_init()` 里有：
+
+```c
+system_pmu_calibration_init(30000);        /* 自动 PMU 校准，默认周期 30 秒 */
+```
+
+而 `components/libraries/pmu_calibration/pmu_calibration.c` 里，这个"定时器"是拿
+**app_timer** 实现的，并且（内部 RC 那档 `CFG_LPCLK_INTERNAL_EN`）会按
+**500ms → 5s → 30s** 自适应地跑 LFRC32k 校准。`app_timer` 底层做的事是：
+
+```c
+hal_sleep_timer_config_and_start(PWR_SLP_TIMER_MODE_SINGLE, lpcycles);   /* 单一模式，反复重装 */
+```
+
+**也就是说：AON 睡眠定时器是 SDK 的，而且它一直在重装它。** 这正好解释了我们前两轮
+测到的"向上跳"：24.00 秒 / 30.00 秒的固定装载值 —— 那是 app_timer 下一次到期的倒计时。
+
+我们的毫秒时基（build 59）恰恰是**读这同一个定时器**的当前值。
+
+* 今天（不睡）只是丢几个毫秒，无所谓；
+* **一旦真睡下去**，SDK 会把它当"倒计时唤醒源"用（一睡可能就是几十秒），
+  我们的时基会把整段判成"向上跳"→ **整段时间丢掉 → 屏上的钟倒退**。
+
+所以睡眠版的**前提**是：时基必须先从这个定时器上搬走。
+
+### ③ 方案（四步，每步都能单独刷机验证 + 一键回退）
+
+| 步 | 做什么 | 为什么这么排 |
+|---|---|---|
+| **1** | **时基搬家**：不用 AON 睡眠定时器，改用 **AON 日历/RTC**（`hal_calendar_*`，AON 域里有完整的年月日时分秒 + 毫秒 + 闹钟） | 一石四鸟：① 不再跟 SDK 抢睡眠定时器；② "现在几点"变成**读寄存器**，换天/每分钟/报 `t=` 都不用再靠累加；③ AON 域有电就不丢，**跨软复位、跨刷固件都还在**（顺手解决 backlog 第 15 条的前半段）；④ 它的**闹钟能当唤醒源**，正好是第 4 步长睡要用的 |
+| **2** | **把暖启动这条路接回来**：`main_init()` 按 `pwr_mgmt_get_wakeup_flag()` 分支；**加保险** —— RAM 里没有"我真的睡过"的魔数就退回冷启动（魔数由 `app_prepare_for_sleep` 回调在睡下去前写） | 万一那个 flag 在"从 bootloader 跳进来"时也报暖启动，有保险就不会变砖 |
+| **3** | 打开 `PMR_MGMT_SLEEP_MODE`，并注册 `app_prepare_for_sleep` —— **正在刷屏（16~18 秒）时拒睡** | 刷屏是长时间阻塞，中间被睡下去会把屏刷坏 |
+| **4** | 长睡：用日历闹钟睡到"下一个要干活的时刻"（整分/换天/下一次天气） | 这才是 CR2450 想要的那种省电 |
+
+**本轮只做了"探路"**：给 `status.sh` 加了一段**纯只读**的探针（不需要刷机），
+把决策要看的两件事直接印出来：
+
+* `AON 日历/RTC（CALENDAR_TIMER_CTL）`：EN / CLK_SEL / WRAP_CNT / 中断使能 ——
+  看那颗硬件 RTC 现在是不是空着的（EN=0 = 没人用，可以拿过来）；
+* `PWR_RET01 的 WAKE_UP_SEL`：现在允许哪些唤醒源（SLEEP_TIMER / BLE / CALENDAR / …）——
+  第 4 步要加的 `CALENDAR` 就在这个字段里（`AON_PWR_REG01_WAKE_UP_SEL_CALENDAR`）。
+
+拿这两个读数 + `pwr_mgmt_get_wakeup_flag()` 的行为，就能定第 1、2 步的具体做法。

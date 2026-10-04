@@ -4199,6 +4199,7 @@ ZK_AON_SNSADC = ZK_AON_BASE + 0x08   # SNSADC_CFG：ADC 的**唯一**配置寄�
                                      #（通道 CHN_P/CHN_N + 参考 REF_VALUE + VBAT_EN 全在里面，
                                      #  谁最后调 hal_adc_init() 就听谁的 —— 见 build 42 那段）
 ZK_AON_PADCTL0= ZK_AON_BASE + 0x50
+ZK_AON_CALCTL = ZK_AON_BASE + 0x18   # CALENDAR_TIMER_CTL：AON 日历（RTC）的开关和时钟源
 ZK_AON_PADCTL1= ZK_AON_BASE + 0x5C   # ⚠ 高 2 位 TIMER_READ_SEL 决定 AON->TIMER_VAL 读的是哪个计数器
 ZK_AON_SW1    = ZK_AON_BASE + 0x60
 ZK_AON_SW2    = ZK_AON_BASE + 0x78
@@ -5170,6 +5171,7 @@ def zkstatus():
         s['sw1'] = rd(ZK_AON_SW1)
         s['sw2'] = rd(ZK_AON_SW2)
         s['padctl0'] = rd(ZK_AON_PADCTL0)
+        s['calctl']  = rd(ZK_AON_CALCTL)
         s['padctl1'] = rd(ZK_AON_PADCTL1)
         s['tmrval']  = rd(ZK_AON_TMRVAL)
         s['snsadc'] = rd(ZK_AON_SNSADC)
@@ -5332,6 +5334,32 @@ def zkstatus():
             say("      ✅ 停在**电池**通道。")
     say("    WDT LOAD/VALUE/CTRL/RIS = %s"
         % ' '.join(('0x%08X' % v) if v is not None else 'n/a' for v in last['wdt']))
+
+    # ---- AON 日历（RTC）/ 唤醒源：要不要把时基搬到日历上，就看这一段 ----
+    cc = last.get('calctl')
+    pw = last.get('pwrr01')
+    if cc is not None:
+        say("")
+        say("  AON 日历/RTC（CALENDAR_TIMER_CTL = 0x%08X）:" % cc)
+        say("     EN=%d   CLK_SEL=%d   WRAP_CNT=%d   闹钟中断=%s   回绕中断=%s"
+            % (cc & 1, (cc >> 8) & 7, (cc >> 4) & 0xF,
+               '开' if (cc >> 12) & 1 else '关', '开' if (cc >> 13) & 1 else '关'))
+        if not (cc & 1):
+            say("     → **日历没在跑**（EN=0）—— 也就是说这颗价签上现在没人用它。")
+            say("       它是 AON 域里的硬件 RTC（hal_calendar_*：能直接读写年月日时分秒，")
+            say("       还有闹钟能当唤醒源）—— 拿它当「绝对时间」比我们现在借 SDK 的")
+            say("       睡眠定时器干净得多，而且跨软复位/刷固件都不丢。")
+        else:
+            say("     → 日历已经在跑了 —— 先别抢，搞清楚是谁开的（SDK? ROM?）。")
+    if pw is not None:
+        sel = (pw >> 24) & 0x3F
+        names = []
+        for bit, nm in ((1, 'SLEEP_TIMER'), (2, 'EXT_WKUP'), (4, 'BLE'),
+                        (8, 'CALENDAR'), (0x10, 'PMU_BOD'), (0x20, 'MSIO_COMP')):
+            if sel & bit:
+                names.append(nm)
+        say("    PWR_RET01 的 WAKE_UP_SEL = 0x%02X  → 允许的唤醒源：%s"
+            % (sel, '/'.join(names) if names else '（一个都没开）'))
 
     # ---- PSC（电源状态控制器）：自研固件卡就卡在这上面 ----
     psc = last.get('psc')
