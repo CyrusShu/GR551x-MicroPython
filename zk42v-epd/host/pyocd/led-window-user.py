@@ -4199,12 +4199,26 @@ ZK_AON_SNSADC = ZK_AON_BASE + 0x08   # SNSADC_CFG：ADC 的**唯一**配置寄�
                                      #（通道 CHN_P/CHN_N + 参考 REF_VALUE + VBAT_EN 全在里面，
                                      #  谁最后调 hal_adc_init() 就听谁的 —— 见 build 42 那段）
 ZK_AON_PADCTL0= ZK_AON_BASE + 0x50
+ZK_AON_PADCTL1= ZK_AON_BASE + 0x5C   # ⚠ 高 2 位 TIMER_READ_SEL 决定 AON->TIMER_VAL 读的是哪个计数器
 ZK_AON_SW1    = ZK_AON_BASE + 0x60
 ZK_AON_SW2    = ZK_AON_BASE + 0x78
 ZK_AON_PSC_CMD= ZK_AON_BASE + 0x80
 ZK_AON_PSC_OPC= ZK_AON_BASE + 0x84
 ZK_AON_MCUREL = ZK_AON_BASE + 0x88
 ZK_AON_TIMERV = ZK_AON_BASE + 0x94
+
+# TIMER_VAL（0xA000C594）是个**复用**寄存器：它反映哪个计数器，由 AON_PAD_CTL1
+# 的第 30~31 位（TIMER_READ_SEL）选。SDK 自己的每个访问点都会**先选再读**
+# （gr55xx_ll_calendar.h 的 ll_calendar_get_counter / gr55xx_ll_aon_wdt.h 一样），
+# 而我们的固件是拿 AON->TIMER_VAL 当"自由计数器"直接读的 —— 一旦别的代码
+# （SDK 睡眠路径 / 看门狗 / 日历）把选择子挪走，我们下一条读到的就**换成另一个计数器**，
+# 差值毫无意义。固件里那个 tb_bad 计数（"异常（计数器倒退/被复位）"）多半就是这么来的。
+ZK_TIMER_READ_SEL = {
+    0: 'CAL_TIMER（日历计数器）',
+    1: 'AON_WDT（看门狗）',
+    2: 'SLP_TIMER（睡眠定时器 ← 我们想要的那个）',
+    3: 'CAL_ALARM（日历闹钟）',
+}
 
 # BLE 协议栈自己的调度中断就挂在 NVIC 的 IRQ1/IRQ2 上（GR551xx.h：
 # BLE_SDK_IRQn=1 "BLE_SDK_SCHEDULE"、BLE_IRQn=2 "BLE Interrupt"）。
@@ -4538,7 +4552,7 @@ def _zk_err_text(v):
     return ZK_BLE_ERR_NAME.get(v, '未知错误码 0x%02X' % v)
 
 
-def _zk_say_timebase(words):
+def _zk_say_timebase(words, padctl1=None):
     """build 59：把时基那一组（word 104..111）翻译成人话
 
     背景：CYCCNT 数的是 **CPU 周期**，而 GR5513 的主频会变（空闲 16 MHz、刷屏/连
@@ -4583,8 +4597,22 @@ def _zk_say_timebase(words):
         % (raw, ticks, ticks // max(1, hz)))
     say("    异常（计数器倒退/被复位）= %d 次   长阻塞补记（>1 秒）= %d 次"
         % (bad, jumps))
+    if padctl1 is not None:
+        sel = (padctl1 >> 30) & 0x3
+        say("    AON_PAD_CTL1 = 0x%08X   TIMER_READ_SEL = %d → %s"
+            % (padctl1, sel, ZK_TIMER_READ_SEL.get(sel, '?')))
+        if sel != 2:
+            say("      ⚠ 选择子不是 SLP_TIMER —— 上面那个「AON 计数器」读的其实是"
+                "另一个计数器！")
     if bad:
-        say("      ⚠ bad 不是 0：要么计数器被复位过，要么方向搞反了（把这行发我）")
+        if padctl1 is not None and ((padctl1 >> 30) & 0x3) != 2:
+            say("      ↑ 对上了：TIMER_VAL 是个**复用**寄存器（读哪个计数器由上面的"
+                "TIMER_READ_SEL 选），")
+            say("        固件直接读 AON->TIMER_VAL、从没设过这个选择子 —— 别的代码"
+                "（SDK 睡眠路径/看门狗/日历）")
+            say("        把选择子挪走一次，下一条读数就换了计数器，差值当然没意义 → bad++。")
+        else:
+            say("      ⚠ bad 不是 0：要么计数器被复位过，要么方向搞反了（把这行发我）")
 
 
 def _zk_say_ble_experiment(words):
@@ -4706,7 +4734,7 @@ def _zk_say_ble_experiment(words):
                 say("      → 停了又没能重开，空中可能已经没有我们的包了 —— 把这段发我。")
 
 
-def _zk_say_epd_service(words):
+def _zk_say_epd_service(words, padctl1=None):
     """build 21：网页连上来之后到底发生了什么（GATT 服务 / 推图 / 刷屏）"""
     (svc_err, svc_hdl, conn_cnt, conn_idx, cccd, cmd_cnt, last_cmd,
      chunks, last_flags, img_bw, img_red, rle_out, legacy,
@@ -4884,7 +4912,7 @@ def _zk_say_epd_service(words):
     #  更高），于是"毫秒"快 3~4.8 倍 —— 日历每 ~8 小时跨一天就是这么来的。
     #  这一段把「标定 → 选用 → 现场」全译出来，好判断它到底有没有生效。
     if len(words) > 111:
-        _zk_say_timebase(words)
+        _zk_say_timebase(words, padctl1)
 
     # ---- build 31：电池 + 片内温度（表头右上角那两个数）----
     if len(words) > 92:
@@ -5122,6 +5150,7 @@ def zkstatus():
         s['sw1'] = rd(ZK_AON_SW1)
         s['sw2'] = rd(ZK_AON_SW2)
         s['padctl0'] = rd(ZK_AON_PADCTL0)
+        s['padctl1'] = rd(ZK_AON_PADCTL1)
         s['snsadc'] = rd(ZK_AON_SNSADC)
         s['psc'] = rd(ZK_AON_PSC_CMD)
         s['psc_opc'] = rd(ZK_AON_PSC_OPC)
@@ -5476,14 +5505,21 @@ def zkstatus():
     tb_now = rd(ZK_DBG_ADDR + 4 * 88)
     if (tb_build is not None and tb_build >= 59) and tb_now is not None:
         n_pt = max(8, int(float(_env_str('TICK_WATCH_S', '12')) * 4))   # 每 250ms 采一个点
-        samples = []
+        # ⚠ 这个名字**不能叫 samples** —— 上面「多次采样 PC/复位」那一组已经用了
+        #   samples（每个元素是个字典，s['pc']/s['dhcsr']/s['words']），下面
+        #   「结论」那一段还要拿它算 rst_hits / boots。2026-10-04 我把这段从
+        #   "隔 5 秒读两次"改成密集采样时顺手复用了这个名字，结果把外面那份
+        #   字典列表整个覆盖成 (时间, 计数) 的元组，跑到结论就炸：
+        #       C Error: tuple indices must be integers or slices, not str
+        #   实测日志 status-20261004-180049.log 就是这么断在「结论」那行的。
+        tick_pts = []
         for _ in range(n_pt):
-            samples.append((time.monotonic(), rd(ZK_DBG_ADDR + 4 * 88)))
+            tick_pts.append((time.monotonic(), rd(ZK_DBG_ADDR + 4 * 88)))
             time.sleep(0.25)
         dm = 0.0
         dh = 0.0
         moved = 0
-        for (h0, v0), (h1, v1) in zip(samples, samples[1:]):
+        for (h0, v0), (h1, v1) in zip(tick_pts, tick_pts[1:]):
             if v0 is None or v1 is None:
                 continue
             d = (v1 - v0) & 0xFFFFFFFF
@@ -5572,7 +5608,7 @@ def zkstatus():
             if build >= 19 and len(words) >= 53:
                 _zk_say_ble_experiment(words)
             if build >= 21 and len(words) >= 77:
-                _zk_say_epd_service(words)
+                _zk_say_epd_service(words, last.get('padctl1'))
         else:
             say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
                 % build)
