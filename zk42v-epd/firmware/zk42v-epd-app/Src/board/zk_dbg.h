@@ -23,7 +23,7 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   77u
+#define ZK_BUILD_ID   78u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -102,7 +102,7 @@ typedef struct
 #define ZK_FLAG_AON_TB       0x0020u   /* build 59：毫秒时基在跑 AON 定时器（不是 CYCCNT） */
 #define ZK_FLAG_PSAVE        0x0040u   /* 2026-10-03：省电版在跑（主循环睡眠 + 广播放宽） */
 
-#define ZK_DBG_WORDS 118
+#define ZK_DBG_WORDS 122
 
 typedef struct
 {
@@ -293,7 +293,22 @@ typedef struct
     uint32_t memo_cmds;           /* 115: 收到过多少次 0x7A SET_MEMO（纪念日提醒：生日高亮） */
     uint32_t alert_cmds;          /* 116: 收到过多少次 0x7C SET_ALERT（天气预警） */
     uint32_t alert_icon_cmds;     /* 117: 收到过多少次 0x7D SET_ALERT_ICON（预警图标编号） */
-    uint32_t rsv[ZK_DBG_WORDS - 118];
+
+    /* ---- build 78：AON 日历「探路」（啃睡眠的第一步）--------------------------
+       背景：要开睡眠，就得先把毫秒时基从 SDK 的睡眠定时器上搬走（SDK 的
+       PMU 校准 app_timer 一直在重装它，实测装载值 816874 ≈ 30 秒）。
+       候选是 AON 域里的硬件日历，但这颗价签没有 32.768k 晶振、走内部 RC
+       （开机 DWT 标定 27230 Hz，只有标称 32768 的 83%）——
+       所以先量一件事：**日历计数器每秒走多少个 tick**。
+          ≈ 27230 → 它就是低功耗时钟的直出，折算要拿我们标定的频率；
+          ≈ 1     → 它是"秒计数器"，最省事，直接当绝对时间用；
+          ≈ 32768 → 它按标称折算，那就要自己换算。
+       这一版**不开睡眠**（ZK_PWR_SAVE 仍是 0），纯探路，行为不变。 */
+    uint32_t rtc_state;           /* 118: 0=还没动, 1=已经置了 EN */
+    uint32_t rtc_ctr;             /* 119: 最近一次读到的日历计数器原始值 */
+    uint32_t rtc_delta1s;         /* 120: 最近一次 1 秒间隔里它走了多少（关键数字） */
+    uint32_t rtc_reads;           /* 121: 成功读到计数器的次数 */
+    uint32_t rsv[ZK_DBG_WORDS - 122];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

@@ -31,6 +31,7 @@
 #include "zk_opt.h"          /* 画面选项：反色 / 旋转 180°（写屏前对整帧做变换） */
 #include "zk_bat.h"          /* 电池/温度：表头右上角要画 */
 #include "weather.h"         /* 天气码（手机下发）：表头画图标 */
+#include "zk_tick.h"         /* build 78：zk_tick_ms() / 临界区（读日历要跟时基共用一个寄存器） */
 
 #include "gr_includes.h"
 #include "ble.h"
@@ -124,6 +125,20 @@ static uint8_t  s_px0, s_py0, s_px1, s_py1;   /* 局刷窗口：x 是"字节列"
 static uint8_t  s_need_sleep;
 static uint8_t  s_need_cfg;          /* 该发「配置」那条通知了（见下面为什么不立刻发） */
 static uint8_t  s_need_time_report;  /* build 77：连上先主动报一次「我的钟还在走」 */
+
+/* ---- build 78：AON 日历「探路」---------------------------------------------
+   啃睡眠的第一步要把毫秒时基从 SDK 的睡眠定时器上搬走（SDK 一直在重装它）。
+   候选是 AON 域里的硬件日历计数器 —— 这里只做两件事：
+     ① 往 CALENDAR_TIMER_CTL 置 EN，让它按现成的 CLK_SEL 跑起来；
+     ② 每秒读一次，量「它一秒走多少 tick」。
+   ⚠ 读它必须借 AON->TIMER_VAL，而这个寄存器是**复用**的：ll_calendar_get_counter()
+     会把 AON_PAD_CTL1 的选择子挪到 CAL_TIMER，所以读完必须**立刻恢复成 SLP_TIMER**
+     （我们的毫秒时基 tb_aon_raw() 读的就是它），并整段关中断。
+   ⚠ 这一版不开睡眠（ZK_PWR_SAVE=0），纯探路，行为跟 build 77 一样。 */
+static uint8_t  s_rtc_on;
+static uint32_t s_rtc_ms;
+static uint32_t s_rtc_prev;
+
 static uint32_t s_wr_seen;           /* 这一条连接里收到第几块 WRITE_IMAGE（用来认老格式） */
 
 static uint8_t  s_plane;             /* 0 = 黑白面, 1 = 红面 */
@@ -1277,14 +1292,40 @@ void zk_epd_svc_poll(uint32_t now_ms)
     {
         s_need_time_report = 0;
         /* s_ts 是 0 也照发（t=0）——"不回话"和"回话说我没时间"必须分得开：
-           前者说明它忙着刷屏（主循环被 16 秒的全刷占着），基站该**这轮先不动**；
-           后者才是真的刚上电、该整包重推。 */
+          前者说明它忙着刷屏（主循环被 16 秒的全刷占着），基站该**这轮先不动**；
+          后者才是真的刚上电、该整包重推。 */
         uint8_t  tb[8];
         uint8_t *q = tb;
 
         memcpy(q, "t=", 2); q += 2;
         q = zk_put_u32(q, s_ts);
         zk_notify(tb, (uint16_t)(q - tb));
+    }
+
+    /* build 78 探路：AON 日历计数器一秒走多少 tick（判据见上面那段注释） */
+    if (!s_rtc_on)
+    {
+        s_rtc_on = 1;
+        AON->CALENDAR_TIMER_CTL |= AON_CALENDAR_TIMER_CTL_EN;
+        g_dbg.rtc_state = 1;
+    }
+    if ((uint32_t)(now_ms - s_rtc_ms) >= 1000u)
+    {
+        uint32_t pm = zk_tick_irq_save();
+        uint32_t c  = ll_calendar_get_counter();      /* ← 会改 PAD_CTL1 的选择子 */
+
+        MODIFY_REG(AON->AON_PAD_CTL1, AON_PAD_CTL1_TIMER_READ_SEL,
+                   AON_PAD_CTL1_TIMER_READ_SEL_SLP_TIMER);   /* 立刻还回去 */
+        zk_tick_irq_restore(pm);
+
+        if (s_rtc_ms)
+        {
+            g_dbg.rtc_delta1s = c - s_rtc_prev;       /* 无符号减，绕圈也算对 */
+            g_dbg.rtc_reads++;
+        }
+        s_rtc_prev = c;
+        s_rtc_ms   = now_ms;
+        g_dbg.rtc_ctr = c;
     }
 
     /* 0x72 的回报：电池刚被强制读了一次（主循环里 zk_bat_poll() 跑在我们前面），

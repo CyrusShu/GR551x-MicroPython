@@ -1341,7 +1341,7 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 118
+ZK_DBG_WORDS = 122
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4934,6 +4934,29 @@ def _zk_say_epd_service(words, regs=None):
     #  这一段把「标定 → 选用 → 现场」全译出来，好判断它到底有没有生效。
     if len(words) > 111:
         _zk_say_timebase(words, regs)
+
+    # ---- build 78：AON 日历「探路」（啃睡眠第一步）----
+    if len(words) > 121:
+        st, ctr, d1, rd = words[118], words[119], words[120], words[121]
+        say("")
+        say("  AON 日历计数器探路（build 78）：")
+        say("    状态 = %s   读到 %d 次   最新原始计数 = 0x%08X" % (
+            {0: '还没动', 1: '已置 EN（EN=1，让它跑）'}.get(st, '0x%X' % st), rd, ctr))
+        if rd:
+            say("    **最近 1 秒里它走了 %d 个 tick**" % d1)
+            if 20000 <= d1 <= 40000:
+                say("      → 它就是低功耗时钟直出（≈27.2 kHz）—— 折算得用我们标定的频率，")
+                say("        但至少说明它是**连续计数器**，能当细粒度时基用 ✅")
+            elif d1 <= 4:
+                say("      → 它是**秒计数器**（1 Hz）—— 最省事：直接当绝对时间用 ✅")
+            elif d1 > 40000:
+                say("      → 走得比 LP 时钟还快，看看 CLK_SEL 选的是不是主时钟。")
+            else:
+                say("      → 数字怪，把这一行发我。")
+        else:
+            say("    （还没读满一秒，或者计数器没在动 —— 再跑一次）")
+        say("    判据：隔 10 分钟再跑一次，比较这两个原始计数差 / 真实秒数。")
+        say("      （计数器 32 位、27 kHz 下 43.8 小时才绕圈，10 分钟的对拍不用管绕圈。）")
 
     # ---- build 31：电池 + 片内温度（表头右上角那两个数）----
     if len(words) > 92:
