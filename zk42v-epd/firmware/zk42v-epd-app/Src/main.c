@@ -27,6 +27,7 @@
 #include "gr55xx_sys.h"      /* sys_swd_enable() */
 #include "gr55xx_pwr.h"      /* 2026-10-03 省电：pwr_mgmt_mode_set(PMR_MGMT_SLEEP_MODE) */
 #include "app_timer.h"       /* 省电版的主循环节拍（建在 AON 睡眠定时器上） */
+#include "app_pwr_mgmt.h"    /* build 82：注册睡/醒回调 */
 #include "zk_pwr.h"          /* 省电旋钮（ZK_PWR_SAVE / ZK_TICK_MS / ZK_ADV_INTERVAL） */
 
 #include <string.h>          /* memset */
@@ -473,6 +474,76 @@ static void zk_tick_cb(void *p_ctx)
 }
 #endif
 
+/* =====================================================================
+ *  build 82：睡/醒之间「补时间」（睡眠第 3 步的 B）
+ *
+ *  为什么需要它：SDK 的电源管理拿 AON 睡眠定时器当「倒计时唤醒源」，
+ *  而我们（build 59）把这个定时器的当前值当自由计数器用。一睡下去，
+ *  倒计时会被重装 -> 我们的时基读到的差值失去意义 -> 睡掉的那段要么被丢
+ *  （钟变慢）、要么被算成天文数字（钟跳走）。
+ *
+ *  办法（不碰日历）：睡之前把「定时器当前值 + 装载值」记下来，醒来第一件事
+ *  再读一次，睡掉的 tick = 睡前值 - 醒后值（递减计数器，无符号减法，
+ *  中间绕圈也算对），把这几个 tick 直接补进时基的累计器里。
+ *
+ *  注册给 SDK 的两个回调（见 app_pwr_mgmt.h）：
+ *     app_prepare_for_sleep : 睡前调用；返回 false = 现在别睡
+ *     app_wake_up_ind       : 醒来后调用（SDK 的 pwr_wake_up_ind 里逐个调）
+ *  ZK_PWR_SAVE=0 时这两个回调不会被调用（系统不进睡眠），
+ *  所以这一版行为跟 build 81 一样，只是把「补时间」这套家伙就位。
+ * ===================================================================== */
+static volatile uint32_t s_sleep_pre;
+static volatile uint32_t s_sleep_load;
+static volatile uint8_t  s_sleep_armed;
+
+/* 把这 ticks 个 tick 直接记进毫秒时基的累计器（并跟当前计数器对齐） */
+static void zk_tick_aon_credit(uint32_t ticks)
+{
+    uint32_t pm = zk_tick_irq_save();
+
+    s_tick_aon.tk_lo += ticks;
+    if (s_tick_aon.tk_lo < ticks)
+    {
+        s_tick_aon.tk_hi++;
+    }
+    s_tick_aon.last = tb_aon_norm(tb_aon_raw());   /* 对齐，免得下次重复计 */
+    zk_tick_irq_restore(pm);
+}
+
+static bool zk_prepare_for_sleep(void)
+{
+    /* 魔数：证明「这次真的是睡下去过」，main_init 的暖启动分支只认它 */
+    g_dbg.warm_magic = ZK_WARM_MAGIC;
+    s_sleep_pre      = tb_aon_raw();
+    s_sleep_load     = AON->TIMER_VALUE;      /* 装载暂存（SDK 每次会重装） */
+    s_sleep_armed    = 1;
+    g_dbg.sleep_before = s_sleep_pre;
+    g_dbg.sleep_load   = s_sleep_load;
+    g_dbg.sleep_cnt++;
+    return true;                              /* true = 现在可以睡 */
+}
+
+static void zk_wake_up_ind(void)
+{
+    uint32_t post;
+    uint32_t ticks;
+
+    if (!s_sleep_armed)
+    {
+        return;
+    }
+    s_sleep_armed = 0;
+    post  = tb_aon_raw();
+    ticks = (uint32_t)(s_sleep_pre - post);   /* 递减计数器：无符号减法天然处理绕圈 */
+
+    zk_tick_aon_credit(ticks);                /* 把睡掉的时间补回去 */
+    g_dbg.sleep_after = post;
+    g_dbg.sleep_ticks = ticks;
+    g_dbg.sleep_ms    = (s_sleep_load) ? (uint32_t)(((uint64_t)ticks * 1000u) / s_aon_hz) : 0u;
+}
+
+static const app_sleep_callbacks_t s_zk_sleep_cb = { zk_prepare_for_sleep, zk_wake_up_ind };
+
 int main(void)
 {
     uint32_t t_prev;
@@ -701,6 +772,10 @@ int main(void)
     /* 停在这儿，心跳一直涨 —— 调试器随时进来都能看到「活着」的证据。
        （2026-10-04：睡眠那一路在这颗芯片上会卡死，见 board/zk_pwr.h 里的记录，
          所以 ZK_PWR_SAVE=0，走回"忙等"；广播间隔仍然放宽到 1 秒。） */
+    /* build 82：把睡前记数 / 醒来补时间 注册给 SDK 的电源管理 */
+    (void)pwr_register_sleep_cb(&s_zk_sleep_cb, WAKEUP_PRIORITY_LOW, TIM_PWR_ID);
+    g_dbg.sleep_reg = 1;
+
     zk_dbg_stage(ZK_STAGE_IDLE);
     for (;;)
     {

@@ -1341,7 +1341,7 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 127
+ZK_DBG_WORDS = 134
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4934,6 +4934,19 @@ def _zk_say_epd_service(words, regs=None):
     #  这一段把「标定 → 选用 → 现场」全译出来，好判断它到底有没有生效。
     if len(words) > 111:
         _zk_say_timebase(words, regs)
+
+    # ---- build 82：睡/醒「补时间」（睡眠第 3 步的 B）----
+    if len(words) > 133:
+        reg, cnt, bf2, af, ld, tk, ms = words[127:134]
+        say("")
+        say("  睡/醒「补时间」（build 82）：")
+        say("    回调注册 = %s   app_prepare_for_sleep 调过 %d 次"
+            % ('是' if reg else '没注册', cnt))
+        if cnt:
+            say("    睡前 %d -> 醒后 %d   装载值 %d   睡掉 %d tick ≈ %d ms"
+                % (bf2, af, ld, tk, ms))
+        else:
+            say("    → 还一次都没睡过（ZK_PWR_SAVE=0，正常）")
 
     # ---- build 80：暖启动（睡眠第 2 步）----
     if len(words) > 126:

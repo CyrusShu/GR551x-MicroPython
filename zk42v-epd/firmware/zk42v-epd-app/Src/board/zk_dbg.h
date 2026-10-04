@@ -23,7 +23,7 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   81u
+#define ZK_BUILD_ID   82u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -107,7 +107,7 @@ typedef struct
 
 #define ZK_FLAG_PSAVE        0x0040u   /* 2026-10-03：省电版在跑（主循环睡眠 + 广播放宽） */
 
-#define ZK_DBG_WORDS 127
+#define ZK_DBG_WORDS 134
 
 typedef struct
 {
@@ -322,7 +322,21 @@ typedef struct
     uint32_t boot_flag;           /* 124: 启动时 SDK 报的 boot mode */
     uint32_t warm_magic;          /* 125: 魔数（等于 ZK_WARM_MAGIC 才认暖启动） */
     uint32_t warm_hits;           /* 126: **自本次冷启动以来**走过几次暖启动（冷启动时清零）*/
-    uint32_t rsv[ZK_DBG_WORDS - 127];
+    /* ---- build 82：睡/醒之间「补时间」（睡眠第 3 步的 B）----------------------
+       sleep_reg    1 = 睡/醒回调注册上了
+       sleep_cnt    app_prepare_for_sleep 被调用几次
+       sleep_before / sleep_after  睡前 / 醒后 睡眠定时器当前值（递减）
+       sleep_load   睡前的装载值（TIMER_VALUE 暂存，SDK 每次重装）
+       sleep_ticks  这次睡掉多少 tick（= before - after）
+       sleep_ms     上面那些 tick 折算成毫秒（÷ 我们标定的 s_aon_hz） */
+    uint32_t sleep_reg;           /* 127 */
+    uint32_t sleep_cnt;           /* 128 */
+    uint32_t sleep_before;        /* 129 */
+    uint32_t sleep_after;         /* 130 */
+    uint32_t sleep_load;          /* 131 */
+    uint32_t sleep_ticks;         /* 132 */
+    uint32_t sleep_ms;            /* 133 */
+    uint32_t rsv[ZK_DBG_WORDS - 134];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */
