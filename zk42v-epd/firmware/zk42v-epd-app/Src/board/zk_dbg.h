@@ -23,7 +23,7 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   79u
+#define ZK_BUILD_ID   80u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -100,9 +100,14 @@ typedef struct
 #define ZK_FLAG_SWD_ON       0x0008u   /* sys_swd_enable() 调用成功 */
 #define ZK_FLAG_UDS_CLEARED  0x0010u   /* 清掉了 AON 里的「超深睡唤醒」标志 */
 #define ZK_FLAG_AON_TB       0x0020u   /* build 59：毫秒时基在跑 AON 定时器（不是 CYCCNT） */
+/* build 80：RAM 里那个「我真的睡下去过」的魔数。
+   main_init 只在 boot_flag != COLD_BOOT **且** RAM 里留着它时才认暖启动
+   （否则拿垃圾现场去调 warm_boot_process 会跑飞、板子变砖）。 */
+#define ZK_WARM_MAGIC        0x5A4B0A1Fu
+
 #define ZK_FLAG_PSAVE        0x0040u   /* 2026-10-03：省电版在跑（主循环睡眠 + 广播放宽） */
 
-#define ZK_DBG_WORDS 124
+#define ZK_DBG_WORDS 127
 
 typedef struct
 {
@@ -310,7 +315,14 @@ typedef struct
     uint32_t rtc_reads;           /* 121: 成功读到计数器的次数 */
     uint32_t rtc_calls;           /* 122: build78 第二版：这段代码被跑了几次（诊断用） */
     uint32_t rtc_now;             /* 123: build78 第二版：它看到的 zk_tick_ms()（诊断用） */
-    uint32_t rsv[ZK_DBG_WORDS - 124];
+    /* ---- build 80：暖启动（睡眠第 2 步）--------------------------------------
+       boot_flag  = pwr_mgmt_get_wakeup_flag() 启动时读到的值（0=COLD_BOOT, 1=WARM_BOOT）
+       warm_magic = 我们自己写的"真的睡下去过"的魔数（入睡前由 app_prepare_for_sleep 写）
+       warm_hits  = 走了 warm_boot_process() 的次数（正常一直是 0） */
+    uint32_t boot_flag;           /* 124: 启动时 SDK 报的 boot mode */
+    uint32_t warm_magic;          /* 125: 魔数（等于 ZK_WARM_MAGIC 才认暖启动） */
+    uint32_t warm_hits;           /* 126: 真的走了暖启动分支的次数 */
+    uint32_t rsv[ZK_DBG_WORDS - 127];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

@@ -1341,7 +1341,7 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 124
+ZK_DBG_WORDS = 127
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4934,6 +4934,22 @@ def _zk_say_epd_service(words, regs=None):
     #  这一段把「标定 → 选用 → 现场」全译出来，好判断它到底有没有生效。
     if len(words) > 111:
         _zk_say_timebase(words, regs)
+
+    # ---- build 80：暖启动（睡眠第 2 步）----
+    if len(words) > 126:
+        bf, wm, wh = words[124], words[125], words[126]
+        say("")
+        say("  暖启动通路（build 80）：")
+        say("    启动时 SDK 报的 boot mode = %d（%s）"
+            % (bf, {0: 'COLD_BOOT 冷启动', 1: 'WARM_BOOT 深睡唤醒'}.get(bf, '?')))
+        say("    RAM 里的「睡过」魔数 = 0x%08X（%s）   走暖启动分支的次数 = %d"
+            % (wm, '对得上' if wm == 0x5A4B0A1F else '空（没睡过/已清）', wh))
+        if bf != 0 and wm != 0x5A4B0A1F:
+            say("      → 冷启动时 flag 竟然报暖启动、而魔数不在 —— 保险生效了（走冷启动）")
+        if wh:
+            say("      ⚠ warm_hits 非 0 = 真的从深睡醒过来过")
+        else:
+            say("      → 没走过暖启动分支（现在 ZK_PWR_SAVE=0，不开睡眠，正常）")
 
     # ---- build 78：AON 日历「探路」（啃睡眠第一步）----
     if len(words) > 121:

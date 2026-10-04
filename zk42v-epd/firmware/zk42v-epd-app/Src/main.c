@@ -418,6 +418,34 @@ void main_init(void)
     g_dbg.stage    = ZK_STAGE_BOOT;
     g_dbg.build_id = ZK_BUILD_ID;
 
+    /* ---- 3) 暖启动（深睡唤醒）：build 80 起把 SDK 那条路接回来 ----------------
+     *
+     * GR551x 的深睡唤醒 = **从复位向量重新开始**，RAM 保持；SDK 靠
+     * `pwr_mgmt_warm_boot()` 把现场恢复回去（恢复成功后永不返回，直接从
+     * "睡下去那一点"继续跑）。所以 `main_init()` 必须在暖启动时调
+     * `warm_boot_process()`，而不是再跑一遍 `__main()` ——
+     * build 75 的睡眠挂死就是这么来的（重跑了 C 运行时 + 重初始化了 BLE 栈，
+     * 现场证据：boot_count 从 1 变 2、heart 只有 1、PC 停在 pwr_mgmt_schedule 里）。
+     *
+     * ⚠ 但**不能光看 flag 就信**：我们从 bootloader 直接跳进来的那种上电，
+     * 万一 AON 里的标志也报"暖启动"，而 RAM 里根本没有可恢复的现场，
+     * 调 warm_boot_process() 就会拿着垃圾现场跑飞、板子变砖。
+     * 所以加一道保险：**只有我们自己真的睡下去过（RAM 里留着魔数）才认**。
+     * 那个魔数由注册给 SDK 的 `app_prepare_for_sleep` 回调在入睡前写
+     * （见下面 ZK_PWR_SAVE 那一段），冷启动这里第一件事就是把它清掉。 */
+    {
+        extern void warm_boot_process(void);
+        boot_mode_t flag = pwr_mgmt_get_wakeup_flag();
+
+        g_dbg.boot_flag = (uint32_t)flag;
+        if (COLD_BOOT != flag && g_dbg.warm_magic == ZK_WARM_MAGIC)
+        {
+            g_dbg.warm_hits++;
+            warm_boot_process();          /* 成功的话永不返回 */
+        }
+        g_dbg.warm_magic = 0;             /* 保险不成立 → 老老实实冷启动 */
+    }
+
     __main();
 }
 
