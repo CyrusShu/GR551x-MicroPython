@@ -443,7 +443,13 @@ void main_init(void)
             g_dbg.warm_hits++;
             warm_boot_process();          /* 成功的话永不返回 */
         }
-        g_dbg.warm_magic = 0;             /* 保险不成立 → 老老实实冷启动 */
+        /* 冷启动这条路每次都把这两个字写一遍：warm_magic 是保险，
+           warm_hits 改成"**自本次冷启动以来**走过几次暖启动" ——
+           因为暖启动时 warm_boot_process() 永不返回，这里清不到它，
+           所以冷启动清零不会丢计数，却保证这个字不是没写过的 RAM 垃圾
+           （build 80 第一次跑就是这样：warm_hits 读出来是 1262079302）。 */
+        g_dbg.warm_magic = 0;
+        g_dbg.warm_hits  = 0;
     }
 
     __main();

@@ -23,7 +23,7 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   80u
+#define ZK_BUILD_ID   81u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -321,7 +321,7 @@ typedef struct
        warm_hits  = 走了 warm_boot_process() 的次数（正常一直是 0） */
     uint32_t boot_flag;           /* 124: 启动时 SDK 报的 boot mode */
     uint32_t warm_magic;          /* 125: 魔数（等于 ZK_WARM_MAGIC 才认暖启动） */
-    uint32_t warm_hits;           /* 126: 真的走了暖启动分支的次数 */
+    uint32_t warm_hits;           /* 126: **自本次冷启动以来**走过几次暖启动（冷启动时清零）*/
     uint32_t rsv[ZK_DBG_WORDS - 127];
 } zk_dbg_t;
 
