@@ -135,6 +135,12 @@ static uint8_t  s_need_time_report;  /* build 77：连上先主动报一次「�
      会把 AON_PAD_CTL1 的选择子挪到 CAL_TIMER，所以读完必须**立刻恢复成 SLP_TIMER**
      （我们的毫秒时基 tb_aon_raw() 读的就是它），并整段关中断。
    ⚠ 这一版不开睡眠（ZK_PWR_SAVE=0），纯探路，行为跟 build 77 一样。 */
+/* 2026-10-05：日历上的「休 / 班」表（基站 0x7E 下发，见下面 case 0x7E）。
+   每天 2 bit：0=普通 1=休(红) 2=班；一个月 8 字节。数据来自国务院公告，
+   由基站从 holidays.json 编好推下来 —— 固件里**不写死任何日期**。 */
+static uint8_t  s_hol_mask[8];
+static uint8_t  s_hol_yy, s_hol_mm;
+
 static uint8_t  s_rtc_on;
 static uint32_t s_rtc_ms;
 static uint32_t s_rtc_prev;
@@ -792,6 +798,24 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 memcpy(p, "t=", 2); p += 2;
                 p = zk_put_u32(p, s_ts);
                 zk_notify(buf, (uint16_t)(p - buf));
+            }
+            break;
+
+        /* 0x7E SET_HOLIDAY（2026-10-05）：本月每天的「休/班」
+         *   7E <yy> <mm> <8 字节>   每天 2 bit：0=普通 1=休 2=班
+         * 为什么由基站发：国务院每年 11 月改一次放假安排，烧进固件就得跟着刷机；
+         * 基站读 holidays.json 编好推下来，明年只改那个文件。 */
+        case 0x7E:
+            if (len >= 10u)
+            {
+                s_hol_yy = d[1];
+                s_hol_mm = d[2];
+                memcpy(s_hol_mask, d + 3, 8);
+                g_dbg.holiday_cmds++;
+                if (ZKGUI_MODE_PICTURE != s_mode)
+                {
+                    gui_request_redraw();
+                }
             }
             break;
 
