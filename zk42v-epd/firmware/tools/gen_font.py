@@ -112,6 +112,9 @@ MEMO_CHARS = list('付婧文生日快乐！周年纪念恭喜欢爸妈老婆儿�
 #   列表里挑出来的高频类型（外加级别色名，将来想写"橙色"也够用）。
 #   ⚠ 只进 SMALL_CHARS（11px），**不进 CJK_ORDER**：表头那格本来就用小一号的
 #   天气文字（zk_weather_name 也是 11px 那套），16px 那张表多存一份白占 2KB flash。
+# build 13-1（2026-10-05 计划）：日历上的「休 / 班」标记 —— 法定放假日/调休上班日。
+HOLIDAY_CHARS = list('休班')
+
 ALERT_CHARS = list('暴雨雷电大风台高温寒潮汐霜冻雾霾沙尘雹冰干旱洪涝地'
                    '橙黄红蓝白警报质灾森林火险道路结飞机颠簸臭氧雪冷海上交通'
                    '市内山泥流滑坡')
@@ -119,7 +122,8 @@ ALERT_CHARS = list('暴雨雷电大风台高温寒潮汐霜冻雾霾沙尘雹冰
 SMALL_CHARS = (['正', '冬', '腊', '闰', '年', '月'] +
                list('一二三四五六七八九十') + ZODIAC_CHARS + WEATHER_CHARS +
                CITY_CHARS + GANZHI_CHARS +
-               ALERT_CHARS)                    # build 71：预警类型名也要小字模
+               ALERT_CHARS +                  # build 71：预警类型名也要小字模
+               HOLIDAY_CHARS)                 # 2026-10-05：日历上的「休/班」
 
 # 页面用到的全部汉字，顺序 = C 里的索引顺序（zkgui.c 的 CJK_xxx 常量依赖它，
 # **改顺序必须同步改 zkgui.c**，新增的字只能往后加）。前 35 个是原来那套

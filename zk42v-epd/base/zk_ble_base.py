@@ -90,6 +90,9 @@ CMD_SET_CITY = 0x79             # [0x79, utf8 城市名]（build 61：表头温�
 CMD_SET_MEMO = 0x7A             # [0x7A, mon, day, utf8 祝福语]（build 67：纪念日高亮）
 CMD_SET_ALERT = 0x7C            # [0x7C, level, utf8 类型名]（build 71：和风的天气预警）
 CMD_SET_ALERT_ICON = 0x7D       # [0x7D, hi, lo]（build 74：和风的预警图标编号）
+CMD_SET_HOLIDAY = 0x7E          # [0x7E, yy, mm, 8 字节]（2026-10-05：日历上的「休/班」，
+                                #  每天 2bit：0=普通 1=休(红) 2=班；数据来自 holidays.json，
+                                #  国务院每年改一次 —— 只改那个文件，不刷固件）
 
 MODE_KEEP = 0                   # build 60 起的固件认这个：只对表、别动页面
 MODE_CALENDAR = 1
@@ -425,6 +428,47 @@ async def find_tag(args, scan_s: float, quiet: bool = False):
 
 
 # ---------------------------------------------------------------- sync
+# ---- 2026-10-05：中国法定节假日「休 / 班」表 ---------------------------------
+#  数据在 holidays.json（跟着本文件放）。国务院办公厅每年发一次公告、调休日期年年
+#  不同，所以**不烧进固件**：基站读这张表、编成 8 字节推下去（命令 0x7E）。
+_HOL_CACHE = None
+
+
+def load_holidays():
+    """读 holidays.json -> {2026: {"休": {...}, "班": {...}}}；读一次就缓存。"""
+    global _HOL_CACHE
+    if _HOL_CACHE is not None:
+        return _HOL_CACHE
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "holidays.json")
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        for k, v in raw.items():
+            if str(k).startswith("_") or not str(k).isdigit():
+                continue
+            out[int(k)] = {"休": set(v.get("休") or []), "班": set(v.get("班") or [])}
+    except Exception:
+        out = {}
+    _HOL_CACHE = out
+    return out
+
+
+def holiday_mask(year, month):
+    """该月每天的「休/班」编成 8 字节（每天 2 bit）。表里没这一年 -> None。"""
+    d = load_holidays().get(int(year))
+    if d is None:
+        return None
+    m = bytearray(8)
+    for day in range(1, 32):
+        key = "%02d-%02d" % (month, day)
+        val = 1 if key in d["休"] else (2 if key in d["班"] else 0)
+        if val:
+            bit = (day - 1) * 2
+            m[bit // 8] |= (val << (bit % 8))
+    return bytes(m)
+
+
 async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                     last_alert=None, may_skip_if_alive=False) -> bool:
     """连上去把时间和/或天气写进价签。
@@ -522,6 +566,14 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
     tag_report = {"t": None}     # 价签连上来之后会上报 t=<它的时间>，见下面 on_notify
 
     log("找到价签：" + repr(dev.name) + " rssi=" + str(adv.rssi) + " addr=" + dev.address + "；连接中…", args.log)
+
+    # 2026-10-05：把本月的「休/班」表编好（跟着时间那条一起发；表里没这一年就是 None）
+    hol_payload = None
+    if do_time:
+        _lt = time.localtime()
+        _m8 = holiday_mask(_lt.tm_year, _lt.tm_mon)
+        if _m8 is not None:
+            hol_payload = bytes([CMD_SET_HOLIDAY, _lt.tm_year - 2000, _lt.tm_mon]) + _m8
 
     try:
         async with BleakClient(dev, timeout=args.connect_timeout) as cli:
@@ -670,6 +722,15 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                         log("  → 预警图标  载荷=" + alert_icon_payload.hex(" "), args.log)
                 except Exception as e:
                     log("  天气预警发送失败（不影响）：" + explain(e), args.log)
+
+            # 4c) 节假日「休 / 班」表（2026-10-05）—— 跟着时间那条一起带过去。
+            #     价签侧还没实现 0x7E 时会**直接忽略**，所以先发是安全的。
+            if hol_payload is not None:
+                try:
+                    await cli.write_gatt_char(WR_UUID, hol_payload, response=True)
+                    log("  → 休/班表  载荷=" + hol_payload.hex(" "), args.log)
+                except Exception as e:
+                    log("  休/班表发送失败（不影响）：" + explain(e), args.log)
 
             # 5) 顺手读一次电池（价签会回 bat=.. pct=..）
             if args.battery:
