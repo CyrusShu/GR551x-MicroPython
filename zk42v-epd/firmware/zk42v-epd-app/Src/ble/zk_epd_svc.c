@@ -1065,6 +1065,18 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
 
 /* ---------------------------------------------------------------- GATTS 读写 */
 
+
+/* 2026-10-05：日历页要读"这天是休还是班" —— 把 0x7E 收下的那张表露出来。
+   返回 0=普通 1=休 2=班；月份对不上（比如表还是上个月的）也返回 0。 */
+uint8_t zk_holiday_mark(uint8_t mon, uint8_t day)
+{
+    if (mon != s_hol_mm || day < 1u || day > 31u)
+    {
+        return 0u;
+    }
+    return (uint8_t)((s_hol_mask[(day - 1u) >> 2] >> (((day - 1u) & 3u) * 2u)) & 3u);
+}
+
 void zk_epd_svc_on_write(uint8_t conn_idx, uint16_t handle,
                          const uint8_t *value, uint16_t length)
 {

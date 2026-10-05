@@ -1281,6 +1281,8 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
 
 /* 一个格子：日号（5x7 放大 3 倍）+ 下面一行农历（16x16 原大）。
    今天那格整块红底、白字 —— 比画个红圈稳（圆形会被行高切掉）。 */
+#define ZK_HOL_GAP  6   /* 休/班 跟日号之间的空隙（px）*/
+
 static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mon,
                      int d, int is_today, int weekend, int is_bday)
 {
@@ -1347,6 +1349,47 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     {
         color = weekend ? C_RED : C_BLACK;
         draw_num(buf, cx - tw / 2, y0 + CAL_NUM_Y, s, 1, color);
+    }
+
+    /* ---- 2026-10-05：休 / 班 标记（数据由基站 0x7E 下发）----
+       2026-10-05 用户两条反馈：
+         ① 「休/班 离数字太远」  -> 不再贴格子右边缘，改成**紧挨着日号右边**
+         ② 「当天有休字时，休字要画（成）小圆」 -> 当天那格改成**小红圆徽标**
+            （红底白字），跟"今天"那个大圆呼应；非当天还是光字。
+       ⚠ 两个小字都是 11px 宽，画之前先夹一下，别越出格子右边界。 */
+    {
+        extern uint8_t zk_holiday_mark(uint8_t mon, uint8_t day);
+        uint8_t hol = zk_holiday_mark((uint8_t)mon, (uint8_t)d);
+
+        if (hol)
+        {
+            const char *mark = (hol == 1u) ? "休" : "班";
+            /* 2026-10-05 用户第二次反馈：
+               ① 「又太近了」-> 缝隙取中间值 ZK_HOL_GAP（6px，原来是 2px / 贴右边缘）
+               ② 「当天的休字跟其他休字与号数距离一样」-> 当天不再另算位置，
+                  跟平常一样紧跟在号数右边（于是它落在"今天"那个大红圈里，
+                  用白字画出来才看得见；不再套小红圆 —— 那个位置叠在红圈上
+                  等于没画）。 */
+            int hx = cx + tw / 2 + ZK_HOL_GAP;
+            int hy = y0 + CAL_NUM_Y;
+
+            if (hx + ZK_SMALL_W > x0 + CAL_COL_W - 1)
+            {
+                hx = x0 + CAL_COL_W - 1 - ZK_SMALL_W;
+            }
+            if (is_today)
+            {
+                /* 2026-10-05 用户："当天的休字圆底和字反色一下"
+                   —— 今天那格的底是**红圈**，所以给「休」垫一个**小白圆**、
+                      字用**红色**：跟"大红圈 + 白字"正好反色，一眼就能跳出来。 */
+                fill_circle(buf, hx + ZK_SMALL_W / 2, hy + ZK_SMALL_H / 2, 7, C_WHITE);
+                draw_text_small(buf, hx, hy, mark, C_RED);
+            }
+            else
+            {
+                draw_text_small(buf, hx, hy, mark, (hol == 1u) ? C_RED : C_BLACK);
+            }
+        }
     }
 
     /* ---- 下面那行 ---- */

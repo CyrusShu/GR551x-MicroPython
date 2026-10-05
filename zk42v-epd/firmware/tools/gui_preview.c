@@ -103,3 +103,48 @@ int main(int argc, char **argv)
     fwrite(buf, 1, sizeof(buf), stdout);
     return 0;
 }
+
+/* ---- 2026-10-05：主机侧给「休 / 班」表一个桩 ---------------------------------
+   真正的数据来自基站 0x7E（固件在 zk_epd_svc.c 里存、并由它实现 zk_holiday_mark）；
+   预览工具只编 zkgui.c，没有那个函数，所以这里补一个，好让日历上那两个小字
+   也能预览出来。
+   取值：环境变量 ZK_PREVIEW_HOL="月:8字节hex"，例：
+        ZK_PREVIEW_HOL=10:5515080000000000    （2026-10：1-7 休、10 班） */
+static uint8_t g_prev_hol[8];
+static uint8_t g_prev_hol_mm;
+
+uint8_t zk_holiday_mark(uint8_t mon, uint8_t day)
+{
+    static int inited = 0;
+
+    if (!inited)                                   /* 第一次调用时读环境变量 */
+    {
+        const char *e = getenv("ZK_PREVIEW_HOL");
+
+        inited = 1;
+        if (e != NULL)
+        {
+            const char *c = strchr(e, ':');
+
+            if (c != NULL)
+            {
+                int i;
+
+                g_prev_hol_mm = (uint8_t)atoi(e);
+                for (i = 0; i < 8; i++)
+                {
+                    char b[3];
+                    b[0] = c[1 + i * 2];
+                    b[1] = c[2 + i * 2];
+                    b[2] = 0;
+                    g_prev_hol[i] = (uint8_t)strtol(b, NULL, 16);
+                }
+            }
+        }
+    }
+    if (mon != g_prev_hol_mm || day < 1u || day > 31u)
+    {
+        return 0u;
+    }
+    return (uint8_t)((g_prev_hol[(day - 1u) >> 2] >> (((day - 1u) & 3u) * 2u)) & 3u);
+}
