@@ -12,12 +12,23 @@ rem =====================================================================
 cd /d "%~dp0"
 cd ..
 
+rem 2026-10-05：让 Python 的输入输出走 UTF-8 —— 否则在中文 Windows 上，
+rem 基站日志里的中文（城市名/天气）会乱码，严重时直接 UnicodeEncodeError 崩掉。
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+
 echo ===================================================
 echo  ZK42V 价签 —— 电脑基站
 echo ===================================================
 
-where python >nul 2>nul
-if errorlevel 1 (
+rem 找 Python：优先 py -3（Windows 官方的启动器，能避开应用商店那个假 python），
+rem 再退回 PATH 里的 python。
+set "PYEXE="
+py -3 -c "import sys" >nul 2>nul && set "PYEXE=py -3"
+if not defined PYEXE (
+    where python >nul 2>nul && set "PYEXE=python"
+)
+if not defined PYEXE (
     echo ❌ 没找到 Python。
     echo    去 https://www.python.org/downloads/ 下载安装，
     echo    安装时**务必勾上最下面那个 "Add python.exe to PATH"**，然后重新双击我。
@@ -28,7 +39,7 @@ if errorlevel 1 (
 
 if not exist .venv\Scripts\python.exe (
     echo 第一次运行：正在准备环境（大约 30 秒，只做这一次）…
-    python -m venv .venv || ( echo ❌ 建虚拟环境失败 & pause & exit /b 1 )
+    %PYEXE% -m venv .venv || ( echo ❌ 建虚拟环境失败 & pause & exit /b 1 )
 )
 
 .venv\Scripts\python.exe -c "import bleak" >nul 2>nul

@@ -444,7 +444,7 @@ def load_holidays():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "holidays.json")
     out = {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             raw = json.load(f)
         for k, v in raw.items():
             if str(k).startswith("_") or not str(k).isdigit():
@@ -959,7 +959,7 @@ def load_config(args) -> None:
     if not path:
         return
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             cfg = json.load(f)
     except FileNotFoundError:
         log("找不到配置文件 %s（忽略，按默认参数跑）" % path, getattr(args, "log", None))

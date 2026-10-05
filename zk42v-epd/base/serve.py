@@ -179,7 +179,7 @@ class Handler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------- 状态 / 配置
 def read_cfg(path):
     try:
-        with open(path, encoding='utf-8') as f:
+        with open(path, encoding='utf-8-sig') as f:
             return json.load(f)
     except Exception as e:
         return {"_读不到配置": str(e)}
