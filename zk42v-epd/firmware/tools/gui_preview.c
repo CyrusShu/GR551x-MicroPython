@@ -148,3 +148,50 @@ uint8_t zk_holiday_mark(uint8_t mon, uint8_t day)
     }
     return (uint8_t)((g_prev_hol[(day - 1u) >> 2] >> (((day - 1u) & 3u) * 2u)) & 3u);
 }
+
+/* ---- 2026-10-05：主机侧给「节日名」一个桩 ---------------------------------
+   真数据来自基站 0x7F（固件在 zk_epd_svc.c 里）。预览用环境变量喂：
+       ZK_PREVIEW_FEST="10-01:国庆节,10-18:重阳节"                        */
+static struct { int mm, dd; char name[24]; } g_prev_fest[8];
+static int g_prev_fest_n;
+
+const char *zk_festival_name(uint8_t mon, uint8_t day)
+{
+    static int inited = 0;
+    int i;
+
+    if (!inited)
+    {
+        const char *e = getenv("ZK_PREVIEW_FEST");
+
+        inited = 1;
+        while (e != NULL && *e != 0 && g_prev_fest_n < 8)
+        {
+            int mm = atoi(e);
+            const char *dash = strchr(e, '-');
+            const char *colon = strchr(e, ':');
+            const char *comma;
+
+            if (dash == NULL || colon == NULL) { break; }
+            g_prev_fest[g_prev_fest_n].mm = mm;
+            g_prev_fest[g_prev_fest_n].dd = atoi(dash + 1);
+            comma = strchr(colon + 1, ',');
+            {
+                size_t n = comma ? (size_t)(comma - colon - 1) : strlen(colon + 1);
+                if (n > 23u) { n = 23u; }
+                memcpy(g_prev_fest[g_prev_fest_n].name, colon + 1, n);
+                g_prev_fest[g_prev_fest_n].name[n] = 0;
+            }
+            g_prev_fest_n++;
+            e = comma ? comma + 1 : NULL;
+        }
+    }
+    for (i = 0; i < g_prev_fest_n; i++)
+    {
+        if (g_prev_fest[i].mm == (int)mon && g_prev_fest[i].dd == (int)day)
+        {
+            return g_prev_fest[i].name;
+        }
+    }
+    return 0;
+}

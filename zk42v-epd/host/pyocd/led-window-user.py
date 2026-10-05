@@ -1341,7 +1341,7 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 135
+ZK_DBG_WORDS = 136
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4947,6 +4947,15 @@ def _zk_say_epd_service(words, regs=None):
                 % (bf2, af, ld, tk, ms))
         else:
             say("    → 还一次都没睡过（ZK_PWR_SAVE=0，正常）")
+
+    # ---- 2026-10-05：休/班表 + 节日名（基站 0x7E / 0x7F）----
+    if len(words) > 135:
+        say("")
+        say("  节假日数据（基站推送）：")
+        say("    休/班表 0x7E 收到 %d 次     节日名 0x7F 收到 %d 次"
+            % (words[134], words[135]))
+        if words[134] == 0 and words[135] == 0:
+            say("      → 一次都没收到：基站那边可能还在跑老代码（改完要重启 serve.py）")
 
     # ---- build 80：暖启动（睡眠第 2 步）----
     if len(words) > 126:

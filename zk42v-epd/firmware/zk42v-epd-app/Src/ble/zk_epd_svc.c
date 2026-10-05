@@ -141,6 +141,15 @@ static uint8_t  s_need_time_report;  /* build 77：连上先主动报一次「�
 static uint8_t  s_hol_mask[8];
 static uint8_t  s_hol_yy, s_hol_mm;
 
+/* 2026-10-05：节日名（基站 0x7F：7F <yy> <mm> <dd> <utf8 名>）。一个月几条，
+   小表就够；日历第二行按「节日 > 节气 > 农历」画。数据来自 holidays.json，
+   所以明年国务院改安排只改那个文件。 */
+#define ZK_FEST_MAX 4
+static uint8_t s_fest_mm[ZK_FEST_MAX];
+static uint8_t s_fest_dd[ZK_FEST_MAX];
+static char    s_fest_name[ZK_FEST_MAX][16];
+static uint8_t s_fest_n;
+
 static uint8_t  s_rtc_on;
 static uint32_t s_rtc_ms;
 static uint32_t s_rtc_prev;
@@ -819,6 +828,31 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             }
             break;
 
+        /* 0x7F SET_FESTIVAL（2026-10-05）：这天是节日，第二行画它的名字 */
+        case 0x7F:
+            if (len >= 5u)
+            {
+                uint8_t i, slot = ZK_FEST_MAX;
+                uint8_t nlen = (uint8_t)(len - 4u);
+
+                if (nlen > 15u) { nlen = 15u; }
+                for (i = 0; i < s_fest_n; i++)
+                {
+                    if (s_fest_mm[i] == d[2] && s_fest_dd[i] == d[3]) { slot = i; break; }
+                }
+                if (slot == ZK_FEST_MAX && s_fest_n < ZK_FEST_MAX) { slot = s_fest_n++; }
+                if (slot < ZK_FEST_MAX)
+                {
+                    s_fest_mm[slot] = d[2];
+                    s_fest_dd[slot] = d[3];
+                    memcpy(s_fest_name[slot], d + 4, nlen);
+                    s_fest_name[slot][nlen] = 0;
+                    g_dbg.fest_cmds++;
+                    if (ZKGUI_MODE_PICTURE != s_mode) { gui_request_redraw(); }
+                }
+            }
+            break;
+
         case 0x21:      /* SET_WEEK_START：收下就完事 */
             break;
 
@@ -1075,6 +1109,21 @@ uint8_t zk_holiday_mark(uint8_t mon, uint8_t day)
         return 0u;
     }
     return (uint8_t)((s_hol_mask[(day - 1u) >> 2] >> (((day - 1u) & 3u) * 2u)) & 3u);
+}
+
+/* 这天有节日名就返回它（UTF-8），没有返回 NULL */
+const char *zk_festival_name(uint8_t mon, uint8_t day)
+{
+    uint8_t i;
+
+    for (i = 0; i < s_fest_n; i++)
+    {
+        if (s_fest_mm[i] == mon && s_fest_dd[i] == day)
+        {
+            return s_fest_name[i];
+        }
+    }
+    return 0;
 }
 
 void zk_epd_svc_on_write(uint8_t conn_idx, uint16_t handle,

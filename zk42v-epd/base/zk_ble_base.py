@@ -90,6 +90,8 @@ CMD_SET_CITY = 0x79             # [0x79, utf8 城市名]（build 61：表头温�
 CMD_SET_MEMO = 0x7A             # [0x7A, mon, day, utf8 祝福语]（build 67：纪念日高亮）
 CMD_SET_ALERT = 0x7C            # [0x7C, level, utf8 类型名]（build 71：和风的天气预警）
 CMD_SET_ALERT_ICON = 0x7D       # [0x7D, hi, lo]（build 74：和风的预警图标编号）
+CMD_SET_FEST = 0x7F            # [0x7F, yy, mm, dd, utf8 名字]（2026-10-05：节日名，
+                                #  日历第二行优先画它；数据同样来自 holidays.json）
 CMD_SET_HOLIDAY = 0x7E          # [0x7E, yy, mm, 8 字节]（2026-10-05：日历上的「休/班」，
                                 #  每天 2bit：0=普通 1=休(红) 2=班；数据来自 holidays.json，
                                 #  国务院每年改一次 —— 只改那个文件，不刷固件）
@@ -447,10 +449,28 @@ def load_holidays():
         for k, v in raw.items():
             if str(k).startswith("_") or not str(k).isdigit():
                 continue
-            out[int(k)] = {"休": set(v.get("休") or []), "班": set(v.get("班") or [])}
+            out[int(k)] = {"休": set(v.get("休") or []), "班": set(v.get("班") or []),
+                           "节日": dict(v.get("节日") or {})}
     except Exception:
         out = {}
     _HOL_CACHE = out
+    return out
+
+
+def festival_list(year, month):
+    """这个月有哪些节日 -> [(日, 名字)]（按日号排序）。表里没这一年就空表。"""
+    d = load_holidays().get(int(year))
+    if d is None:
+        return []
+    pre = "%02d-" % int(month)
+    out = []
+    for k, name in (d.get("节日") or {}).items():
+        if isinstance(k, str) and k.startswith(pre) and name:
+            try:
+                out.append((int(k[3:5]), str(name)))
+            except ValueError:
+                pass
+    out.sort()
     return out
 
 
@@ -574,6 +594,11 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
         _m8 = holiday_mask(_lt.tm_year, _lt.tm_mon)
         if _m8 is not None:
             hol_payload = bytes([CMD_SET_HOLIDAY, _lt.tm_year - 2000, _lt.tm_mon]) + _m8
+    fest_payloads = []
+    if do_time:
+        for _dd, _nm in festival_list(_lt.tm_year, _lt.tm_mon):
+            fest_payloads.append(bytes([CMD_SET_FEST, _lt.tm_year - 2000, _lt.tm_mon, _dd])
+                                 + _nm.encode("utf-8"))
 
     try:
         async with BleakClient(dev, timeout=args.connect_timeout) as cli:
@@ -731,6 +756,14 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                     log("  → 休/班表  载荷=" + hol_payload.hex(" "), args.log)
                 except Exception as e:
                     log("  休/班表发送失败（不影响）：" + explain(e), args.log)
+
+            # 4d) 节日名（0x7F）—— 本月有节日才有；跟休/班表一样，跟着时间那轮发
+            for _fp in fest_payloads:
+                try:
+                    await cli.write_gatt_char(WR_UUID, _fp, response=True)
+                    log("  → 节日名  载荷=" + _fp.hex(" "), args.log)
+                except Exception as e:
+                    log("  节日名发送失败（不影响）：" + explain(e), args.log)
 
             # 5) 顺手读一次电池（价签会回 bat=.. pct=..）
             if args.battery:

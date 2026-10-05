@@ -1291,6 +1291,7 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
     const int cx = x0 + CAL_COL_W / 2;
     const char *lun;
     const char *jq;          /* 这天是节气的话 = 节气名，否则 NULL */
+    const char *fest;        /* 2026-10-05：节日名（国庆节/元旦…），否则 NULL */
     char  s[4];
     int   tw, lw, color;
 
@@ -1392,8 +1393,21 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
         }
     }
 
-    /* ---- 下面那行 ---- */
-    if (jq)
+    /* ---- 下面那行：2026-10-05 起 **节日 > 节气 > 农历** ---- */
+    {
+        extern const char *zk_festival_name(uint8_t mon, uint8_t day);
+
+        fest = zk_festival_name((uint8_t)mon, (uint8_t)d);
+    }
+    if (fest)
+    {
+        /* 节日名：取字走文泉驿（细），但**错开 1px 再画一遍** = 视觉上跟
+           节气一样粗（复现 build 70 那套"加粗"手法，省一套字库）。 */
+        lw = text_cjk_width(fest, 1);
+        draw_text_cjk(buf, cx - lw / 2,     y0 + CAL_LUN_Y, fest, 1, C_RED);
+        draw_text_cjk(buf, cx - lw / 2 + 1, y0 + CAL_LUN_Y, fest, 1, C_RED);
+    }
+    else if (jq)
     {
         /* 节气：**红字**（照样板）。要不要再"加粗"由 ZK_TERM_BOLD 决定：
            置 1 就把同样的字**错开 1px 再画一遍**（视觉上粗 1px，

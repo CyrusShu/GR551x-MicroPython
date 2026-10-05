@@ -114,6 +114,8 @@ MEMO_CHARS = list('付婧文生日快乐！周年纪念恭喜欢爸妈老婆儿�
 #   天气文字（zk_weather_name 也是 11px 那套），16px 那张表多存一份白占 2KB flash。
 # build 13-1（2026-10-05 计划）：日历上的「休 / 班」标记 —— 法定放假日/调休上班日。
 HOLIDAY_CHARS = list('休班')
+# 2026-10-05：节日名（日历第二行）—— 只写正日子，见 holidays.json
+FEST_CHARS = list('元旦国庆劳动节端午中秋春重阳清')
 
 ALERT_CHARS = list('暴雨雷电大风台高温寒潮汐霜冻雾霾沙尘雹冰干旱洪涝地'
                    '橙黄红蓝白警报质灾森林火险道路结飞机颠簸臭氧雪冷海上交通'
@@ -123,7 +125,7 @@ SMALL_CHARS = (['正', '冬', '腊', '闰', '年', '月'] +
                list('一二三四五六七八九十') + ZODIAC_CHARS + WEATHER_CHARS +
                CITY_CHARS + GANZHI_CHARS +
                ALERT_CHARS +                  # build 71：预警类型名也要小字模
-               HOLIDAY_CHARS)                 # 2026-10-05：日历上的「休/班」
+               HOLIDAY_CHARS + FEST_CHARS)                 # 2026-10-05：日历上的「休/班」
 
 # 页面用到的全部汉字，顺序 = C 里的索引顺序（zkgui.c 的 CJK_xxx 常量依赖它，
 # **改顺序必须同步改 zkgui.c**，新增的字只能往后加）。前 35 个是原来那套
@@ -159,7 +161,7 @@ CJK_ORDER = [
     '雪',
     '霜',
     '露',
-] + GANZHI_CHARS + CITY_CHARS + MEMO_CHARS
+] + GANZHI_CHARS + CITY_CHARS + MEMO_CHARS + FEST_CHARS
 LUNAR_ORDER = list(WQY_LUNAR16)      # 农历日名的细字（16x16，1px）
 NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 
@@ -170,7 +172,7 @@ NUM_ORDER = '0123456789:'            # 原厂 helvB14 那套（9x13）
 #   · 后面 24 个节气 → **不在这里**，继续用原厂 2px（样板里节气本来就粗）
 #   · 干支 + 城市名用字 → 细（跟表头同一行）
 # 有顺序的版本给生成器用（顺序固定 = 生成结果可复现；set 的迭代顺序跟哈希种子有关）
-THIN_LIST = CJK_ORDER[:35] + GANZHI_CHARS + CITY_CHARS + MEMO_CHARS
+THIN_LIST = CJK_ORDER[:35] + GANZHI_CHARS + CITY_CHARS + MEMO_CHARS + FEST_CHARS
 THIN_SET = set(THIN_LIST)
 
 # build 70：表头里要**加粗**的那两个字（用户："马年八月的马和八能加粗吗"）。
