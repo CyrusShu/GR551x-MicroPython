@@ -489,6 +489,31 @@ def holiday_mask(year, month):
     return bytes(m)
 
 
+# ---- 2026-10-07：价签"刚上电/正在刷屏"时，扫到了却连不上 --------------------
+#  实机复现（棒子+价签一起上电正常；**单独给价签重新上电**必撞一次）：
+#      [16:24:45] 价签出现了 → 连上核实
+#      [16:24:46] 连接/写入失败：BleakError: device 'dev_A0_A3_...' not found
+#  原因：BlueZ 会把"不再广播"的设备从缓存里删掉；价签刚上电那几秒广播是断续的
+#        （刷屏期间也不广播），基站手里那个句柄就过期了 → not found。
+#  修法：撞到 not found 就**立刻重扫一次再连**（不等下一轮那 5 秒）。
+async def _client_with_rescan(dev, args, log_fn):
+    try:
+        c = BleakClient(dev, timeout=args.connect_timeout)
+        await c.connect()
+        return c
+    except Exception as e:
+        if "not found" not in str(e).lower():
+            raise
+        log_fn("  价签在我扫描之后就不见了（刚上电/正在刷屏）→ 立刻重扫再连一次")
+        d2, _a2 = await find_tag(args, 4.0, quiet=True)
+        if d2 is None:
+            log_fn("  重扫还是没扫到 → 这轮算了，下一轮再来")
+            raise
+        c = BleakClient(d2, timeout=args.connect_timeout)
+        await c.connect()
+        return c
+
+
 async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                     last_alert=None, may_skip_if_alive=False) -> bool:
     """连上去把时间和/或天气写进价签。
@@ -601,7 +626,7 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                                  + _nm.encode("utf-8"))
 
     try:
-        async with BleakClient(dev, timeout=args.connect_timeout) as cli:
+        async with await _client_with_rescan(dev, args, lambda m: log(m, args.log)) as cli:
             try:
                 ver = await cli.read_gatt_char(VER_UUID)
                 log("  固件协议版本 = 0x" + ver[0].to_bytes(1, "big").hex().upper() +
