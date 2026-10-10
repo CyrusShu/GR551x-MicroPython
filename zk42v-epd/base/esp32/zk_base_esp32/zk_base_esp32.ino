@@ -1316,7 +1316,10 @@ static bool doSync(BLEAdvertisedDevice &dev)
 
             for (i = 0; i < (int)(sizeof(FEST2026) / sizeof(FEST2026[0])); i++)
             {
-                if (FEST2026[i].mon == mo && FEST2026[i].day == dd)
+                /* ⚠ 整月都发（不是当天才发）—— 日历一次画一整月，
+                   "国庆节"要在 1 号那格、"重阳节"在 18 号那格都看到；
+                   跟 Python 版 festival_list() 的口径一致。 */
+                if (FEST2026[i].mon == mo)
                 {
                     uint8_t f[24];
                     uint8_t n = (uint8_t)strlen(FEST2026[i].name);
