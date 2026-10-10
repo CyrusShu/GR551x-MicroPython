@@ -68,6 +68,52 @@
 //    新的是 /weatheralert/v1/current/{纬度}/{经度}）；我们不直连，只读中继的 JSON。
 #define CMD_SET_ALERT   0x7C
 #define CMD_SET_ALERT_ICON 0x7D   // 预警图标编号（和风的 icon：1003 暴雨 / 1014 雷电…）
+static const uint8_t HOL2026[12][8] = {
+    { 0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 1 月： */
+    { 0x00, 0x00, 0x00, 0x58, 0x55, 0x15, 0x80, 0x00 },  /* 2 月： */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 3 月： */
+    { 0x40, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 4 月： */
+    { 0x55, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 5 月： */
+    { 0x00, 0x00, 0x00, 0x00, 0x50, 0x01, 0x00, 0x00 },  /* 6 月： */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 7 月： */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 8 月： */
+    { 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x15, 0x00 },  /* 9 月： */
+    { 0x55, 0x15, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 10 月： */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 11 月： */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },  /* 12 月： */
+};
+static const struct { uint8_t mon, day; const char *name; } FEST2026[] = {
+    { 1, 1, "元旦" },
+    { 2, 17, "春节" },
+    { 4, 5, "清明" },
+    { 5, 1, "劳动节" },
+    { 6, 19, "端午" },
+    { 9, 25, "中秋" },
+    { 10, 1, "国庆节" },
+    { 10, 18, "重阳节" },
+};
+
+/* 由 UTC 秒 + 时区得到本地年月日（Howard Hinnant 的 civil_from_days） */
+static void civilLocal(int32_t ep, int tz, int *py, int *pm, int *pd)
+{
+    int32_t z = (ep + (int32_t)tz * 3600) / 86400;
+    int32_t era, yoe, doy, mp, yy;
+    uint32_t doe;
+
+    z += 719468;
+    era = (z >= 0 ? z : z - 146096) / 146097;
+    doe = (uint32_t)(z - era * 146097);
+    yoe = (int32_t)((doe - doe / 1460 + doe / 36524 - doe / 146096) / 365);
+    yy  = yoe + era * 400;
+    doy = (int32_t)doe - (365 * yoe + yoe / 4 - yoe / 100);
+    mp  = (5 * doy + 2) / 153;
+    *pd = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *pm = (int)(mp + (mp < 10 ? 3 : -9));
+    *py = (int)(yy + (*pm <= 2));
+}
+
+#define CMD_SET_HOLIDAY 0x7E     // 2026-10-10：日历上的「休/班」表（跟 Python 基站同一套）
+#define CMD_SET_FEST    0x7F     // 节日名（日历第二行优先画它）
 
 // ③ 价签：按广播名找（各平台看到的 MAC 不一样，名字最稳）
 #define TAG_NAME        "ZK42V-EPD"
@@ -1240,6 +1286,50 @@ static bool doSync(BLEAdvertisedDevice &dev)
             else
             {
                 logf("→ 天气预警已解除（发一条清掉屏上那条）");
+            }
+        }
+    }
+
+    /* ---- 2026-10-10：节假日「休/班」表 + 节日名（跟 Python 基站同一套命令）----
+       7E <yy> <mm> <8 字节>        每天 2 bit：0=普通 1=休 2=班
+       7F <yy> <mm> <dd> <utf8 名>  节日名（日历第二行优先画它）
+       表是 2026 年的（国务院公告 → ble-base/holidays.json）；明年换表重烧一次。 */
+    {
+        int iy = 0, im = 0, idd = 0, i;
+        uint8_t yy, mo, dd;
+
+        civilLocal(epochNow(), (int)(TZ_HOURS), &iy, &im, &idd);
+        yy = (uint8_t)(iy % 100);
+        mo = (uint8_t)im;
+        dd = (uint8_t)idd;
+
+        if (iy == 2026 && mo >= 1 && mo <= 12)
+        {
+            uint8_t b[11];
+
+            b[0] = CMD_SET_HOLIDAY;
+            b[1] = yy;
+            b[2] = mo;
+            memcpy(b + 3, HOL2026[mo - 1], 8);
+            wr->writeValue(b, 11, true);
+            logf("→ 休/班表  %04d-%02d", iy, im);
+
+            for (i = 0; i < (int)(sizeof(FEST2026) / sizeof(FEST2026[0])); i++)
+            {
+                if (FEST2026[i].mon == mo && FEST2026[i].day == dd)
+                {
+                    uint8_t f[24];
+                    uint8_t n = (uint8_t)strlen(FEST2026[i].name);
+
+                    if (n > 19) { n = 19; }
+                    f[0] = CMD_SET_FEST;
+                    f[1] = yy;
+                    f[2] = mo;
+                    f[3] = dd;
+                    memcpy(f + 4, FEST2026[i].name, n);
+                    wr->writeValue(f, (size_t)(4 + n), true);
+                    logf("→ 节日名  %s（%02d-%02d）", FEST2026[i].name, mo, dd);
+                }
             }
         }
     }
