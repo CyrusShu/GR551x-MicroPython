@@ -1404,8 +1404,13 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
         /* 节日名：取字走文泉驿（细），但**错开 1px 再画一遍** = 视觉上跟
            节气一样粗（复现 build 70 那套"加粗"手法，省一套字库）。 */
         lw = text_cjk_width(fest, 1);
-        draw_text_cjk(buf, cx - lw / 2,     y0 + CAL_LUN_Y, fest, 1, C_RED);
-        draw_text_cjk(buf, cx - lw / 2 + 1, y0 + CAL_LUN_Y, fest, 1, C_RED);
+        /* ⚠ 2026-10-10 用户反馈：「今天的红圆底和下面那行字颜色重叠了」——
+           原来这里硬编码 C_RED，压在"今天"那个红圆上就等于看不见。
+           今天那格一律用白色（跟日号一致），非今天才用红。 */
+        draw_text_cjk(buf, cx - lw / 2,     y0 + CAL_LUN_Y, fest, 1,
+                      is_today ? C_WHITE : C_RED);
+        draw_text_cjk(buf, cx - lw / 2 + 1, y0 + CAL_LUN_Y, fest, 1,
+                      is_today ? C_WHITE : C_RED);
     }
     else if (jq)
     {
@@ -1413,11 +1418,14 @@ static void cal_cell(uint8_t *buf, int col, int row, int row_h, int year, int mo
            置 1 就把同样的字**错开 1px 再画一遍**（视觉上粗 1px，
            比换字体省事，也不用额外的字模）。 */
         lw = text_cjk_width(jq, 1);
-        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, jq, 1, C_RED);
+        /* 同上：今天那格用白色，别让红字压在红圆上 */
+        draw_text_cjk(buf, cx - lw / 2, y0 + CAL_LUN_Y, jq, 1,
+                      is_today ? C_WHITE : C_RED);
         if (s_term_bold)
         {
             /* 错开 1px 再画一遍 = 视觉上加粗 1px（照样板里"节气比农历粗"） */
-            draw_text_cjk(buf, cx - lw / 2 + 1, y0 + CAL_LUN_Y, jq, 1, C_RED);
+            draw_text_cjk(buf, cx - lw / 2 + 1, y0 + CAL_LUN_Y, jq, 1,
+                          is_today ? C_WHITE : C_RED);
         }
     }
     else if (lun)
