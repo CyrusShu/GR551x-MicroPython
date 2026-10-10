@@ -1328,10 +1328,12 @@ static bool doSync(BLEAdvertisedDevice &dev)
                     f[0] = CMD_SET_FEST;
                     f[1] = yy;
                     f[2] = mo;
-                    f[3] = dd;
+                    f[3] = FEST2026[i].day;      /* ⚠ 是**节日自己那天**，不是今天
+                                                    （2026-10-10 实机日志里写成 dd，
+                                                      结果两个节日的名字都落到 10 号那格） */
                     memcpy(f + 4, FEST2026[i].name, n);
                     wr->writeValue(f, (size_t)(4 + n), true);
-                    logf("→ 节日名  %s（%02d-%02d）", FEST2026[i].name, mo, dd);
+                    logf("→ 节日名  %s（%02d-%02d）", FEST2026[i].name, mo, FEST2026[i].day);
                 }
             }
         }
