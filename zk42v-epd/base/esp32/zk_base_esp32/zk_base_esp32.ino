@@ -129,7 +129,10 @@ static void civilLocal(int32_t ep, int tz, int *py, int *pm, int *pd)
 #define POLL_MS             3000          // 两轮之间歇多久
 /* 天气多久**查**一次（30 分钟；查完值没变就不推、不刷屏）。用户 2026-09-30 拍板：
    Open-Meteo 本身 15 分钟一更新，30 分钟查一次足够；真正决定"闪不闪"的是阈值。 */
-#define WEATHER_INTERVAL_MS (30UL * 60UL * 1000UL)
+/* 2026-10-12 用户："耗电太快了，改为 6 小时推送一次天气"。
+   原来是 **30 分钟**（比一小时还勤）—— 每次检查若天气/温度变了就整屏刷 16 秒，
+   那是电池最大的一笔开销。改成 6 小时。 */
+#define WEATHER_INTERVAL_MS (6UL * 3600UL * 1000UL)
 /* 温度要变这么多（十分之一度，10 = 1.0℃）才值得推一次 */
 #define WX_TEMP_DELTA_T10   10
 #define TIME_INTERVAL_MS    (24UL * 3600UL * 1000UL)   // 时间多久重校一次（1 天）
