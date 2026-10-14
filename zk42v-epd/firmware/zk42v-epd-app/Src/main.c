@@ -94,7 +94,40 @@ static uint8_t       s_aon_alive;   /* 标定期间看到它在动 */
 
 static inline uint32_t tb_aon_raw(void)
 {
-    return AON->TIMER_VAL;          /* 只读；低功耗时钟域，与 CPU 主频无关 */
+    /* build 89：**先把读选择子拨到睡眠定时器再读**。
+       以前是直接读 AON->TIMER_VAL —— 而这个寄存器是**复用**的，读的是哪一路由
+       AON_PAD_CTL1 的 TIMER_READ_SEL 决定（0=日历 1=看门狗 2=睡眠定时器 3=日历闹钟）。
+       SDK 自己每个访问点都是"先选再读"（gr55xx_ll_calendar.h / ll_aon_wdt.h 那两处，
+       而且用 GLOBAL_EXCEPTION_DISABLE 包起来）。别的代码（日历探路/看门狗/ADC）
+       把选择子挪走一次，我们下一条读到的就是**另一个计数器** —— status.sh 里
+       那个"计数器向上跳"（tb_bad）有一部分就是这么来的。现在自己拨回来再读，
+       整段关中断，读完保持（我们永远是这一路）。 */
+    uint32_t v;
+    uint32_t pm = zk_tick_irq_save();
+
+    MODIFY_REG(AON->AON_PAD_CTL1, AON_PAD_CTL1_TIMER_READ_SEL,
+               AON_PAD_CTL1_TIMER_READ_SEL_SLP_TIMER);
+    v = AON->TIMER_VAL;
+
+    zk_tick_irq_restore(pm);
+    return v;                       /* 只读；低功耗时钟域，与 CPU 主频无关 */
+}
+
+/* build 89：睡眠定时器上一次被**装载**的值（AON->TIMER_VALUE 是装载暂存寄存器）。
+   递减计数器被重装时要知道"这一档有多少 tick"，才能把重装前后的两段接起来
+   （见 board/zk_tick.h 的 zk_tick_slp_step）。读它同样要跟"当前值"一致，
+   所以跟在 tb_aon_raw() 后面一起读、同一段临界区里用。 */
+static inline uint32_t tb_aon_load(void)
+{
+    uint32_t v;
+    uint32_t pm = zk_tick_irq_save();
+
+    MODIFY_REG(AON->AON_PAD_CTL1, AON_PAD_CTL1_TIMER_READ_SEL,
+               AON_PAD_CTL1_TIMER_READ_SEL_SLP_TIMER);
+    v = AON->TIMER_VALUE;
+
+    zk_tick_irq_restore(pm);
+    return v;
 }
 
 /* 递减计数器归一成"递增"，这样 zk_tick_aon_step() 只认一种方向 */
@@ -275,6 +308,12 @@ static uint64_t tick_ms64_raw(void)
 {
     if (0u != s_aon_hz)
     {
+        /* build 89：**递减**计数器走"认识重装"那条（IDLE 模式下的钟慢 7~11% 就修在这儿）；
+           万一这块板子是递增计数器，就走老那条（归一化后按递增累加）。 */
+        if (s_aon_down)
+        {
+            return zk_tick_slp_step(&s_tick_aon, tb_aon_raw(), tb_aon_load(), s_aon_hz);
+        }
         return zk_tick_aon_step(&s_tick_aon, tb_aon_norm(tb_aon_raw()), s_aon_hz);
     }
 

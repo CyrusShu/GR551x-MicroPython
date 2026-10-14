@@ -172,6 +172,70 @@ int main(void)
         ms = zk_tick_aon_step(&a, 1234u, 0u);
         ms = zk_tick_aon_step(&a, 5678u, 0u);
         printf("I %llu\n", (unsigned long long)ms);
+
+        /* ---- 12：build 89 —— **递减 + 被重装**的计数器（IDLE 模式"钟慢 7~11%"的回归测试）----
+           参数就用本机实测的：hz = 27216、装载值 = 13608（= 500ms，正是我们那个 500ms
+           app_timer 干的事）、主循环每 ~50ms 读一次、跑 100 秒（200 次重装）。
+           期望：新版正好 100000 ms（一个 tick 都不丢）；老版会丢一大截（它把
+           "上次读数 → 掉到 0"那一段整段扔掉 = 现场那个 7~11%）。 */
+        {
+            zk_tick_aon_t na, oa;
+            const uint32_t hz2 = 27216u, load = 13608u;
+            uint32_t raw2 = load;
+            uint32_t left = 100u * hz2;          /* 模拟 100 秒的 tick 数 */
+            uint64_t ms_new, ms_old;
+
+            memset(&na, 0, sizeof(na));
+            memset(&oa, 0, sizeof(oa));
+            ms_new = zk_tick_slp_step(&na, raw2, load, hz2);
+            ms_old = zk_tick_aon_step(&oa, (uint32_t)(0u - raw2), hz2);
+
+            while (left)
+            {
+                uint32_t stp = (left > 1361u) ? 1361u : left;    /* ~50ms */
+                uint32_t k;
+
+                for (k = 0; k < stp; k++)
+                {
+                    if (0u == raw2)
+                    {
+                        raw2 = load;                 /* 掉到 0 -> 被重装（SDK 就是这么干的） */
+                    }
+                    raw2--;
+                }
+                left -= stp;
+                ms_new = zk_tick_slp_step(&na, raw2, load, hz2);
+                ms_old = zk_tick_aon_step(&oa, (uint32_t)(0u - raw2), hz2);
+            }
+            printf("J %llu %llu %u %u\n",
+                   (unsigned long long)ms_new, (unsigned long long)ms_old, na.bad, oa.bad);
+        }
+
+        /* ---- 13：主循环被长时间堵住（比如刷屏 16 秒，里面跨了几十次重装）----
+           这段**只能补上一次**（我们没数重装次数）—— 要求：不许往前跳（不许多算），
+           也不许崩；少算的那点按 backlog 第 14 节估 ≈ 一次刷屏 15 秒/天 ≈ 0.02%。 */
+        {
+            zk_tick_aon_t ka;
+            const uint32_t hz3 = 27216u, load3 = 13608u;
+            uint32_t raw3 = load3;
+            uint64_t ms_k;
+            uint32_t left3 = 16u * hz3;          /* 堵住 16 秒 */
+
+            memset(&ka, 0, sizeof(ka));
+            ms_k = zk_tick_slp_step(&ka, raw3, load3, hz3);
+            while (left3)
+            {
+                uint32_t k;
+                for (k = 0; k < left3; k++)
+                {
+                    if (0u == raw3) { raw3 = load3; }
+                    raw3--;
+                }
+                left3 = 0;
+            }
+            ms_k = zk_tick_slp_step(&ka, raw3, load3, hz3);
+            printf("K %llu %u\n", (unsigned long long)ms_k, ka.bad);
+        }
     }
 
     return 0;
@@ -200,6 +264,8 @@ def main():
     C = D = None
     H = None
     I = None
+    J = []
+    K = []
     for line in out.splitlines():
         f = line.split()
         if not f:
@@ -222,6 +288,10 @@ def main():
             H = [int(x) for x in f[1:]]                    # ms1 bad1 ms2 bad2
         elif f[0] == 'I':
             I = int(f[1])
+        elif f[0] == 'J':
+            J.append(tuple(int(x) for x in f[1:]))         # ms新 ms老 bad新 bad老
+        elif f[0] == 'K':
+            K.append((int(f[1]), int(f[2])))               # ms bad
 
     # 1) 新公式：严格等于累计毫秒
     errs = [(i, ms, i) for (i, ms, _old) in A if ms != i]
@@ -270,6 +340,32 @@ def main():
     # 10) hz = 0
     check('10: AON 时基 hz=0 时原样返回、不乱加', I == 0, '得到 %s' % I)
 
+    # 12) build 89：递减 + 被重装的计数器（这条就是现场那个"钟慢 7~11%"）
+    if J:
+        ms_new, ms_old, bad_new, bad_old = J[0]
+        check('12: 递减计数器被重装 200 次（500ms 一档、跑 100 秒）→ 新版一个 tick 不丢（%s ms，期望 100000）'
+              % ms_new, ms_new == 100000, '实际 %s' % ms_new)
+        check('12: 同一条轨迹喂老版会丢一大截（%s ms，新版 %s ms）——说明这条判据抓得住那个 bug'
+              % (ms_old, ms_new), ms_old < ms_new - 1000)
+        check('12: na.bad 记的"重装补记次数"对得上（%s 次，200 秒里 500ms 一档 ≈ 200 次）'
+              % bad_new, 190 <= bad_new <= 210, '实际 %s' % bad_new)
+        check('12: 老版把每次重装都当成"异常"记在 oa.bad 里（%s 次）' % bad_old,
+              bad_old >= 190)
+    else:
+        check('12: 没拿到 J 那组数据', False)
+
+    # 13) 主循环被堵住 16 秒（跨几十次重装）：只能补上一次 —— 不许多算、不许崩
+    if K:
+        ms_k, bad_k = K[0]
+        check('13: 堵住 16 秒时**不会多算**（补记后 %s ms，真值 16000 ms）' % ms_k,
+              ms_k <= 16000, '实际 %s' % ms_k)
+        check('13: 堵住那一段只按"最多一次重装"补（bad = %s、只补回 %s ms）—— '
+              '少算的是设计上认下的：≈15 秒/次刷屏 ≈ 0.02%%/天（见 backlog 第 14 节）'
+              % (bad_k, ms_k),
+              bad_k <= 1 and ms_k <= 2000)
+    else:
+        check('13: 没拿到 K 那组数据', False)
+
     # 11) 源码守卫
     src = open(MAIN_C, encoding='utf-8').read()
     check('11: main.c 里不再有 CYCCNT 直除那种写法',
@@ -289,6 +385,21 @@ def main():
           'zk_tick_ms64()' in open(os.path.join(FW, 'zk42v-epd-app', 'Src',
                                                 'ble', 'zk_epd_svc.c'),
                                    encoding='utf-8').read())
+
+    # 14) 源码守卫（build 89 的两件事：时基认识重装 + 值没变不重画）
+    svc = open(os.path.join(FW, 'zk42v-epd-app', 'Src', 'ble', 'zk_epd_svc.c'),
+               encoding='utf-8').read()
+    check('14: main.c 走的是"认识重装"那条时基（zk_tick_slp_step）',
+          'zk_tick_slp_step' in src)
+    check('14: zk_tick.h 里有 zk_tick_slp_step（主机端测的就是固件那份）',
+          'zk_tick_slp_step' in tick_h)
+    check('14: 读 AON 计数器前先把 TIMER_READ_SEL 拨回睡眠定时器',
+          'AON_PAD_CTL1_TIMER_READ_SEL_SLP_TIMER' in src and 'tb_aon_load' in src)
+    check('14: "值没变就不重画"那套还在用（城市名/休班/节日名/纪念日都走它，共 %d 处）'
+          % svc.count('gui_redraw_if_changed'),
+          svc.count('gui_redraw_if_changed') >= 5)
+    check('14: 0x20"只对表"那条有"日期没变就别刷"的门（keep_req）',
+          'keep_req' in svc)
 
     print()
     if FAIL:

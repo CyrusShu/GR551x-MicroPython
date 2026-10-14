@@ -235,4 +235,98 @@ static inline uint64_t zk_tick_aon_step(zk_tick_aon_t *t, uint32_t cyc, uint32_t
     return ms;
 }
 
+/* ======================================================================
+ * build 89：**认识"被重装"的递减计数器** —— 修 IDLE 模式下"钟慢 7~11%"
+ *
+ * 现场（2026-10-14 把 outputs/pyocd 里所有 status 日志拉了一张表）：
+ *   build 59~83（ZK_PWR_SAVE=0：主循环忙等、**没有 app_timer**）比值 0.994~1.000 ✅
+ *   build 85~87（ZK_PWR_SAVE=1：IDLE + 500ms app_timer）        比值 0.885~0.929 ❌
+ * 两边的时基代码是同一份、频率标定也一样，差别只有一个：
+ * **睡眠定时器被"重装"的频率**（app_timer 每 500ms 重装一次、PMU 校准每 30 秒一次）。
+ *
+ * 为什么重装会吃掉时间：AON 睡眠定时器是**递减**计数器，数到 0 就被重装
+ * （raw 从 0 跳回装载值）。上面那版 zk_tick_aon_step() 在归一化后看到"往上跳
+ * ≥2^31"，只 bad++ 就完了 —— 于是**"上次读数 → 掉到 0"那一段整段被丢掉**。
+ * 主循环在 IDLE 下 ~20Hz（50ms 一圈），每 500ms 就丢 ~25ms ≈ 5%，
+ * 再加 PMU 校准/协议栈自己的重装，正好是实测那 7~11%。
+ *
+ * 这一版把那段补回来：
+ *   raw 往上跳 = 重装过 → 从上次读数 t->last 往下数到 0 正好是 t->last 个 tick
+ *                （这段以前被丢掉了）+ 重装之后到现在的一段 (load - raw)。
+ *   ⚠ 只认"跨一次"。主循环被长时间堵住时（刷屏 16 秒里有几十次重装）只能补上一次，
+ *     那一段会少算 —— 实测代价 ≈ 一次刷屏 15 秒/天 ≈ 0.02%，可以忽略。
+ *     （真要在意就得把"重装次数"也数起来，见 backlog 第 14 节留的那条。）
+ *   ⚠ 只对**递减**计数器成立（本机 AON 睡眠定时器就是递减；s_aon_down==0 时
+ *     继续走上面那条老路）。
+ * ====================================================================== */
+static inline uint64_t zk_tick_slp_step(zk_tick_aon_t *t, uint32_t raw, uint32_t load,
+                                        uint32_t hz)
+{
+    uint32_t pm;
+    uint64_t ms;
+
+    if (0u == hz)
+    {
+        return ((uint64_t)t->ms_hi << 32) | (uint64_t)t->ms;
+    }
+
+    pm = zk_tick_irq_save();
+
+    t->hz = hz;
+
+    if (!t->started)
+    {
+        t->started = 1;
+        t->last    = raw;
+    }
+    else
+    {
+        uint32_t d;
+
+        if (raw <= t->last)
+        {
+            d = t->last - raw;          /* 正常递减：这期间走了这么多 tick */
+        }
+        else
+        {
+            /* raw 往上跳 = 数到 0 之后被重装了（SDK 的 app_timer / 电源管理一直在重装它）。
+               补两段：① 上次读数掉到 0（= t->last 个 tick，以前整段丢掉的就是它）；
+                       ② 重装之后走到现在（load - raw）。 */
+            d = t->last;
+            if (load > raw)
+            {
+                d += load - raw;
+            }
+            t->bad++;                    /* bad 现在的含义 = "补过一次重装"（诊断用） */
+        }
+
+        if (d)
+        {
+            uint32_t prev = t->tk_lo;
+
+            t->tk_lo += d;
+            if (t->tk_lo < prev)
+            {
+                t->tk_hi++;
+            }
+            if (d > hz)                  /* 隔了超过 1 秒才来喂（观测用） */
+            {
+                t->jumps++;
+            }
+        }
+    }
+    t->last = raw;
+
+    {
+        uint64_t ticks = ((uint64_t)t->tk_hi << 32) | (uint64_t)t->tk_lo;
+
+        ms = ticks * 1000u / (uint64_t)hz;
+    }
+    t->ms    = (uint32_t)ms;
+    t->ms_hi = (uint32_t)(ms >> 32);
+
+    zk_tick_irq_restore(pm);
+    return ms;
+}
+
 #endif /* __ZK_TICK_H__ */

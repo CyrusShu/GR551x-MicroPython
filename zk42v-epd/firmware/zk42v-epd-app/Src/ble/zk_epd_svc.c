@@ -192,6 +192,14 @@ static char     s_city[24];
 static int8_t   s_memo_mon;
 static int8_t   s_memo_day;
 static char     s_memo[40];
+/* build 89：**上次"画上屏"的那份纪念日**（跟 s_memo 比一比就知道变没变）。
+   为什么不能像城市名那样在命令里直接比：0x7A 是"起头 + 若干 0x7B 续传段"，
+   一条命令到齐时文案还没攒完。所以 0x7A/0x7B 只置一个待查标志，
+   真正的比较放到 poll 里（那时文案已经攒齐、而且本来就有重画合并窗口挡着）。 */
+static int8_t   s_drawn_memo_mon;
+static int8_t   s_drawn_memo_day;
+static char     s_drawn_memo[40];
+static uint8_t  s_memo_pending;
 /* build 71：**天气预警**（基站经 0x7C 发下来，见下面 case 0x7C 的注释）。
    和风的预警按经纬度取，基站那边取回后顺手发过来；清空 = level 0。 */
 static int8_t   s_alert_level;
@@ -228,6 +236,23 @@ static void gui_request_redraw(void)
 {
     s_need_gui   = 1;
     s_gui_due_ms = zk_tick_ms() + ZK_GUI_COALESCE_MS;
+}
+
+/* build 89（2026-10-14 用户："只在每天 0 点刷新一次"）：
+**值没变就不要请求重画**。
+
+为什么：价签的钟现在是准的（见 board/zk_tick.h 的 zk_tick_slp_step），
+0 点它会**自己**翻页刷一次；而基站每天 0 点也会把这一轮的东西重发一遍
+（时间 + 休/班表 + 节日名 + 城市名 + 纪念日）。以前每一条命令都会
+gui_request_redraw() → 于是同一天要刷**两次**（价签自己一次、基站一次）。
+现在只有内容真的变了才请求：基站那轮"什么都没变"的推送就变成一次**空连接**，
+一条命令都不动屏。 */
+static void gui_redraw_if_changed(int changed)
+{
+    if (changed && ZKGUI_MODE_PICTURE != s_mode)
+    {
+        gui_request_redraw();
+    }
 }
 
 /* 往纪念日文案后面接一段（build 68）。为什么要"接"：BLE 的 ATT 一次只能发
@@ -726,6 +751,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             {
                 uint8_t buf[24];
                 uint8_t *p = buf;
+                int      keep_req = 0;      /* build 89：这条命令是"只对表、保持当前页"吗 */
 
                 s_ts = ((uint32_t)d[1] << 24) | ((uint32_t)d[2] << 16) |
                        ((uint32_t)d[3] << 8) | (uint32_t)d[4];
@@ -759,6 +785,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 else if (len > 6u && d[6] == 0u)
                 {
                     /* 保持当前模式：s_mode 不动 */
+                    keep_req = 1;
                     g_dbg.time_keep_cnt++;
                 }
                 else
@@ -799,7 +826,23 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                      那条一样加护栏 —— 否则基站推一次天气就把用户的图顶掉了） */
                 if (ZKGUI_MODE_PICTURE != s_mode)
                 {
-                    gui_request_redraw();
+                    int need = 1;
+
+                    /* build 89：**"只对表" + 日历页 + 没带天气 + 算出来的日期还是画过的那一天**
+                       → 屏上什么都不会变，这条命令就别再刷一屏了。
+                       （用户 2026-10-14 要的是"一天只在 0 点刷一次"：价签自己的钟准了以后，
+                         0 点由它自己翻页；基站 5 秒后再推一次时间，这一推以前会让它再刷一屏。）
+                       ⚠ 时钟页（显示时分）不适用 —— 那里每次对表都该更新画面。 */
+                    if (keep_req && (ZKGUI_MODE_CALENDAR == s_mode) && (len <= 7u))
+                    {
+                        uint32_t cur = (uint32_t)s_ts;      /* 刚设完，elapsed = 0 */
+
+                        need = (cur / 86400u != s_drawn_day);
+                    }
+                    if (need)
+                    {
+                        gui_request_redraw();
+                    }
                 }
                 g_dbg.ble_gui_mode = s_mode;
                 g_dbg.ble_gui_ts   = s_ts;
@@ -817,14 +860,15 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
         case 0x7E:
             if (len >= 10u)
             {
+                int changed = (s_hol_yy != d[1]) || (s_hol_mm != d[2]) ||
+                              (memcmp(s_hol_mask, d + 3, 8) != 0);
+
                 s_hol_yy = d[1];
                 s_hol_mm = d[2];
                 memcpy(s_hol_mask, d + 3, 8);
                 g_dbg.holiday_cmds++;
-                if (ZKGUI_MODE_PICTURE != s_mode)
-                {
-                    gui_request_redraw();
-                }
+                /* build 89：同一张表重发（基站每天 0 点都会带一次）就不重画了 */
+                gui_redraw_if_changed(changed);
             }
             break;
 
@@ -843,12 +887,17 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 if (slot == ZK_FEST_MAX && s_fest_n < ZK_FEST_MAX) { slot = s_fest_n++; }
                 if (slot < ZK_FEST_MAX)
                 {
+                    /* build 89：同一个日子、同一个名字（基站每天重发）就不重画 */
+                    int changed = (s_fest_mm[slot] != d[2]) || (s_fest_dd[slot] != d[3]) ||
+                                  (strlen(s_fest_name[slot]) != (size_t)nlen) ||
+                                  (memcmp(s_fest_name[slot], d + 4, nlen) != 0);
+
                     s_fest_mm[slot] = d[2];
                     s_fest_dd[slot] = d[3];
                     memcpy(s_fest_name[slot], d + 4, nlen);
                     s_fest_name[slot][nlen] = 0;
                     g_dbg.fest_cmds++;
-                    if (ZKGUI_MODE_PICTURE != s_mode) { gui_request_redraw(); }
+                    gui_redraw_if_changed(changed);
                 }
             }
             break;
@@ -879,21 +928,22 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
         case 0x79:
             {
                 uint16_t n = (uint16_t)(len - 1u);
+                char     old[sizeof(s_city)];
+                int      changed;
 
                 if (n >= (uint16_t)sizeof(s_city))
                 {
                     n = (uint16_t)sizeof(s_city) - 1u;
                 }
+                memcpy(old, s_city, sizeof(s_city));     /* build 89：先留一份旧的比一比 */
                 if (n > 0u)
                 {
                     memcpy(s_city, d + 1, n);
                 }
                 s_city[n] = 0;
+                changed = (strcmp(old, s_city) != 0);
                 g_dbg.city_cmds++;
-                if (ZKGUI_MODE_PICTURE != s_mode)
-                {
-                    gui_request_redraw();
-                }
+                gui_redraw_if_changed(changed);
                 /* 回一条通知 "city=深圳" —— 基站日志里能直接看到价签收下了什么
                    （排"屏上怎么没有城市名"时，这一行能立刻分清是"基站没发"还是"固件没画"） */
                 {
@@ -936,10 +986,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 s_memo_day = 0;
             }
             g_dbg.memo_cmds++;
-            if (ZKGUI_MODE_PICTURE != s_mode)
-            {
-                gui_request_redraw();
-            }
+            s_memo_pending = 1;      /* build 89：攒完（见 poll）再决定要不要重画 */
             break;
 
         /* 0x7B MEMO_MORE：**纪念日文案的续传段**（build 68）
@@ -953,6 +1000,7 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             if (len >= 2u && s_memo_day > 0)
             {
                 memo_append(d + 1, (uint16_t)(len - 1u));
+                s_memo_pending = 1;  /* build 89：续传段到了，同样留给 poll 去比 */
             }
             break;
 
@@ -1370,6 +1418,18 @@ void zk_epd_svc_poll(uint32_t now_ms)
         }
     }
 
+    /* build 89：纪念日是不是真的变了？（0x7A 起头 + 0x7B 续传段到这里已经攒齐）
+       基站每天那轮会把纪念日原文重发一次 —— 没变就不该再刷一屏。 */
+    if (s_memo_pending)
+    {
+        s_memo_pending = 0;
+        if ((s_memo_mon != s_drawn_memo_mon) || (s_memo_day != s_drawn_memo_day) ||
+            (strcmp(s_memo, s_drawn_memo) != 0))
+        {
+            gui_redraw_if_changed(1);
+        }
+    }
+
     /* build 77：紧接着配置那条，主动把「我的钟」报一次。
        用处：基站连上来只想核实"你到底是不是刚上电" —— 没重启（s_ts 还在走）它
        一条命令都不用写，省一次 16 秒全刷；真是刚上电/换过电池（s_ts = 0）就报
@@ -1529,6 +1589,11 @@ void zk_epd_svc_poll(uint32_t now_ms)
             g_dbg.ble_gui_why     = (uint32_t)why;
             g_dbg.ble_gui_elapsed = (uint32_t)el;
             g_dbg.ble_tick_ms     = zk_tick_ms();
+
+            /* build 89：记下"这一版纪念日是画上去的那一版" —— 0x7A 重发时拿它比 */
+            s_drawn_memo_mon = s_memo_mon;
+            s_drawn_memo_day = s_memo_day;
+            memcpy(s_drawn_memo, s_memo, sizeof(s_drawn_memo));
         }
     }
 
