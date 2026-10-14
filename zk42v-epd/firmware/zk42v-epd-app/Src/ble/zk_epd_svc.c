@@ -1492,7 +1492,13 @@ void zk_epd_svc_poll(uint32_t now_ms)
             info.bat_pct = (int8_t)zk_bat_pct();
             /* build 54：**天气温度有位小数就用它**（不当整度画）——
                用户明确要求"温度不要四舍五入"。表头那条"带一位小数"的画法本来就有
-               （片内温度在用），这里复用：把 c10 填天气值、env_temp_c 置 -128 让它走小数分支。 */
+               （片内温度在用），这里复用：把 c10 填天气值、env_temp_c 置 -128 让它走小数分支。
+
+               build 88（2026-10-14 用户："把天气去掉，做成纯日历"）：
+               **没收到天气温度时不再退回片内温度**。那颗是芯片结温（实测 26.4℃ 那种），
+               画在表头看着就跟"天气还在"一样，比空着更容易误导 —— 用户要的是纯日历。
+               片内温度照旧读、照旧进状态块（status.sh 那条 bat_temp 就是它），只是不上屏。
+               城市名是另一条命令（0x79），用户要求保留，所以不受这条影响。 */
             if (s_env_temp_c10 != ZK_TEMP_NONE)
             {
                 info.temp_c10   = s_env_temp_c10;
@@ -1500,8 +1506,8 @@ void zk_epd_svc_poll(uint32_t now_ms)
             }
             else
             {
-                info.temp_c10   = (int16_t)zk_bat_temp_c10();
-                info.env_temp_c = s_env_temp_c;
+                info.temp_c10   = ZK_TEMP_NONE;      /* -32768 = "温度没读到" → 表头不画 */
+                info.env_temp_c = s_env_temp_c;      /* 收到过整度天气温度就用它 */
             }
             info.wx_code  = s_wx_code;
             info.city     = s_city;          /* build 61：温度后面那个城市名（基站 0x79 下发） */

@@ -23,7 +23,11 @@
    ⚠ 这个数一直停在 31 —— build 32~41 忘了跟着 +1，结果状态块里的 `build = 31`
    跟 README 的「build 4x」对不上，刷机后没法一眼确认"新固件到底跑起来没有"。
    build 42 起跟 README 的里程碑号对齐（这一版就是 42）。 */
-#define ZK_BUILD_ID   87u
+/* build 88（2026-10-14）：用户"把天气去掉，做成纯日历，只在每天 0 点刷一次"。
+   固件侧只改一件事：**没收到天气温度时不再退回片内温度**（那颗是芯片结温，
+   画上去像"天气还在"）—— 见 Src/ble/zk_epd_svc.c 里 info.temp_c10 那一段。
+   天气这条通道（0x71/0x20 带天气）本身照旧保留，只是基站不再发。 */
+#define ZK_BUILD_ID   88u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u

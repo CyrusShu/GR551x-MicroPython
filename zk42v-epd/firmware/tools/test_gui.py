@@ -335,6 +335,28 @@ def main():
         check('5d: 码=6（雷阵雨，3 个字）比码=2（多云，2 个字）多画一个字（新增 %d 墨点）'
               % ink_3, ink_3 > 60)
 
+        # 5e) build 88（2026-10-14 用户："把天气去掉，做成纯日历"）：
+        #     没收到天气温度时，表头**不许再退回片内温度**（那颗是芯片结温 26.4℃ 那种，
+        #     画上去看着就像"天气还在"）。固件现在传 ZK_TEMP_NONE + env_temp=-128。
+        #     判据要双向：① 这种输入下标头没有温度那几位数；② 片内温度那版确实**多出**
+        #     一块墨 —— 否则"反正都没墨"也能骗过①。
+        rows_notemp, _ = render(1, TS, 0, 3970, -32768, 0, -128, '深圳')
+        rows_dietemp, _ = render(1, TS, 0, 3970, 264,    0, -128, '深圳')
+        ink_t = new_ink(rows_dietemp, rows_notemp)
+        check('5e: 没天气时表头不画温度（片内温度那版会多出 %d 个墨点）' % ink_t,
+              ink_t > 60)
+        check('5e: 没天气时表头仍有城市名（不是整块空着）',
+              count(rows_notemp, BLACK, 200, 0, 376, CAL_HDR_H) > 40)
+
+        # 5f) 源码级判据（跟 test_bat 那条"别再抄第二份"一个路子）：
+        #     表头温度那条路**不许**再写回 "temp_c10 = zk_bat_temp_c10()" ——
+        #     那正是"片内结温冒充天气"的来源。
+        svc_path = os.path.join(G.FW, 'zk42v-epd-app', 'Src', 'ble', 'zk_epd_svc.c')
+        with open(svc_path, encoding='utf-8', errors='replace') as f:
+            svc = f.read()
+        check('5f: 表头温度不再退回片内温度（zk_epd_svc.c 里没有那句回退）',
+              'info.temp_c10   = (int16_t)zk_bat_temp_c10();' not in svc)
+
         # 6) 换一天，图不一样
         check('6: 换一天画出来的图不一样',
               G.render(exe, 1, TS + 3 * DAY) != cal_buf)

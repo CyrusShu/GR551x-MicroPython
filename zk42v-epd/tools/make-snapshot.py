@@ -111,6 +111,14 @@ FILES = [
     ("outputs/firmware/tools/test_tick.py",             "firmware/tools/test_tick.py"),
     ("outputs/firmware/docs/feature-backlog.md",        "firmware/docs/feature-backlog.md"),
     ("outputs/firmware/docs/milestone-time-v1.md",      "firmware/docs/milestone-time-v1.md"),
+    # build 88（2026-10-14）：把天气去掉、改「纯日历」之后的表头三种样子
+    #   A = 现在这版（那格空着、城市名留着）/ B = 连城市名也不画 / C = 旧行为（露出片内结温）
+    ("outputs/firmware/docs/preview/preview-no-weather-A-keep-city.png",
+                                                        "firmware/docs/preview/preview-no-weather-A-keep-city.png"),
+    ("outputs/firmware/docs/preview/preview-no-weather-B-no-city.png",
+                                                        "firmware/docs/preview/preview-no-weather-B-no-city.png"),
+    ("outputs/firmware/docs/preview/preview-no-weather-C-old-dietemp.png",
+                                                        "firmware/docs/preview/preview-no-weather-C-old-dietemp.png"),
     # build 61：表头细笔画字体的 A/B 对照 + 61 个字模的总表（给以后换字体时对账用）
     ("outputs/firmware/docs/preview/preview-header-font-ab.png",
                                                         "firmware/docs/preview/preview-header-font-ab.png"),

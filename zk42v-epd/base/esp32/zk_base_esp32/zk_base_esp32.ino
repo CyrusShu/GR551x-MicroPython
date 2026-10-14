@@ -133,6 +133,16 @@ static void civilLocal(int32_t ep, int tz, int *py, int *pm, int *pd)
    原来是 **30 分钟**（比一小时还勤）—— 每次检查若天气/温度变了就整屏刷 16 秒，
    那是电池最大的一笔开销。改成 6 小时。 */
 #define WEATHER_INTERVAL_MS (6UL * 3600UL * 1000UL)
+/* ⑩ 2026-10-14 用户："把天气去掉，做成纯日历，只在每天 0 点刷一次"。
+   0 = **不把天气发给价签**（纯日历）：不写 0x71，0x20 也不带天气字段 ——
+   于是价签一天只有「0 点跨天」那一次整页刷新（外加它自己重启时对一次表）。
+   1 = 老行为（天气码变了 / 温差 ≥1.0℃ / 6 小时到点 就推）。
+
+   ⚠ 为什么"仍然去问一次天气接口"：这台板子的**时间**就是从这次 HTTP 的
+     Date 响应头来的（utcFromDateHeader），不发这次请求它就不知道"现在几点"，
+     也就没法判断"跨天了没有"。所以关的是**发送**，不是这次取数。
+     想连这次取数也省掉，得换时间源（NTP/RTC）——那是另一件事，先不做。 */
+#define WX_SEND_ENABLE      0
 /* 温度要变这么多（十分之一度，10 = 1.0℃）才值得推一次 */
 #define WX_TEMP_DELTA_T10   10
 #define TIME_INTERVAL_MS    (24UL * 3600UL * 1000UL)   // 时间多久重校一次（1 天）
@@ -1066,7 +1076,9 @@ static bool doSync(BLEAdvertisedDevice &dev)
     //   ⚠ 模式字节发 **0**（= 保持当前模式，build 60 起的固件支持）：
     //     基站不知道用户现在看的是日历页 / 时钟页 / 推的图，发 1 就会把页面顶掉。
     bool needTime = needTimeSyncNow();
-    bool sendWx   = weatherChangedNow();   /* 天气码变了 / 温度差 ≥1.0℃ / 从没发过 → 才发 */
+    /* WX_SEND_ENABLE=0（2026-10-14 纯日历）→ sendWx 永远 false：
+       天气照样取（时间要从它的 Date 头来），但**一个字节都不往价签写**。 */
+    bool sendWx   = (WX_SEND_ENABLE != 0) && weatherChangedNow();
     bool pushDue  = (PUSH_EVERY_MS != 0UL) && (lastPushMs == 0UL ||
                                               (millis() - lastPushMs) > PUSH_EVERY_MS);
     bool sentTime = false;
@@ -1084,7 +1096,7 @@ static bool doSync(BLEAdvertisedDevice &dev)
         p[4] = ts & 0xFF;
         p[5] = (uint8_t)(TZ_HOURS & 0xFF);
         p[6] = 0;                          /* 0 = 保持当前模式（别顶掉用户选的页面） */
-        if (haveWeather)
+        if (WX_SEND_ENABLE && haveWeather)
         {
             p[7] = (uint8_t)wxCode;
             if (wxTempHasTenths)
@@ -1106,7 +1118,7 @@ static bool doSync(BLEAdvertisedDevice &dev)
         sentTime   = true;
         lastTimeMs = millis();             /* 刚对过表 —— 之后 24 小时内不用专门校时了 */
         lastPushMs = millis();
-        if (haveWeather)
+        if (WX_SEND_ENABLE && haveWeather)
         {
             wxSentCode = wxCode;
             wxSentTemp = wxTemp;
@@ -1115,8 +1127,8 @@ static bool doSync(BLEAdvertisedDevice &dev)
         wallClockText((int32_t)ts, TZ_HOURS, txt, sizeof(txt));
         logf("→ 时间+天气一条走：UTC %u + 时区%d → 价签应显示 %s（模式=0 保持当前页）%s  载荷=%s",
              (unsigned)ts, TZ_HOURS, txt,
-             haveWeather ? "" : "（这次手里没天气，只发时间）",
-             haveWeather ? "10 字节" : "7 字节");
+             (WX_SEND_ENABLE && haveWeather) ? "" : "（只发时间）",
+             (WX_SEND_ENABLE && haveWeather) ? "10 字节" : "7 字节");
     }
     else if (needTime || pushDue)
     {
@@ -1135,7 +1147,7 @@ static bool doSync(BLEAdvertisedDevice &dev)
     bool wroteCity = false;                 /* 这一轮到底写没写东西（日志别乱说"没写"） */
     bool wroteMemo = false;
     bool wroteAlert = false;                /* build 71：这一轮发没发天气预警 */
-    if (haveWeather)
+    if (WX_SEND_ENABLE && haveWeather)
     {
         if (!sendWx)
         {
@@ -1244,6 +1256,12 @@ static bool doSync(BLEAdvertisedDevice &dev)
     //     载荷 = 7C <level> <utf8 类型名>，最多 2+15=17 字节（< MTU-3，不用分片）。
     {
         int  lv  = alertLevelNow();
+        if (WX_SEND_ENABLE == 0)
+        {
+            /* 2026-10-14 纯日历：预警也是天气那条路来的（和风），一并关掉 ——
+               不然关掉天气还单独推预警，屏上那格照样会动。 */
+            lv = 0;
+        }
         /* build-24b：图标编号也算"变了没" —— 换了预警类型但级别一样时（比如蓝色雷电 →
            蓝色大风）只比 level+名字可能漏掉图标变化。 */
         int  ic  = (lv > 0) ? wxAlertIcon : 0;

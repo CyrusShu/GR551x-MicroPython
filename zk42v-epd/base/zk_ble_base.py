@@ -964,6 +964,7 @@ async def cmd_watch(args) -> int:
 CONFIG_KEYS = {
     "城市名": "city", "纬度": "lat", "经度": "lon", "时区": "tz",
     "纪念日": "memo", "天气源": "wx_source",
+    "不取天气": "no_weather",
     "和风key": "qweather_key", "和风API Host": "qweather_host",
     "扫描秒数": "scan", "每轮间隔秒": "poll", "校时间隔秒": "time_interval",
     "天气间隔秒": "weather_interval", "日志文件": "log",
@@ -973,7 +974,7 @@ CONFIG_KEYS = {
     "wx_source": "wx_source", "qweather_key": "qweather_key",
     "qweather_host": "qweather_host", "scan": "scan", "poll": "poll",
     "time_interval": "time_interval", "weather_interval": "weather_interval",
-    "wx_temp_delta": "wx_temp_delta",
+    "wx_temp_delta": "wx_temp_delta", "no_weather": "no_weather",
     "log": "log",
 }
 
@@ -1008,6 +1009,11 @@ def load_config(args) -> None:
         argv_has = any(a == "--" + dst.replace("_", "-") for a in sys.argv[1:])
         if argv_has:
             continue
+        # 2026-10-14："不取天气" 跟 "--wx-source" 是同一件事的两张脸 ——
+        # 命令行既然显式指定了源（哪怕写的是 auto = 要天气），配置里那个
+        # "不取天气": true 就不能再把它盖回去（否则命令行说了不算，很难查出原因）。
+        if dst == "no_weather" and any(a == "--wx-source" for a in sys.argv[1:]):
+            continue
         setattr(args, dst, v)
         applied.append("%s=%s" % (dst, v))
     if applied:
@@ -1041,9 +1047,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help='纪念日提醒（build 67 起）："10-05=付婧文生日快乐！" = 那天套黑框 + '
                         '空白处框出这句话（按月日重复）；"off" = 清掉。'
                         "文案只能用固件字模里有的字（gen_font.py 的 MEMO_CHARS）")
-    p.add_argument("--wx-source", default="auto", choices=["auto", "open-meteo", "qweather"],
+    p.add_argument("--wx-source", default="auto",
+                   choices=["auto", "open-meteo", "qweather", "off"],
                    help="天气用哪个源：auto（有 key 就用和风，没有就 Open-Meteo）/ "
-                        "open-meteo（模型格点，免 key）/ qweather（实况，要 key）")
+                        "open-meteo（模型格点，免 key）/ qweather（实况，要 key）/ "
+                        "off（2026-10-14：完全不取天气 = 纯日历，只保留 0 点跨天推一次）")
     p.add_argument("--qweather-key", default="",
                    help="和风天气的 key（免费订阅即可；也可以放环境变量 QWEATHER_KEY）。"
                         "填了 auto 就会自动改用它 —— 它给的是**实况**，最贴近手机上那个数")
@@ -1074,6 +1082,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     load_config(args)
+    # 2026-10-14 用户："把天气去掉，做成纯日历，只在每天 0 点刷一次"。
+    # 天气源写 "off"（或配置里写 "不取天气": true）就等于 --no-weather：
+    # 一次 HTTP 都不发（**连预警也一起省掉** —— 预警跟天气是同一个服务），
+    # 基站只剩下「价签出现时对一次表 + 每天 0 点跨天推一次」这两件事。
+    # ⚠ 关掉天气之后，价签表头那格就没有天气图标/文字/温度了（城市名由 0x79 单独发，照旧保留）。
+    if str(getattr(args, "wx_source", "")).lower() in ("off", "none", "no", "关", "关闭"):
+        args.no_weather = True
+    if getattr(args, "no_weather", False):
+        log("天气：**关**（纯日历模式）—— 不发 0x71、也不取预警；"
+            "只保留「价签出现时对表」和「每天 0 点跨天推一次」。", args.log)
     runner = {"probe": cmd_probe, "sync": cmd_sync,
               "watch": cmd_watch, "raw": cmd_raw}[args.cmd]
     try:
