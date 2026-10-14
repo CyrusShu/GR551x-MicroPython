@@ -4766,7 +4766,10 @@ def _zk_say_ble_experiment(words):
     # build 90：**广播窗口**（用户 2026-10-14："你 0 点前后会把广播打开吗"）
     #   常态应该是"关"（省射频那 2.4 mAh/天）；只有下面三个时段才该是"开"：
     #   ① 上电/复位后 5 分钟 ② 每天 23:59:30~00:02:00 ③ 每 6 小时各 30 秒（本地 00/06/12/18）
-    if len(words) > 137:
+    # ⚠ 2026-10-14：**必须按 build 卡住** —— 用户的 tag 上跑的是 build 89
+    #   （状态块只有 136 个字），而这里读 words[136]/[137] 会读到结构体外面的 RAM 垃圾，
+    #   于是印出"窗口一共开过 3240607834 次"这种鬼话（build 89 那次 status 实测踩到）。
+    if len(words) > 137 and words[11] >= 90:
         win_on, win_opens = words[136], words[137]
         say("")
         say("  ---- build 90：广播窗口 ----")
@@ -4776,7 +4779,7 @@ def _zk_say_ble_experiment(words):
         if win_opens == 0 and len(words) > 1 and words[1] > 2000:
             say("      ⚠ 一次都没开过，但主循环跑了 %d 圈 —— 这段发我。" % words[1])
         else:
-            say("      该开的时段：刚上电 5 分钟 / 每天 23:59:30 起 150 秒 / "
+            say("      该开的时段：刚上电 5 分钟 / 每天 23:50 起 20 分钟 / "
                 "每 6 小时 30 秒（本地 00·06·12·18 点）")
             say("      想手动连手机网页：**按一下 RST**（重新上电就开 5 分钟窗口）。")
 
@@ -5000,7 +5003,16 @@ def _zk_say_epd_service(words, regs=None):
             say("      → 没走过暖启动分支（现在 ZK_PWR_SAVE=0，不开睡眠，正常）")
 
     # ---- build 78：AON 日历「探路」（啃睡眠第一步）----
-    if len(words) > 121:
+    # ⚠ build 91（2026-10-14）：固件里这段探路**关掉了**（ZK_RTC_PROBE=0）——
+    #   结论早出来了（那个计数器读回来一直是 0/不可信，见 backlog 第 11 节），
+    #   而它还每秒动一次跟睡眠定时器**共用**的 AON 选择子、还白耗电一个日历计数器，
+    #   更要命的是这里会把它读到的垃圾印成"它是秒计数器 ✅"误导人（build 89 的 status 就是）。
+    build_now = words[11] if len(words) > 11 else 0
+    if len(words) > 121 and build_now >= 91:
+        say("")
+        say("  AON 日历计数器探路：**build 91 起已关闭**（结论：那条路不可信、已搁置；"
+            "代码留着，要看就把 zk_epd_svc.c 里 ZK_RTC_PROBE 改 1 重编）")
+    elif len(words) > 121:
         st, ctr, d1, rd = words[118], words[119], words[120], words[121]
         calls = words[122] if len(words) > 122 else 0
         rnow  = words[123] if len(words) > 123 else 0
@@ -5658,10 +5670,17 @@ def zkstatus():
         dm = 0.0
         dh = 0.0
         moved = 0
+        dm_all = 0.0
+        dh_all = 0.0
+        n_all = 0
         for (h0, v0), (h1, v1) in zip(tick_pts, tick_pts[1:]):
             if v0 is None or v1 is None:
                 continue
             d = (v1 - v0) & 0xFFFFFFFF
+            if d < 5000:                    # 排除"重启/大跳"那种不连续（&0xFFFFFFFF 后极大）
+                dm_all += d / 1000.0        # 全量：连"没动"的那些间隔也算进去
+                dh_all += (h1 - h0)         #   —— 这才是"钟跟不跟得上真实时间"
+                n_all += 1
             if 0 < d < 5000:                # 变了、而且是合理增量（<5 秒）
                 dm += d / 1000.0
                 dh += (h1 - h0)
@@ -5673,12 +5692,24 @@ def zkstatus():
             say("    价签要么一直在刷屏/阻塞，要么时基真的停了。多跑一次，或看下面的 tb_* 那组。")
         else:
             ratio = dm / dh
+            # ⚠ 2026-10-14 build 91：**全量比值（含"没动"的间隔）才是准的那个**。
+            #   原因：节拍从 500ms 放到 2000ms 之后，"价签毫秒两个采样点之间没动"
+            #   变成了**常态**（不是卡顿），而下面那个 moved-only 的比值只在
+            #   "它更新得比采样快"时才成立 —— 更新慢于采样时那个数会被放大好几倍
+            #   （一个 2 秒的跳变叠在 0.25 秒的采样间隔上 → 看着像快 8 倍）。
+            ratio_all = (dm_all / dh_all) if dh_all > 0 else 0.0
             say("")
             say("  时基实测（密集采样，只算价签毫秒真的变了的那些间隔）：")
             say("    %d/%d 个间隔里它在走：价签走了 %.2f 秒 / 真实 %.2f 秒   ⇒ **比值 %.3f**"
                 % (moved, n_pt - 1, dm, dh, ratio))
+            say("    全量（含没动的间隔）：价签走了 %.2f 秒 / 真实 %.2f 秒   ⇒ **比值 %.3f**"
+                % (dm_all, dh_all, ratio_all))
+            if moved < (n_pt - 1) * 0.5:
+                say("    ℹ 它更新得比采样慢（%d/%d 个间隔没动）—— 这种情况看**全量**那个比值，"
+                    "上面那个 moved-only 的数会被放大。" % (n_pt - 1 - moved, n_pt - 1))
+            ratio = ratio_all          # 后面那句判语按全量来说
             if moved < (n_pt - 1) // 3:
-                say("    （大半时间没动 —— 多半是在刷屏或者被别的事情堵着，不影响这份读数）")
+                say("    （大半时间没动 —— 要么是节拍慢（正常）、要么在刷屏/被堵着）")
             if 0.98 <= ratio <= 1.02:
                 say("    → 对上了 ✅ 日历/时钟的重画间隔现在是按真实时间走的。")
             elif ratio > 2.0:

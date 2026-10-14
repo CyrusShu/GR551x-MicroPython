@@ -135,6 +135,9 @@ static uint8_t  s_need_time_report;  /* build 77：连上先主动报一次「�
      会把 AON_PAD_CTL1 的选择子挪到 CAL_TIMER，所以读完必须**立刻恢复成 SLP_TIMER**
      （我们的毫秒时基 tb_aon_raw() 读的就是它），并整段关中断。
    ⚠ 这一版不开睡眠（ZK_PWR_SAVE=0），纯探路，行为跟 build 77 一样。 */
+#ifndef ZK_RTC_PROBE
+#define ZK_RTC_PROBE 0          /* build 91：关掉了（结论早出来了，见下面那段注释） */
+#endif
 /* 2026-10-05：日历上的「休 / 班」表（基站 0x7E 下发，见下面 case 0x7E）。
    每天 2 bit：0=普通 1=休(红) 2=班；一个月 8 字节。数据来自国务院公告，
    由基站从 holidays.json 编好推下来 —— 固件里**不写死任何日期**。 */
@@ -1466,7 +1469,13 @@ void zk_epd_svc_poll(uint32_t now_ms)
         zk_notify(tb, (uint16_t)(q - tb));
     }
 
-    /* build 78 探路：AON 日历计数器一秒走多少 tick（判据见上面那段注释） */
+    /* build 78 探路：AON 日历计数器一秒走多少 tick（判据见上面那段注释）
+       ⚠ build 91（2026-10-14）：**关掉**。这条探路的结论早就出来了（日历计数器
+       读回来一直是 0 / 不可信，见 backlog 第 11 节），但代码还留着每秒去读一次 ——
+       它有几宗罪：① 把 AON 日历计数器置 EN（白耗电）；② 每秒动一次 AON_PAD_CTL1 的
+       TIMER_READ_SEL（那个寄存器是**跟睡眠定时器共用的**）；③ status.sh 把它读到的
+       垃圾数当成"日历的秒计数器"印出来，误导人。要看它就把 ZK_RTC_PROBE 改 1。 */
+#if ZK_RTC_PROBE
     if (!s_rtc_on)
     {
         /* build 78 第二版：光置 EN 它**不数**（实机读数一直是 0）—— 它是个
@@ -1506,6 +1515,7 @@ void zk_epd_svc_poll(uint32_t now_ms)
         s_rtc_ms   = (uint32_t)zk_tick_ms();
         g_dbg.rtc_ctr = c;
     }
+#endif /* ZK_RTC_PROBE */
 
     /* 0x72 的回报：电池刚被强制读了一次（主循环里 zk_bat_poll() 跑在我们前面），
        把结果发回网页 —— 扫电压的时候盯着网页日志就知道读到多少。 */

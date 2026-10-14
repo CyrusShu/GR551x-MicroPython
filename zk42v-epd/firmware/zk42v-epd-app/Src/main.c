@@ -499,6 +499,18 @@ void main_init(void)
         g_dbg.sleep_load   = 0;
         g_dbg.sleep_ticks  = 0;
         g_dbg.sleep_ms     = 0;
+        /* build 91：这几个"收到过几次命令"的计数器也只由命令写 —— 刷完机没收到过
+           就是 RAM 垃圾（2026-10-14 的 status 里"休/班表收到 2022754030 次"就是它）。
+           纯显示问题，但会让人以为收到了无数条命令，冷启动一并清零。 */
+        g_dbg.holiday_cmds    = 0;
+        g_dbg.fest_cmds       = 0;
+        g_dbg.city_cmds       = 0;
+        g_dbg.memo_cmds       = 0;
+        g_dbg.alert_cmds      = 0;
+        g_dbg.alert_icon_cmds = 0;
+        g_dbg.wx_cmds         = 0;
+        g_dbg.set_time_cmds   = 0;
+        g_dbg.time_keep_cnt   = 0;
     }
 
     __main();
