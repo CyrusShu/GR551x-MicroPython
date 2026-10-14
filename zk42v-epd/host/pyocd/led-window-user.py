@@ -5664,6 +5664,24 @@ def zkstatus():
         #       C Error: tuple indices must be integers or slices, not str
         #   实测日志 status-20261004-180049.log 就是这么断在「结论」那行的。
         tick_pts = []
+        # ⚠ 2026-10-14：**开跑之前先等价签"动起来"**。
+        #   为什么：status 之前往往刚有一次连接/推送，价签正卡在一整轮
+        #   16~18 秒的整屏刷新里（那段时间主循环被 BUSY 轮询占着、时基读不到）。
+        #   要是这时候开跑，开头那几秒会被算成"丢了时间"，把比值染歪 ——
+        #   两轮 5 分钟实测（1.003 / 0.995）的差别主要就是这个：
+        #   后一轮的 PC 采样正好停在 epd_delay_us 上（= 正在刷屏）。
+        #   判据：连着两个采样点之间它的毫秒往前走了（0 < Δ < 5 秒）就算出来了。
+        waited = 0.0
+        for _ in range(80):                     # 最多等 20 秒
+            _a = rd(ZK_DBG_ADDR + 4 * 88)
+            time.sleep(0.25)
+            _b = rd(ZK_DBG_ADDR + 4 * 88)
+            if (_a is not None and _b is not None
+                    and 0 < ((_b - _a) & 0xFFFFFFFF) < 5000):
+                break
+            waited += 0.25
+        if waited >= 1.0:
+            say("    （开跑前先等了 %.1f 秒，等价签从刷屏里出来）" % waited)
         for _ in range(n_pt):
             tick_pts.append((time.monotonic(), rd(ZK_DBG_ADDR + 4 * 88)))
             time.sleep(0.25)
