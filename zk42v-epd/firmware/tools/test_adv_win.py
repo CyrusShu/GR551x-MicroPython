@@ -50,8 +50,8 @@ int main(void)
     uint32_t base;
 
     c.boot_ms     = 300u * 1000u;     /* 同 zk_pwr.h 的 ZK_ADV_BOOT_WINDOW_S */
-    c.day_start_s = 86370u;           /* 23:59:30 */
-    c.day_len_s   = 150u;
+    c.day_start_s = 85800u;           /* 23:50:00（同 ZK_ADV_DAY_WIN_START_S） */
+    c.day_len_s   = 1200u;            /* 20 分钟（同 ZK_ADV_DAY_WIN_LEN_S） */
     c.fb_every_s  = 21600u;           /* 6 小时 */
     c.fb_len_s    = 30u;
 
@@ -122,10 +122,10 @@ int main(void)
         uint32_t d0 = base;
 
         printf("E %d %d %d %d\n",
-               zk_adv_win_open(600000u, d0 + 86369u, 1, &c),
-               zk_adv_win_open(600000u, d0 + 86370u, 1, &c),
+               zk_adv_win_open(600000u, d0 + 85799u, 1, &c),
+               zk_adv_win_open(600000u, d0 + 85800u, 1, &c),
                zk_adv_win_open(600000u, d0 + 86400u, 1, &c),
-               zk_adv_win_open(600000u, d0 + 86400u + 120u, 1, &c));
+               zk_adv_win_open(600000u, d0 + 86400u + 600u, 1, &c));
     }
 
     return 0;
@@ -168,8 +168,8 @@ def main():
     # 扫描轴是"从 00:00 开始的 86400 秒"，而这一窗是 23:59:30 → 00:02:00，
     # 所以它在扫描轴上被日界切成两头：**开头的 120 秒**（00:00–00:02）+ **结尾的 30 秒**
     # （23:59:30–24:00），合计 150 秒 —— 这正是"跨午夜"的证据（第一段在 0，最后一段在 86399）。
-    check('3: 每天那窗跨午夜、合计 150 秒（被日界切成开头 120 秒 + 结尾 30 秒）：%s' % C,
-          C is not None and C[0] == 150 and C[1] == 0 and C[2] == 86399,
+    check('3: 每天那窗跨午夜、合计 1200 秒（被日界切成开头 600 秒 + 结尾 600 秒）：%s' % C,
+          C is not None and C[0] == 1200 and C[1] == 0 and C[2] == 86399,
           '实际 %s' % C)
     if D:
         runs, total = D[0], D[1]
@@ -177,14 +177,14 @@ def main():
         # 扫描是从"当天 00:00"开始的，所以 0 点那窗被**日界线切成两段**：
         #   开头的 120 秒（00:00–00:02，属于这一窗的后半）+ 结尾的 30 秒（23:59:30–24:00），
         # 中间夹着 06/12/18 三个各 30 秒的兜底窗 —— 一共 5 段、240 秒。
-        check('4: 24 小时里开 %d 段、每段 %s 秒（0 点那窗被日界切成 120+30，'
+        check('4: 24 小时里开 %d 段、每段 %s 秒（0 点那窗被日界切成 600+600，'
               '中间 06/12/18 各 30 秒）' % (runs, segs),
-              runs == 5 and segs == [120, 30, 30, 30, 30], '实际 段=%s' % segs)
-        check('5: 一天合计只开 %d 秒 = 150+3×30，占空比 %.2f%%（常开是 100%%）'
-              % (total, total / 864.0), total == 240, '实际 %d 秒' % total)
+              runs == 5 and segs == [600, 30, 30, 30, 600], '实际 段=%s' % segs)
+        check('5: 一天合计开 %d 秒 = 1200+3×30，占空比 %.2f%%（常开是 100%%）'
+              % (total, total / 864.0), total == 1290, '实际 %d 秒' % total)
     else:
         check('4: 没拿到 D 那组数据', False)
-    check('6: 边界对：23:59:29 关 / 23:59:30 开 / 00:00:00 开 / 00:02:00 关（%s）' % E,
+    check('6: 边界对：23:49:59 关 / 23:50:00 开 / 00:00:00 开 / 00:10:00 关（%s）' % E,
           E == [0, 1, 1, 0])
 
     # 7) 源码守卫：固件那边真的用上了这套判断，而且**窗口关着时不许自动重开广播**
@@ -202,6 +202,14 @@ def main():
               ble_c.count('s_adv_open &&') >= 2)
         check('7: 旋钮在 zk_pwr.h 里、默认开（ZK_ADV_WINDOW 1）',
               'ZK_ADV_WINDOW           1' in pwr_h and 'ZK_ADV_BOOT_WINDOW_S' in pwr_h)
+        # 4 个默认值**两边都钉住**：这个测试里的数是从 zk_pwr.h 抄来的，
+        # 谁改了旋钮没同步改测试，这里就该红。
+        check('7: zk_pwr.h 的四个窗口默认值跟本测试一致（300s / 23:50 起 1200s / 6h 30s）',
+              'ZK_ADV_BOOT_WINDOW_S    300u' in pwr_h and
+              'ZK_ADV_DAY_WIN_START_S  85800u' in pwr_h and
+              'ZK_ADV_DAY_WIN_LEN_S    1200u' in pwr_h and
+              'ZK_ADV_FB_EVERY_S       21600u' in pwr_h and
+              'ZK_ADV_FB_LEN_S         30u' in pwr_h)
         check('7: zk_adv_win.h 是"纯逻辑"头文件（主机端测的就是固件那一份）',
               'zk_adv_win_open' in win_h and '#include "gr_includes.h"' not in win_h)
     except OSError as e:
