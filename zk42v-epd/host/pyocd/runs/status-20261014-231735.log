@@ -1,0 +1,86 @@
+Setting SWD clock to 240 kHz
+
+  自研固件体检 0x3001F000
+  规矩：每次都先 halt 再读；隔一小会儿采几个点，判断它是在跑、在复位、还是卡住了
+
+  先不复位，直接连 SWD（最多等 1500 ms）...
+  直接连上了，CPUID 也读得出来（试了 1 次）
+  —— 说明现在这个状态里调试口是开的（原厂 APP 跑起来会关）
+  （每行：PC 落在哪 · 符号 · stage · DHCSR 的粘滞位。RST_ST=1 表示「上次读 DHCSR 之后芯片复位过」）
+
+  #1  PC=0x0100C164  [我们的 APP]                      epd_delay_us+0x10        stage=9  RST_ST=0 RETIRE=1  boot=1 uds=0
+  #2  PC=0x0100C164  [我们的 APP]                      epd_delay_us+0x10        stage=9  RST_ST=0 RETIRE=1  boot=1 uds=0
+  #3  PC=0x0007C370  [ROM（掩膜 ROM：芯片刚启动，或刚从复位里出来）]   -                        stage=9  RST_ST=0 RETIRE=1  boot=1 uds=0
+  #4  PC=0x0007C370  [ROM（掩膜 ROM：芯片刚启动，或刚从复位里出来）]   -                        stage=9  RST_ST=0 RETIRE=1  boot=1 uds=0
+  #5  PC=0x0007C370  [ROM（掩膜 ROM：芯片刚启动，或刚从复位里出来）]   -                        stage=9  RST_ST=0 RETIRE=1  boot=1 uds=0
+
+  ---------------- 最后一次成功采样的细节 ----------------
+  CPUID     : 0x410FC241 (Cortex-M4，读通路是活的)
+  DHCSR     : 0x01030003  S_HALT=1
+  PC        : 0x0007C370  ← ROM（掩膜 ROM：芯片刚启动，或刚从复位里出来）
+  LR / SP   : 0x0007C34B / 0x30013FB4
+  CFSR/HFSR : 0x00000000 / 0x00000000
+  BFAR/MMFAR: 0xE000EDF8 / 0xE000EDF8
+
+  AON 寄存器（这块是「永远在线」域，软复位不丢）：
+    SOFTWARE_0 = 0x00010003   （冷启动/热启动相关的标志，SDK 用来判 boot mode）
+    SOFTWARE_1 = 0x00000000   （低 16 位 = 0x0000）
+      → 里面没有 0xF175 这个标志，平台那条「超深睡唤醒就复位整个系统」的路径**不成立**。
+    SOFTWARE_2 = 0x00000050
+    SNSADC_CFG = 0x472DA703   （ADC 唯一的配置寄存器）
+      通道 P=5(TMP(温度))  N=5(TMP(温度))   参考=0.85V   VBAT_EN=0  TEMP_EN=1
+      ℹ 停在温度通道是**正常**的：build 42 每一轮最后读的是温度，
+        寄存器就停在它上面；这一版读电池时会先把通道切回 BAT，
+        判据看下面那两条读数（1.28V 那条应该 ≈ 你供给的电压）。
+    WDT LOAD/VALUE/CTRL/RIS = 0xFFFFFFFF 0xFFFFFFFF 0x00000000 0x00000000
+
+  AON 日历/RTC（CALENDAR_TIMER_CTL = 0x00003100）:
+     EN=0   CLK_SEL=1   WRAP_CNT=0   闹钟中断=开   回绕中断=开
+     → **日历没在跑**（EN=0）—— 也就是说这颗价签上现在没人用它。
+       它是 AON 域里的硬件 RTC（hal_calendar_*：能直接读写年月日时分秒，
+       还有闹钟能当唤醒源）—— 拿它当「绝对时间」比我们现在借 SDK 的
+       睡眠定时器干净得多，而且跨软复位/刷固件都不丢。
+    PWR_RET01 的 WAKE_UP_SEL = 0x05  → 允许的唤醒源：SLEEP_TIMER/BLE
+
+  PSC（电源状态控制器，就在 AON 里）—— 自研固件就是卡在这里：
+    PSC_CMD     = 0x00000000   MCU_PWR_REQ=0  MCU_PWR_BUSY=0 
+    PSC_CMD_OPC = 0x00000011   opcode=0x11 (SLP_TIMER_MODE_1)
+    MCU_RELEASE = 0x0181213A
+
+  BLE 子系统（comm core）状态：
+    AON PWR_RET01 = 0x053218EC
+      comm core  电源 = 1    comm timer 电源 = 1
+      comm core  隔离 = 0    comm timer 隔离 = 0   （0 = 没隔离，正常）
+      comm core  复位(1=已放开) = 1    comm timer 复位(1=已放开) = 1
+      → BLE 子系统是上电、放开复位的 —— 那就不是电源/复位的问题。
+    NVIC ISER0 = 0x04001006
+      IRQ1 BLE_SDK（协议栈调度）= 使能    IRQ2 BLE = 使能    IRQ25 BLESLP = **没使能**
+
+  B2-B 共享内存信箱 0x30014000：
+    magic     = 0xC26BC60F ✗ 不是 0x5A4B4D42 —— 要么没人写过，要么写的地址不对
+    seq       = 2793187762
+    len / sum = 630372454 / 0x2B19E71B
+    status    = 1296584981    ack_seq = 3874672998    ms_refresh = 1927179322
+
+  屏的 7 根脚（GPIO0，0xA0010000）—— 自研固件空闲时留下的状态：
+    脚     输出值  实际电平  是输出吗
+    CS       0       0        否（输入）
+    SCLK     0       0        否（输入）
+    SDI      0       0        否（输入）
+    DC       0       0        否（输入）
+    BUSY     0       0        否（输入）
+    RST      0       0        否（输入）
+    AUX      0       0        否（输入）   （在 GPIO1 上：编号 24 = P1_8）
+    （BUSY 是输入脚：空闲时不忙的话应该是 0；一直是 1 可能是脚悬空/接错）
+
+  AON 定时器（跑在低功耗时钟上）：读两次（隔 250ms）
+    53779  ->  46863    （递减计数，差 6916）
+    → 在走，低功耗时钟是活的（那 PSC 卡住就是别的原因）。
+      0.3 秒实际走了 6916 个 tick ⇒ **约 27226 Hz**
+      （这就是 build 59 要标定的那个频率：本机实测一直在 28 kHz 上下，不是教科书式的 32768）
+
+  时基自检（固件里所有 ms 都是拿 SystemCoreClock 换算的，所以先看它对不对）：
+    SystemCoreClock = 16000000   固件的 DWT 校准值 s_cyc_per_us = 16
+      （两个符号的地址是从 .map 查的：SystemCoreClock @0x300041C0，s_cyc_per_us @0x3000AAD0）
+    DWT CYCCNT 实测：0.25 秒走了 4075396 个周期 ⇒ 实际主频 ≈ 16.0 MHz
+    → 对得上 ✅ 状态块里的 ms 可以直接信。

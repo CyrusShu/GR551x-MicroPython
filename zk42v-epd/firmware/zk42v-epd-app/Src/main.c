@@ -87,6 +87,7 @@ static uint32_t      s_aon_hz;      /* 实际用哪个频率：0 = 没在用 AON
 static uint32_t      s_aon_src;     /* 1=DWT 标定 2=SDK 值 3=名义值 0=DWT 路径 */
 static uint8_t       s_aon_down;    /* 1 = AON 计数器递减（本机实测就是） */
 static uint8_t       s_aon_alive;   /* 标定期间看到它在动 */
+static uint32_t      s_lp_recheck_ms;   /* build 92：上一次重读 sys_lpclk_get() 的时刻 */
 
 #define ZK_TB_HZ_MIN  18000u        /* 低频时钟只可能是 32k 那一档（±）。 */
 #define ZK_TB_HZ_MAX  45000u        /* 出了这个范围 = 标定/读数崩了，宁可不用。 */
@@ -511,6 +512,11 @@ void main_init(void)
         g_dbg.wx_cmds         = 0;
         g_dbg.set_time_cmds   = 0;
         g_dbg.time_keep_cnt   = 0;
+        /* build 92：广播窗口那两个数也一样 —— adv_win_opens 只在"窗口开合的那一刻"
+           才写，而开机时窗口本来就是开的（没有那一次跳变）→ 刷完机它是 RAM 垃圾
+           （2026-10-14 build 91 的 status 里印出"窗口一共开过 3843590726 次"）。 */
+        g_dbg.adv_win_on      = 0;
+        g_dbg.adv_win_opens   = 0;
     }
 
     __main();
@@ -867,6 +873,25 @@ int main(void)
         /* B2-A.2：扫描/广播实验的状态机节拍 + 兜底超时。
            传进去的是 DWT 算的毫秒数（拿不到时基就是 0，函数里会退回数圈数）。 */
         zk_ble_poll(tick_ms());
+
+        /* build 92：**每 30 秒重读一次 SDK 的 LP 时钟估计**（只看、先不动时基）。
+           为什么要看：build 89/91 把时基修到 0.996/1.003 之后，剩下的那点误差
+           可能是"我们只在开机标定过一次频率，而低频 RC 会随温度漂"。
+           SDK 的 PMU 校准一直在跟踪这个频率（sys_lpclk_get() 会跟着变），
+           所以把它**定时读回来印在状态块里**（tb_hz_sdk）就能回答：
+           开机 27235 → 半小时后还是 27235 吗？差多少？
+           ⚠ 先不动 s_aon_hz —— 改频率会让"已经攒下的 tick 重新折算"，
+             整个历史时间会跳一下（要改就得先把已折算的毫秒冻起来，见 backlog 第 18 节）。 */
+        if ((uint32_t)(tick_ms() - s_lp_recheck_ms) >= 30000u)
+        {
+            uint32_t hz_now = sys_lpclk_get();
+
+            s_lp_recheck_ms = tick_ms();
+            if (hz_now >= ZK_TB_HZ_MIN && hz_now <= ZK_TB_HZ_MAX)
+            {
+                g_dbg.tb_hz_sdk = hz_now;
+            }
+        }
 
         /* build 31：电池/温度（内部自己限速，一分钟一次）。
            ⚠ 顺序有讲究：build 43 把它**挪到 zk_epd_svc_poll() 前面** ——
