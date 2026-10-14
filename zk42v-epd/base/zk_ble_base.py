@@ -856,6 +856,28 @@ async def cmd_raw(args) -> int:
 
 
 # ---------------------------------------------------------------- watch 子命令
+def decide_sync(args, addr, now, last_time, last_wx_t, pushed_day, today):
+    """这一轮要不要连上价签写东西 —— 返回 (due_time, due_wx, new_day)。
+
+    抽成函数**是为了能离线自测**（`tests/test_push_plan.py`），因为它踩过一个很隐蔽的坑：
+    纯日历（`天气源: off`）时天气不发了，但 `due_wx` 到点（6 小时）还是真 ——
+    而下面的 `do_time = reappeared or due_time or due_wx or new_day` 会把 due_wx
+    当成"该对表了"，于是**每 6 小时白刷一屏**，正好跟"只在 0 点刷一次"相反。
+    所以这档下 due_wx 必须直接关掉，due_time 也只认"从来没同步过"。
+    """
+    if getattr(args, "no_weather", False):
+        due_time = addr not in last_time          # 只在开机/基站重启后第一次
+        due_wx   = False
+    else:
+        due_time = (addr not in last_time) or (now - last_time[addr]) >= args.time_interval
+        due_wx   = ((addr not in last_wx_t)
+                    or (now - last_wx_t[addr]) >= args.weather_interval)
+
+    prev_day = pushed_day.get(addr)
+    new_day  = (prev_day is not None) and (prev_day != today)   # 跨天（0 点那次）
+    return due_time, due_wx, new_day
+
+
 async def cmd_watch(args) -> int:
     # watch 是"常驻基站"：它只在天气变了/到点时才连一次，**不该动用户在网页上选的页面**，
     # 所以默认用模式 0（保持当前页）—— 除非命令行里显式 --no-keep-mode。
@@ -865,6 +887,9 @@ async def cmd_watch(args) -> int:
         "之后时间每 " + str(int(args.time_interval)) + " 秒、天气每 "
         + str(int(args.weather_interval)) + " 秒复查一次（值没变不发）；ctrl-C 退出。",
         args.log)
+    if getattr(args, "no_weather", False):
+        log("⚠ 天气是关的（纯日历）：不再按天气间隔复查；**只有本地日期变了（0 点）"
+            "才推一次时间**，外加价签刚上电/基站刚启动时的第一次对表。", args.log)
     if args.keep_mode:
         log("（推命令时模式字节发 0 = 保持价签当前页面，不会把它顶回日历页）", args.log)
     last_time = {}      # addr -> 上次成功同步时间的 monotonic 时间
@@ -899,8 +924,10 @@ async def cmd_watch(args) -> int:
         STATUS["tag_seen"] = time.time()
         now = time.monotonic()
         reappeared = addr not in present        # 刚上电/刚回来 → 立刻同步
-        due_time = addr not in last_time or (now - last_time[addr]) >= args.time_interval
-        due_wx = addr not in last_wx_t or (now - last_wx_t[addr]) >= args.weather_interval
+        today      = time.strftime("%Y-%m-%d")
+        # 2026-10-14：这一组判断抽成 decide_sync() 了（纯日历那个 due_wx 坑 + 能离线自测）
+        due_time, due_wx, new_day = decide_sync(args, addr, now, last_time, last_wx_t,
+                                                pushed_day, today)
         present = {addr}
 
         if reappeared:
@@ -917,11 +944,11 @@ async def cmd_watch(args) -> int:
             last_wx.get(addr, {}).pop("v", None)
             last_alert.get(addr, {}).pop("a", None)
 
-        # 跨天：本地日期跟上次推过的不一样了 -> 主动推一次（时间+日期，顺带天气）
-        today    = time.strftime("%Y-%m-%d")
-        prev_day = pushed_day.get(addr)
-        new_day  = (prev_day is not None) and (prev_day != today)
+        # 跨天：本地日期跟上次推过的不一样了 -> 主动推一次（时间+日期，顺带天气）。
+        # ⚠ new_day 是 decide_sync() 一起算的（上面），它不懂"周几"也不懂时区：
+        #   用的是**基站本地日期**，所以基站电脑的时区得对（配置里那个"时区"只管发给价签）。
         if new_day:
+            prev_day = pushed_day.get(addr)
             log("跨到新的一天（本地 " + today + "，上次推的是 " + str(prev_day)
                 + "）→ 主动推一次，把日期/变天补齐", args.log)
 

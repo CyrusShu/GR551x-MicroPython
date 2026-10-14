@@ -240,6 +240,9 @@ FILES = [
     #  编出来的 .bin 不进库（跟价签镜像一个规矩），要刷就照 base/esp32/README.md 现编。
     ("outputs/ble-base/README.md",                      "base/README.md"),
     ("outputs/ble-base/zk_ble_base.py",                 "base/zk_ble_base.py"),
+    # 2026-10-14 纯日历：基站"什么时候才连上价签写东西"的离线自测
+    #   （A 组验"一天最多推一次"，B 组是对照组 —— 抓"每 6 小时白刷一屏"那种退化）
+    ("outputs/ble-base/tests/test_push_plan.py",        "base/tests/test_push_plan.py"),
     ("outputs/ble-base/wx-compare.py",                  "base/wx-compare.py"),
     ("outputs/ble-base/wx-relay.py",                    "base/wx-relay.py"),
     ("outputs/ble-base/deploy/README.md",               "base/deploy/README.md"),
