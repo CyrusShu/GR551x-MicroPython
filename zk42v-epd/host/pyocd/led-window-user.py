@@ -1341,7 +1341,7 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 136
+ZK_DBG_WORDS = 138   # build 90：+2（广播窗口 136/137）
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -4762,6 +4762,23 @@ def _zk_say_ble_experiment(words):
                    rsn.get(stop_rsn, '未知') if stop_rsn != 0xFFFFFFFF else '还没停过'))
             if restart_cnt == 0 and stop_rsn != 2:
                 say("      → 停了又没能重开，空中可能已经没有我们的包了 —— 把这段发我。")
+
+    # build 90：**广播窗口**（用户 2026-10-14："你 0 点前后会把广播打开吗"）
+    #   常态应该是"关"（省射频那 2.4 mAh/天）；只有下面三个时段才该是"开"：
+    #   ① 上电/复位后 5 分钟 ② 每天 23:59:30~00:02:00 ③ 每 6 小时各 30 秒（本地 00/06/12/18）
+    if len(words) > 137:
+        win_on, win_opens = words[136], words[137]
+        say("")
+        say("  ---- build 90：广播窗口 ----")
+        say("    现在 %s   窗口一共开过 %d 次" %
+            ("**开着**（在广播，基站/手机找得到它）" if win_on else
+             "关着（不广播 —— 省射频那笔 ≈2.4 mAh/天）", win_opens))
+        if win_opens == 0 and len(words) > 1 and words[1] > 2000:
+            say("      ⚠ 一次都没开过，但主循环跑了 %d 圈 —— 这段发我。" % words[1])
+        else:
+            say("      该开的时段：刚上电 5 分钟 / 每天 23:59:30 起 150 秒 / "
+                "每 6 小时 30 秒（本地 00·06·12·18 点）")
+            say("      想手动连手机网页：**按一下 RST**（重新上电就开 5 分钟窗口）。")
 
 
 def _zk_say_epd_service(words, regs=None):

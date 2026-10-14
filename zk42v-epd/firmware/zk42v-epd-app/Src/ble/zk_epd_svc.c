@@ -1399,6 +1399,24 @@ void zk_epd_svc_init(void)
 
 /* ---------------------------------------------------------------- 空闲循环 */
 
+/* build 90：价签自己认为的"现在几点"（本地墙上时间戳，秒）。
+   算法跟日历页那句 `cur = s_ts + (tick - s_ts_ms)/1000` **同一份** —— 别另写一套，
+   不然"广播窗口在 0 点开"和"日历页在 0 点翻"会各说各话。
+   没同步过（s_ts_ms == 0）返回 0。 */
+uint32_t zk_epd_now(void)
+{
+    if (0u == s_ts_ms)
+    {
+        return 0u;
+    }
+    return (uint32_t)((uint64_t)s_ts + (zk_tick_ms64() - s_ts_ms) / 1000u);
+}
+
+int zk_epd_synced(void)
+{
+    return (0u != s_ts_ms) ? 1 : 0;
+}
+
 void zk_epd_svc_poll(uint32_t now_ms)
 {
     /* build 57 起 zk_tick_ms() 是**实时**的（以前只在"画一页"时写一次，两次 status

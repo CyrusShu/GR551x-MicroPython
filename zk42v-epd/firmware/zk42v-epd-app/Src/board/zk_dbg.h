@@ -35,7 +35,15 @@
    ② **值没变就不重画**：0x20(只对表)/0x79 城市名/0x7E 休班表/0x7F 节日名/0x7A 纪念日
       重发同样的内容时不再刷屏 —— 这样"价签自己 0 点翻页"和"基站 0 点推一次"
       不会变成一天两次全刷。 */
-#define ZK_BUILD_ID   89u
+/* build 90（2026-10-14 晚，用户："就是说你 0 点前后会把广播打开吗" → "好"）：
+   **广播改窗口化**：不再 24 小时常开，只在
+     ① 上电/复位后 5 分钟（刷机、换电池、手机连；想手动连就按 RST）、
+     ② 每天 23:59:30 起 150 秒（跨午夜，接基站那轮跨天推送）、
+     ③ 每 6 小时 30 秒（本地 00/06/12/18 点，给"临时推东西"兜底）
+   这三个时段开窗 —— 一天合计 ≈4 分钟 = 0.28% 占空比。
+   旋钮在 board/zk_pwr.h（ZK_ADV_WINDOW 改 0 就回到常开），
+   判断逻辑在 ble/zk_adv_win.h（主机端有自测 tools/test_adv_win.py）。 */
+#define ZK_BUILD_ID   90u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -119,7 +127,7 @@ typedef struct
 
 #define ZK_FLAG_PSAVE        0x0040u   /* 2026-10-03：省电版在跑（主循环睡眠 + 广播放宽） */
 
-#define ZK_DBG_WORDS 136
+#define ZK_DBG_WORDS 138
 
 typedef struct
 {
@@ -350,7 +358,14 @@ typedef struct
     uint32_t sleep_ms;            /* 133 */
     uint32_t holiday_cmds;        /* 134: 收到过多少次 0x7E SET_HOLIDAY（休/班表）*/
     uint32_t fest_cmds;           /* 135: 收到过多少次 0x7F（节日名）*/
-    uint32_t rsv[ZK_DBG_WORDS - 136];
+    /* ---- build 90：广播窗口（用户 2026-10-14："你 0 点前后会把广播打开吗"）------
+       价签不再 24 小时常开广播，只在三个时段开窗口（上电后 5 分钟 / 每天 0 点前后
+       150 秒 / 每 6 小时 30 秒，旋钮在 board/zk_pwr.h，判断逻辑在 ble/zk_adv_win.h）。
+       adv_win_on 用来验收：平时应该是 0；0 点前后、刚上电时应该是 1。
+       adv_win_opens 一直涨才说明"窗口在按点开"。 */
+    uint32_t adv_win_on;          /* 136: 现在窗口开着吗（1=开着 = 正在广播）*/
+    uint32_t adv_win_opens;       /* 137: 窗口一共开过几次 */
+    uint32_t rsv[ZK_DBG_WORDS - 138];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

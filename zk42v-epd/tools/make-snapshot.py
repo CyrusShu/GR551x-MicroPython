@@ -106,6 +106,10 @@ FILES = [
     ("outputs/firmware/tools/gui_preview.c",            "firmware/tools/gui_preview.c"),
     ("outputs/firmware/tools/gui_preview.py",           "firmware/tools/gui_preview.py"),
     ("outputs/firmware/tools/test_gui.py",              "firmware/tools/test_gui.py"),
+    # build 90：广播窗口（纯逻辑头文件 + 主机端自测 —— 逐秒扫 86400 秒算占空比）
+    ("outputs/firmware/zk42v-epd-app/Src/ble/zk_adv_win.h",
+                                                        "firmware/zk42v-epd-app/Src/ble/zk_adv_win.h"),
+    ("outputs/firmware/tools/test_adv_win.py",          "firmware/tools/test_adv_win.py"),
     ("outputs/firmware/tools/test_lunar.py",            "firmware/tools/test_lunar.py"),
     ("outputs/firmware/tools/test_opt.py",              "firmware/tools/test_opt.py"),
     ("outputs/firmware/tools/test_tick.py",             "firmware/tools/test_tick.py"),

@@ -40,6 +40,7 @@
 #include "zk_dbg.h"
 #include "zk_epd_svc.h"      /* B2-A.2：GATT 服务 / 推图协议 */
 #include "zk_pwr.h"          /* 2026-10-03 省电：广播间隔 ZK_ADV_INTERVAL */
+#include "zk_adv_win.h"      /* 2026-10-14 build 90：广播窗口（判断逻辑，主机端有自测） */
 
 #include "gr_includes.h"
 #include "ble.h"
@@ -188,6 +189,56 @@ static ble_gap_adv_param_t      s_adv_param;
 static ble_gap_adv_time_param_t s_adv_time;
 
 static volatile uint8_t s_connected;
+
+/* ------------------------------------------------------------------
+ * build 90：**广播窗口**
+ *
+ * 以前广播是 24 小时常开的（100ms 间隔）。按占空比估 ≈0.1 mA ≈ 2.4 mAh/天 ——
+ * 比"一天一次整屏刷新"（0.067 mAh）大 30 多倍，所以价签一旦不需要"随时被找到"，
+ * 这就是最大的一刀。用户 2026-10-14 拍板做成窗口（"你 0 点前后会把广播打开吗"）。
+ *
+ * 开窗时段（旋钮都在 board/zk_pwr.h，判断逻辑在 zk_adv_win.h，主机端有自测）：
+ *   ① 上电/复位后 5 分钟（刷机、换电池、手机连）——想手动连就按一下 RST；
+ *   ② 每天 23:59:30 + 150 秒（跨午夜）——基站那轮跨天推送正好在这时候；
+ *   ③ 每 6 小时开 30 秒（本地 00/06/12/18 点）——基站临时推东西不用等 0 点。
+ * 一天合计 ≈4 分钟 = 0.28% 占空比。
+ * ------------------------------------------------------------------ */
+static const zk_adv_win_cfg_t s_adv_win_cfg =
+{
+    (uint32_t)ZK_ADV_BOOT_WINDOW_S * 1000u,
+    (uint32_t)ZK_ADV_DAY_WIN_START_S,
+    (uint32_t)ZK_ADV_DAY_WIN_LEN_S,
+    (uint32_t)ZK_ADV_FB_EVERY_S,
+    (uint32_t)ZK_ADV_FB_LEN_S
+};
+
+static uint8_t  s_adv_open = 1u;      /* 我们现在"想不想要"广播开着（窗口状态） */
+
+/* 真正开/关广播（跟窗口状态配对用）。开的时候用 s_adv_time（duration=0，永不超时），
+   什么时候关由窗口逻辑说了算。 */
+static void zk_ble_adv_apply(uint8_t want)
+{
+    if (want && !s_adv_open)
+    {
+        s_adv_open = 1u;
+        g_dbg.adv_win_opens++;
+        g_dbg.ble_state = ZK_BLE_ST_ADV;      /* 状态块别再说"在广播"时其实关着 */
+        if (!s_connected && (0 == ble_gap_adv_start(0, &s_adv_time)))
+        {
+            g_dbg.ble_adv_restart_cnt++;
+        }
+    }
+    else if (!want && s_adv_open)
+    {
+        s_adv_open = 0u;
+        g_dbg.ble_state = ZK_BLE_ST_OFF;      /* 窗口关了 = 现在真的没在广播 */
+        if (!s_connected)
+        {
+            (void)ble_gap_adv_stop(0);
+        }
+    }
+    g_dbg.adv_win_on = s_adv_open ? 1u : 0u;
+}
 
 enum
 {
@@ -526,7 +577,9 @@ void zk_ble_evt_handler(const ble_evt_t *p_evt)
             g_dbg.ble_adv_stop_cnt++;
             g_dbg.ble_adv_stop_rsn =
                 (uint32_t)p_evt->evt.gapm_evt.params.adv_stop.reason;
-            if (!s_connected &&
+            /* build 90：**窗口关着的时候别自作主张重开** —— 那是我们主动停的
+               （不然每 0.5 秒停一次、重开一次，白费电）。 */
+            if (s_adv_open && !s_connected &&
                 BLE_GAP_STOPPED_REASON_CONN_EST !=
                     p_evt->evt.gapm_evt.params.adv_stop.reason &&
                 0 == ble_gap_adv_start(0, &s_adv_time))
@@ -545,8 +598,8 @@ void zk_ble_evt_handler(const ble_evt_t *p_evt)
             s_connected     = 0;
             g_dbg.ble_state = ZK_BLE_ST_ADV;
             zk_epd_svc_on_disconnect();
-            /* 断开就用当前这套数据重开 */
-            if (0 == ble_gap_adv_start(0, &s_adv_time))
+            /* 断开就用当前这套数据重开（build 90：窗口关着就不开） */
+            if (s_adv_open && 0 == ble_gap_adv_start(0, &s_adv_time))
             {
                 g_dbg.ble_adv_restart_cnt++;
             }
@@ -586,6 +639,16 @@ void zk_ble_poll(uint32_t now_ms)
 
     s_now_ms = now_ms;
     s_phase_iters++;
+
+    /* build 90：广播窗口（每圈都看一眼 —— 主循环在 IDLE 下由 500ms 的 app_timer
+       叫醒，所以窗口最多晚 0.5 秒开/关，对"0 点那轮推送"完全够）。 */
+#if ZK_ADV_WINDOW
+    {
+        int want = zk_adv_win_open(now_ms, zk_epd_now(), zk_epd_synced(), &s_adv_win_cfg);
+
+        zk_ble_adv_apply((uint8_t)(want ? 1u : 0u));
+    }
+#endif
 
     if (PH_SCAN != s_phase && PH_ADV != s_phase)
     {

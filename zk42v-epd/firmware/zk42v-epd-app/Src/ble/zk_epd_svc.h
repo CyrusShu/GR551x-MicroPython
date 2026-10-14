@@ -41,4 +41,12 @@ uint32_t zk_tick_ms(void);
    32 位版本在 CYCCNT 绕圈时会跳（build 29 的"每 4.5 分钟自刷一次"）。 */
 uint64_t zk_tick_ms64(void);
 
+/* build 90：价签**自己认为的现在几点**（本地墙上时间戳，秒；0 = 从来没同步过）。
+   算法跟日历页一模一样：SET_TIME 那一刻的时间戳 + 之后过去的秒数。
+   广播窗口要用它判断"是不是快到 0 点了"（见 ble/zk_adv_win.h）。 */
+uint32_t zk_epd_now(void);
+
+/* build 90：时间同步过没有（给广播窗口用 —— 没同步过就一直开着等人来对表） */
+int      zk_epd_synced(void);
+
 #endif /* __ZK_EPD_SVC_H__ */
