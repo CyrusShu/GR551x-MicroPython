@@ -1341,7 +1341,8 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 140   # build 90：+2（广播窗口 136/137）；build 93：+2（复位现场 138/139）
+ZK_DBG_WORDS = 142   # build 90：+2（广播窗口 136/137）；93：+2（复位现场 138/139）；
+                     # build 95：+2（日历探针 140/141：实测速率 / HAL 换算的秒）
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -5083,7 +5084,39 @@ def _zk_say_epd_service(words, regs=None):
     #   而它还每秒动一次跟睡眠定时器**共用**的 AON 选择子、还白耗电一个日历计数器，
     #   更要命的是这里会把它读到的垃圾印成"它是秒计数器 ✅"误导人（build 89 的 status 就是）。
     build_now = words[11] if len(words) > 11 else 0
-    if len(words) > 121 and build_now >= 91:
+    if len(words) > 141 and build_now >= 95:
+        # build 95：**AON 日历计数器探针**（照 drivers/src/app_rtc.c 的姿势：
+        # hal_calendar_init + hal_calendar_init_time，而不是像 build 78/79 那样直接摸
+        # 寄存器、还装了个 0）。关键看"实测速率"：≈27235 = 慢时钟直出（最理想）、
+        # ≈851 = 1/32 分频（也能用）、明显更小 = 睡着时它不数（这条路就废）。
+        # 而这个速率是**跨着睡眠**量出来的（主循环 2 秒才醒一次）。
+        st, ctr, d1, rd = words[118], words[119], words[120], words[121]
+        calls = words[122] if len(words) > 122 else 0
+        rnow = words[123] if len(words) > 123 else 0
+        rate_mhz, cal_sec = words[140], words[141]
+        sttxt = {0: '还没初始化', 1: '初始化好了 ✅'}.get(st, '0x%X（见 main.c 里 0x100/0x200/0x300 那几档）' % st)
+        say("")
+        say("  ---- build 95：AON 日历计数器探针（照 app_rtc.c 的姿势初始化）----")
+        say("    %s   这段跑了 %d 次   成功读了 %d 次   最近一次在我们的 %d ms"
+            % (sttxt, calls, rd, rnow))
+        say("    最新原始计数 = 0x%08X   上一个读间隔里走了 %d tick" % (ctr, d1))
+        if rate_mhz:
+            hz = rate_mhz / 1000.0
+            say("    **实测速率 = %.3f Hz**（跨着睡眠量的）   HAL 换算的「当天第几秒」= %d"
+                % (hz, cal_sec))
+            if 24000.0 <= hz <= 32000.0:
+                say("      → 慢时钟**直出**（≈27.2 kHz）—— 正是我们要的「自由计数器」 ✅")
+                say("        下一步就把毫秒时基搬到它身上（没人重装它，睡多久都不丢时间）。")
+            elif 700.0 <= hz <= 1000.0:
+                say("      → 它跑在慢时钟的 **1/32 分频**上（≈851 Hz）—— 一样能用，")
+                say("        只是分辨率粗一点（1.2ms），当「自由计数器」完全够。")
+            elif hz < 100.0:
+                say("      → **睡着时它不数**（速率远低于预期）—— 这条路废，别搬了。")
+            else:
+                say("      → 速率怪（不是 27.2k 也不是 851），把这行发我。")
+        else:
+            say("    （还没量到第二次读数 —— 再跑一次 status，或者让它多跑一会儿）")
+    elif len(words) > 121 and build_now >= 91:
         say("")
         say("  AON 日历计数器探路：**build 91 起已关闭**（结论：那条路不可信、已搁置；"
             "代码留着，要看就把 zk_epd_svc.c 里 ZK_RTC_PROBE 改 1 重编）")

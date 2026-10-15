@@ -71,7 +71,14 @@
    两个嫌疑：① 主循环睡太久（2Hz）→ 重装前后的那一段没记全；
              ② 低频 RC 睡着时比醒着慢 ~6%。
    把节拍改回 200ms 就能分开：准了是①，还慢是②。做完按结论改回来。 */
-#define ZK_BUILD_ID   94u
+/* build 95（2026-10-15 晚）：**AON 日历计数器探针**（只探路，不动时基）。
+   判别实验的结论：200ms 节拍把"睡太久"那 6.7% 修掉了，但只剩 1.6%（= 每次重装
+   那 ~2.35ms 的死时间 × 5 次/秒），而且唤醒多 10 倍 ⇒ 节拍改回 2000ms。
+   真正的解法是"自由跑、没人重装的计数器"，也就是 AON 日历计数器 —— 2026-10-04
+   走过两版（build 78/79）但装 0 装死；这次照 `app_rtc.c` 的姿势：
+   `hal_calendar_init()` + `hal_calendar_init_time()`，并量它的实测速率
+   （Hz×1000 写进 140 号字）—— 那个数是跨着睡眠测的，所以顺带回答"睡着时它在不在数"。 */
+#define ZK_BUILD_ID   95u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -155,7 +162,7 @@ typedef struct
 
 #define ZK_FLAG_PSAVE        0x0040u   /* 2026-10-03：省电版在跑（主循环睡眠 + 广播放宽） */
 
-#define ZK_DBG_WORDS 140
+#define ZK_DBG_WORDS 142
 
 typedef struct
 {
@@ -406,7 +413,18 @@ typedef struct
                bit4 MSIO_COMP / bit6 WDT / bit8 CALENDAR。 */
     uint32_t aon_slp_event;       /* 138: 开机时读到的 AON->SLP_EVENT（复位现场）*/
     uint32_t pwr_ret01_boot;      /* 139: 开机时读到的 AON->PWR_RET01（保留域状态）*/
-    uint32_t rsv[ZK_DBG_WORDS - 140];
+    /* ---- build 95：**AON 日历计数器探针**（按 SDK 的姿势，见 main.c）------------
+       为什么：现在这条时基（AON 睡眠定时器）会被 SDK 反复重装，一重装就有一段
+       记不到 —— 实测"2 秒节拍"时 79 分钟慢 6.7%，"200ms 节拍"慢 1.6%（那次是
+       每重装的 ~2.35ms 死时间）。而 AON 日历计数器是**自由跑、没人重装**的，
+       正是缺的那块。2026-10-04 走过两版（build 78/79）但装 0 装死、判定"没用起来"；
+       现在照 `drivers/src/app_rtc.c` 的姿势来：`hal_calendar_init()` +
+       `hal_calendar_init_time()`（这才是"正规装载"），并量它到底多少 tick/秒。
+       rtc_state / rtc_ctr / rtc_delta1s / rtc_reads / rtc_calls / rtc_now（118~123）
+       沿用旧探路那 6 个字；下面两个是新增的。 */
+    uint32_t cal_rate_mhz;        /* 140: 日历计数器实测速率（Hz × 1000）*/
+    uint32_t cal_secs;            /* 141: HAL 换算出来的"当天第几秒"（跟我们对账用）*/
+    uint32_t rsv[ZK_DBG_WORDS - 142];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */
