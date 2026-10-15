@@ -126,6 +126,12 @@ static void zk_cal_probe_init(void)
     calendar_time_t t;
     hal_status_t    e;
 
+    /* build 96：这 7 个数在冷启动时是 RAM 垃圾（2026-10-15 的 status 里
+       "这段跑了 3512830450 次"就是这么来的），初始化时一并清零，日志才读得懂。 */
+    g_dbg.rtc_calls = 0; g_dbg.rtc_reads = 0; g_dbg.rtc_ctr = 0;
+    g_dbg.rtc_delta1s = 0; g_dbg.rtc_now = 0;
+    g_dbg.cal_rate_mhz = 0; g_dbg.cal_secs = 0;
+
     (void)hal_calendar_deinit(&s_cal);          /* app_rtc 也是"先 deinit 再 init" */
     e = hal_calendar_init(&s_cal);
     if (HAL_OK != e)
@@ -135,7 +141,12 @@ static void zk_cal_probe_init(void)
     }
 
     memset(&t, 0, sizeof(t));
-    t.year = 26; t.mon = 10; t.date = 15;       /* 年份从 2010 起算，随便给个正常的 */
+    /* ⚠ build 96：**时间不能给 00:00:00**。build 95 就是装了个午夜 → 计数器装进去正好是 0
+       → 而"装 0"是退化情况（build 79 那次也是"装 0 还是 0"），读数一直是 0x00000000。
+       换成 12:34:56 这个非 0 时刻，装进去的计数值就不为 0 了。
+       （年份从 2010 起算，26 = 2026。） */
+    t.year = 26; t.mon = 10; t.date = 15;
+    t.hour = 12; t.min = 34; t.sec = 56;
     e = hal_calendar_init_time(&s_cal, &t);
     (void)hal_calendar_disable_event(&s_cal, CALENDAR_ALARM_DISABLE_ALL);   /* 不要中断 */
     NVIC_DisableIRQ(CALENDAR_IRQn);             /* 双保险：中断别进来 */
@@ -143,6 +154,23 @@ static void zk_cal_probe_init(void)
 
     g_dbg.rtc_state = (HAL_OK == e) ? 1u : (0x200u | (uint32_t)e);
     s_cal_ok        = (HAL_OK == e) ? 1u : 0u;
+
+    /* 装完**立刻**读一次原始计数（不等到 1 秒后）—— 这样即使速率还没量出来，
+       status 里也能看到"装载值到底是不是 0"。 */
+    if (s_cal_ok)
+    {
+        uint32_t pm = zk_tick_irq_save();
+
+        s_cal_ctr = ll_calendar_get_counter();
+        MODIFY_REG(AON->AON_PAD_CTL1, AON_PAD_CTL1_TIMER_READ_SEL,
+                   AON_PAD_CTL1_TIMER_READ_SEL_SLP_TIMER);
+        zk_tick_irq_restore(pm);
+        g_dbg.rtc_ctr = s_cal_ctr;
+        if (0u != s_cal_ctr)
+        {
+            g_dbg.rtc_state |= 0x10u;           /* 标记：装载之后读数非 0 ✅ */
+        }
+    }
 }
 
 static void zk_cal_probe_poll(uint32_t now_ms)

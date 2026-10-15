@@ -78,7 +78,13 @@
    走过两版（build 78/79）但装 0 装死；这次照 `app_rtc.c` 的姿势：
    `hal_calendar_init()` + `hal_calendar_init_time()`，并量它的实测速率
    （Hz×1000 写进 140 号字）—— 那个数是跨着睡眠测的，所以顺带回答"睡着时它在不在数"。 */
-#define ZK_BUILD_ID   95u
+/* build 96（2026-10-15 晚）：日历探针修两个坑（都跟 build 79 那次的教训有关）——
+   ① **装的时间不能是 00:00:00**：build 95 装了午夜 → 计数值正好 0 → 读数一直 0x00000000
+      （build 79 当年"装 0 还是 0"是同一个退化情况）。改成 12:34:56。
+   ② 探针那几个计数器（rtc_calls/rtc_reads/…）冷启动是 RAM 垃圾（status 里显示
+      "这段跑了 3512830450 次"），初始化时清零；并加"装完立刻读一次"，
+      这样即使速率还没量出来也能看到装载值。 */
+#define ZK_BUILD_ID   96u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u

@@ -5094,7 +5094,9 @@ def _zk_say_epd_service(words, regs=None):
         calls = words[122] if len(words) > 122 else 0
         rnow = words[123] if len(words) > 123 else 0
         rate_mhz, cal_sec = words[140], words[141]
-        sttxt = {0: '还没初始化', 1: '初始化好了 ✅'}.get(st, '0x%X（见 main.c 里 0x100/0x200/0x300 那几档）' % st)
+        sttxt = {0: '还没初始化', 1: '初始化好了 ✅',
+                 0x11: '初始化好了 ✅、而且**装完读数就不是 0** ✅（build 96 起会带这个标记）'}.get(
+                     st, '0x%X（见 main.c 里 0x100/0x200/0x300 那几档）' % st)
         say("")
         say("  ---- build 95：AON 日历计数器探针（照 app_rtc.c 的姿势初始化）----")
         say("    %s   这段跑了 %d 次   成功读了 %d 次   最近一次在我们的 %d ms"
