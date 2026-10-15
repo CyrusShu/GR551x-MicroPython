@@ -4554,6 +4554,52 @@ def _zk_err_text(v):
     return ZK_BLE_ERR_NAME.get(v, '未知错误码 0x%02X' % v)
 
 
+def _zk_safe_say(name, fn, *a, **kw):
+    """跑一段"翻译"，出错只在这一段里报出来 —— 别再让一整条 status 被一段代码崩掉。
+
+    这个坑踩过两次：2026-10-04「结论」那段变量名撞车、2026-10-15 build 93 的
+    「复位现场」用了一个还没赋值的变量（`build_now`）。两次都是**从那一行起、
+    后面的电池/结论全没印出来**，看日志的人（包括我）会以为"后面的东西坏了"。
+    """
+    try:
+        return fn(*a, **kw)
+    except Exception as e:                      # noqa: BLE001 —— 这里就是要兜住一切
+        try:
+            say("    ⚠ 上面这一段翻译出错（不影响其它段）：%s: %s"
+                % (type(e).__name__, e))
+        except Exception:
+            pass
+        return None
+
+
+def _zk_say_reset_scene(words):
+    """build 93：**复位现场**（2026-10-15）
+
+    为什么要它：2026-10-14 晚连着四次 status，末尾 uptime 只有 11/19/42/79.7 秒，
+    而 boot_count 一直是 1 —— SRAM 被清过 ⇒ 掉电那类复位（软复位/按 RST 都不清 SRAM）。
+    固件在 main_init() 最开头（比 SDK 的 platform_init 早）抄下了 AON->SLP_EVENT。
+    """
+    ev, pr = words[138], words[139]
+    bits = [(0x01, 'BLE'), (0x02, 'TIMER'), (0x04, 'EXT 外部脚（按过 RST）'),
+            (0x08, '**BOD 掉电！**'), (0x10, 'MSIO_COMP'), (0x40, 'AON WDT'),
+            (0x100, 'CALENDAR 闹钟')]
+    on = [n for m, n in bits if ev & m]
+
+    say("")
+    say("  ---- build 93：复位现场（开机时抄的 AON 寄存器）----")
+    say("    AON->SLP_EVENT = 0x%08X  →  %s"
+        % (ev, "、".join(on) if on else "一个位都没置（= 普通上电/软复位）"))
+    say("    AON->PWR_RET01 = 0x%08X（开机那一刻的保留域状态）" % pr)
+    if ev & 0x08:
+        say("      ⚠ **BOD（掉电）位起来了** —— 电池供电抖了一下"
+            "（内阻 + 刷屏/射频的脉冲电流？）。")
+        say("        这条能解释「价签自己在重启」：每次掉电都要重新对表、还污染时基实测。")
+    elif ev & 0x04:
+        say("      → 是外部脚（多半是 RST 焊盘）触发的，不是掉电。")
+    elif on:
+        say("      → 不是掉电；上面列的那些位解释不了复位，把这行发我。")
+
+
 def _zk_say_timebase(words, regs=None):
     """build 59：把时基那一组（word 104..111）翻译成人话
 
@@ -4962,7 +5008,7 @@ def _zk_say_epd_service(words, regs=None):
     #  更高），于是"毫秒"快 3~4.8 倍 —— 日历每 ~8 小时跨一天就是这么来的。
     #  这一段把「标定 → 选用 → 现场」全译出来，好判断它到底有没有生效。
     if len(words) > 111:
-        _zk_say_timebase(words, regs)
+        _zk_safe_say('时基那一段', _zk_say_timebase, words, regs)
 
     # ---- build 82：睡/醒「补时间」（睡眠第 3 步的 B）----
     if len(words) > 133:
@@ -5003,25 +5049,11 @@ def _zk_say_epd_service(words, regs=None):
             say("      → 没走过暖启动分支（现在 ZK_PWR_SAVE=0，不开睡眠，正常）")
 
     # ---- build 93：**复位现场**（2026-10-15）--------------------------------
-    #   为什么要它：2026-10-14 晚连着四次 status，末尾 uptime 只有 11/19/42/79.7 秒，
-    #   而 boot_count 一直是 1 —— SRAM 被清过 ⇒ 掉电那类复位（软复位/按 RST 都不清 SRAM）。
-    #   固件在 main_init() 最开头（比 SDK 的 platform_init 早）抄下了 AON->SLP_EVENT。
-    if len(words) > 139 and build_now >= 93:
-        ev, pr = words[138], words[139]
-        bits = [(0x01, 'BLE'), (0x02, 'TIMER'), (0x04, 'EXT 外部脚（按过 RST）'),
-                (0x08, '**BOD 掉电！**'), (0x10, 'MSIO_COMP'), (0x40, 'AON WDT'),
-                (0x100, 'CALENDAR 闹钟')]
-        on = [n for m, n in bits if ev & m]
-        say("")
-        say("  ---- build 93：复位现场（开机时抄的 AON 寄存器）----")
-        say("    AON->SLP_EVENT = 0x%08X  →  %s"
-            % (ev, "、".join(on) if on else "一个位都没置（= 普通上电/软复位）"))
-        say("    AON->PWR_RET01 = 0x%08X（开机那一刻的保留域状态）" % pr)
-        if ev & 0x08:
-            say("      ⚠ **BOD（掉电）位置起来了** —— 电池供电抖了一下（内阻 + 刷屏/射频的脉冲电流？）。")
-            say("        这条能解释「自己在重启」：每次掉电都要重新对表、还会污染时基实测。")
-        elif ev & 0x04:
-            say("      → 是被外部脚（多半就是 RST 焊盘）弄醒的，不是掉电。")
+    #   ⚠ 这一段单独抽成函数、用 _zk_safe_say() 兜着 —— 同一个坑踩过两次：
+    #   2026-10-15 我在这里用了一个还没赋值的变量（build_now，它是在下面
+    #   build-78 那段才赋值的），结果整条 status 从这一行崩掉、后面的电池/结论全没印。
+    if len(words) > 139 and (words[11] if len(words) > 11 else 0) >= 93:
+        _zk_safe_say('复位现场那一段', _zk_say_reset_scene, words)
 
     # ---- build 78：AON 日历「探路」（啃睡眠第一步）----
     # ⚠ build 91（2026-10-14）：固件里这段探路**关掉了**（ZK_RTC_PROBE=0）——
@@ -5815,10 +5847,11 @@ def zkstatus():
                        words[22], ZK_BLE_ERR_NAME.get(words[22], '非 0 就是错误码'),
                        words[23]))
             if build >= 19 and len(words) >= 53:
-                _zk_say_ble_experiment(words)
+                _zk_safe_say('BLE 实验那一段', _zk_say_ble_experiment, words)
             if build >= 21 and len(words) >= 77:
-                _zk_say_epd_service(words, {'padctl1': last.get('padctl1'),
-                                            'tmrval':  last.get('tmrval')})
+                _zk_safe_say('GATT/推图那一段', _zk_say_epd_service, words,
+                             {'padctl1': last.get('padctl1'),
+                              'tmrval':  last.get('tmrval')})
         else:
             say("    （这一版固件是 build=%d，**还没有** boot_count/uds_seen 这两个计数器，"
                 % build)
