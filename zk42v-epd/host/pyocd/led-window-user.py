@@ -5084,7 +5084,14 @@ def _zk_say_epd_service(words, regs=None):
     #   而它还每秒动一次跟睡眠定时器**共用**的 AON 选择子、还白耗电一个日历计数器，
     #   更要命的是这里会把它读到的垃圾印成"它是秒计数器 ✅"误导人（build 89 的 status 就是）。
     build_now = words[11] if len(words) > 11 else 0
-    if len(words) > 141 and build_now >= 95:
+    if build_now >= 98:
+        # build 98 起探针关掉了（结论：装载落不进去；而 build 97 已证明现有时基够准，
+        # 见 backlog 第 20/21 节）。HAL 日历那 ~2.7KB 也从镜像里放出来了。
+        say("")
+        say("  AON 日历计数器探针：**build 98 起已关闭**（两版实机读数都是 0 = 装载落不进去；")
+        say("    而 build 97 直接量出「睡着时实拿 27199 tick/秒 + 走时 1.001」⇒ 现有这条时基够准，")
+        say("    不需要它了。想看现场把 zk_pwr.h 的 ZK_CAL_PROBE 改回 1 重编。）")
+    elif len(words) > 141 and build_now >= 95:
         # build 95：**AON 日历计数器探针**（照 drivers/src/app_rtc.c 的姿势：
         # hal_calendar_init + hal_calendar_init_time，而不是像 build 78/79 那样直接摸
         # 寄存器、还装了个 0）。关键看"实测速率"：≈27235 = 慢时钟直出（最理想）、

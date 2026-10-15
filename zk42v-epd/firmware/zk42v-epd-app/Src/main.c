@@ -117,6 +117,7 @@ static uint32_t      s_lp_recheck_ms;   /* build 92：上一次重读 sys_lpclk_
  *     而这个速率是**跨着睡眠测出来的**（主循环 2 秒才醒一次），所以它顺带回答了
  *     "睡着的时候它还在不在数"这个最关键的问题。
  * ====================================================================== */
+#if ZK_CAL_PROBE
 static calendar_handle_t s_cal;
 static uint32_t s_cal_ms;        /* 上次读的时刻（我们的毫秒）*/
 static uint32_t s_cal_ctr;       /* 上次读到的原始计数 */
@@ -221,6 +222,7 @@ static void zk_cal_probe_poll(uint32_t now_ms)
     s_cal_ms  = now_ms;
     g_dbg.rtc_now = now_ms;
 }
+#endif /* ZK_CAL_PROBE */
 
 #define ZK_TB_HZ_MIN  18000u        /* 低频时钟只可能是 32k 那一档（±）。 */
 #define ZK_TB_HZ_MAX  45000u        /* 出了这个范围 = 标定/读数崩了，宁可不用。 */
