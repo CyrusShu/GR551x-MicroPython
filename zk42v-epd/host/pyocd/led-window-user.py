@@ -5723,17 +5723,26 @@ def zkstatus():
     #   而这个窗口天然包含睡眠（主循环 2 秒才醒一次）。
     _tb_build = rd(ZK_DBG_ADDR + 4 * 11)
     if _tb_build is not None and _tb_build >= 97:
+        # ⚠ 2026-10-15 第一版踩的坑：窗口只开 5 秒 —— 而"累加装载值"只统计**走完的整段**
+        #   （一次 2 秒 + 一次 2 秒…），5 秒窗口里凑巧跨了 3 段，就被除出个 31980 Hz 的
+        #   假数（多了 ~18%）。所以：① 窗口拉长（默认 30 秒，可用 SLPSUM_WATCH_S 调）；
+        #   ② 两头把"当前这一段已经走了多少"补上（递减计数器：raw_start - raw_end）。
+        win_s = float(_env_str('SLPSUM_WATCH_S', '30'))
         a0 = rd(ZK_DBG_ADDR + 4 * 143)
         i0 = rd(ZK_DBG_ADDR + 4 * 142)
+        r0 = rd(ZK_AON_TIMERV)
         h0 = time.monotonic()
-        time.sleep(5.0)
+        time.sleep(win_s)
         a1 = rd(ZK_DBG_ADDR + 4 * 143)
         i1 = rd(ZK_DBG_ADDR + 4 * 142)
+        r1 = rd(ZK_AON_TIMERV)
         h1 = time.monotonic()
         if None not in (a0, a1, i0, i1):
             dh = max(1e-9, h1 - h0)
             dt = (a1 - a0) & 0xFFFFFFFF
             di = (i1 - i0) & 0xFFFFFFFF
+            if r0 is not None and r1 is not None:
+                dt = (dt + ((r0 - r1) & 0xFFFFFFFF)) & 0xFFFFFFFF   # 补两头的残段
             rate = dt / dh
             say("")
             say("  睡眠节拍实测（build 97：在到期中断里数装载值，%.1f 秒窗口）" % dh)
@@ -5743,8 +5752,10 @@ def zkstatus():
                 say("      → 睡着时**也照样给够**（跟醒着量到的 ~27233 一致）"
                     "⇒ 那 6.7% 是**我们的记账**丢的，能在软件里修 ✅")
             elif rate >= 1000:
-                say("      → 比醒着量到的小 %.1f%% ⇒ **睡着时 tick 本身就来得慢/有一段停着**"
-                    % ((1 - rate / 27233.0) * 100))
+                say("      → 比醒着量到的 %s %.1f%% ⇒ %s"
+                    % ('多' if rate > 27233 else '少', abs(rate / 27233.0 - 1) * 100,
+                       '**睡着时 tick 本身就来得慢/有一段停着**'
+                       if rate < 27233 else '**比标定值还快** —— 说明装载值/窗口还有偏差，别急着下结论'))
                 say("        那就得按这个实测值重新标定（或者把停着那段单独补上）。")
             else:
                 say("      → 几乎不涨，这个读数不对劲，把这段发我。")
