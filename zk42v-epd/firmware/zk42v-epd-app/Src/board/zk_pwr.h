@@ -149,17 +149,28 @@
  *   常电方案（ZK_MODE_ALWAYS_ON）—— 接着电/调试台上的那台：
  *     · 广播常开（间隔 100ms）、天气温度照旧、收到命令就刷（＝这些天一直在跑的那套）
  *
- *   ⚠ 两套是**同一个固件结构**，切换只改下面这一个宏、重编重刷。
+ *   ⚠ **价签只有一套固件**（用户 2026-10-16 拍板："保持价签版本的纯净单一，
+ *     方案区分放在 web 上加按钮"）：方案是**运行时**的，默认省电，
+ *     用网页那个 `74 00 / 74 01` 命令切（见 zk_epd_svc.c 的 case 0x74）。
+ *     基站那边（ESP32 的 WX_SEND_ENABLE、Mac 的"天气源"）才用宏/配置区分。
  *   ⚠ 省电方案要配对**不推天气的基站**（ESP32 里 WX_SEND_ENABLE=0 / Mac 配置"天气源: off"），
- *     否则天气还是会照样画上来（固件侧只是不主动画、也不为它重画）。
+ *     不过即使基站还在推，价签在省电方案下也会**收下就丢**（表头那格空着）。
  * ====================================================================== */
-#define ZK_MODE_BATTERY     0
-#define ZK_MODE_ALWAYS_ON   1
-#define ZK_POWER_MODE       ZK_MODE_BATTERY
+#define ZK_MODE_BATTERY     0u      /* 省电：窗口广播 + 无天气温度 + 只在 0 点全刷 */
+#define ZK_MODE_ALWAYS_ON   1u      /* 常电：广播常开 + 天气温度照旧 + 有命令就刷 */
+#define ZK_MODE_DEFAULT     ZK_MODE_BATTERY
 
-/* 由 ZK_POWER_MODE 派生的三个开关（要改只改上面那个宏） */
-#define ZK_PSAVE_WINDOW     (ZK_POWER_MODE == ZK_MODE_BATTERY)
-#define ZK_PSAVE_NO_WEATHER (ZK_POWER_MODE == ZK_MODE_BATTERY)
-#define ZK_PSAVE_DAILY_ONLY (ZK_POWER_MODE == ZK_MODE_BATTERY)
+/* 运行时方案（定义在 main.c；网页命令 0x74 改它，重启回默认＝省电） */
+extern uint8_t g_zk_mode;
+
+static inline int zk_mode_is_psave(void)
+{
+    return (g_zk_mode != ZK_MODE_ALWAYS_ON) ? 1 : 0;
+}
+
+/* 给 status.sh / 状态块用：把方案写进 flags 的 0x80 位（1 = 常电） */
+void zk_mode_apply_to_flags(void);
+/* 切方案（网页命令 0x74 调它）。返回 0 = 成功 */
+int  zk_mode_set(uint8_t mode);
 
 #endif /* __ZK_PWR_H__ */

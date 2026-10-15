@@ -276,25 +276,32 @@ static const zk_adv_win_cfg_t s_draw_win_cfg =   /* 跟 zk_ble.c 那份用**同�
     0u, 0u
 };
 
-/* 省电方案：天气/温度一律置空（收下就丢，状态块里也能看出来） */
+/* 省电方案：天气/温度一律置空（收下就丢，状态块里也能看出来）。
+   ⚠ 只看**运行时**方案（g_zk_mode），不看编译期宏 —— 价签只有一套固件。 */
 static void zk_wx_gate(void)
 {
-#if ZK_PSAVE_NO_WEATHER
-    s_wx_code      = 0u;
-    s_env_temp_c10 = ZK_TEMP_NONE;
-    s_env_temp_c   = (int8_t)(-128);
-    g_dbg.wx_code    = 0u;
-    g_dbg.env_temp_c = (uint32_t)(int32_t)(-128);
-#else
-    g_dbg.wx_code    = s_wx_code;
-    g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
-#endif
+    if (zk_mode_is_psave())
+    {
+        s_wx_code      = 0u;
+        s_env_temp_c10 = ZK_TEMP_NONE;
+        s_env_temp_c   = (int8_t)(-128);
+        g_dbg.wx_code    = 0u;
+        g_dbg.env_temp_c = (uint32_t)(int32_t)(-128);
+    }
+    else
+    {
+        g_dbg.wx_code    = s_wx_code;
+        g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
+    }
 }
 
 /* 省电方案：现在这刻允不允许真去刷屏 */
 static int zk_draw_allowed(void)
 {
-#if ZK_PSAVE_DAILY_ONLY
+    if (!zk_mode_is_psave())
+    {
+        return 1;                    /* 常电方案：想画就画 */
+    }
     if (!s_drawn_once)
     {
         return 1;                    /* 开机/换电池后第一次：总得让它显示一版 */
@@ -310,9 +317,6 @@ static int zk_draw_allowed(void)
         return 1;
     }
     return zk_adv_win_in_day_window(zk_epd_now(), &s_draw_win_cfg);
-#else
-    return 1;
-#endif
 }
 
 /* 往纪念日文案后面接一段（build 68）。为什么要"接"：BLE 的 ATT 一次只能发
@@ -1092,11 +1096,12 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             }
             g_dbg.alert_cmds++;
             /* 省电方案里"天气"整条都不要 —— 预警也是天气来的，一并丢（表头那格空着）。 */
-#if ZK_PSAVE_NO_WEATHER
-            s_alert_level   = 0;
-            s_alert_type[0] = 0;
-            s_alert_code    = 0;
-#endif
+            if (zk_mode_is_psave())
+            {
+                s_alert_level   = 0;
+                s_alert_type[0] = 0;
+                s_alert_code    = 0;
+            }
             if (ZKGUI_MODE_PICTURE != s_mode)
             {
                 gui_request_redraw();
@@ -1133,6 +1138,36 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
          *   这条则走**能工作的那条路径**（build 48 的写图+刷新整轮重试），
          *   于是可以干净地 A/B 对比 C7 / D7 到底闪多久、忙多久。
          *   发完立刻重画一页（build 72 起走合并窗口），不需要额外的刷新命令。 */
+        /* 0x74 SET_MODE：**切方案**（2026-10-16 用户："保持价签版本的纯净单一，
+           方案区分放在 web 上加按钮"）
+             74 00 = 省电方案（窗口广播 + 无天气温度 + 只在 0 点全刷；**默认**）
+             74 01 = 常电方案（广播常开 + 天气温度照旧 + 有命令就刷）
+           · 只改 RAM 里的 g_zk_mode（重启回默认省电）—— 不为这点小事写 flash；
+           · 切完回一条 "mode=省电/常电" 的通知，网页上能立刻看到；
+           · 切到常电时顺手请求重画一次（好确认页面恢复正常）。 */
+        case 0x74:
+            {
+                uint8_t m = (len >= 2u) ? d[1] : ZK_MODE_DEFAULT;
+                uint8_t nb[24];
+                uint8_t *q = nb;
+
+                if (0 != zk_mode_set(m))
+                {
+                    m = ZK_MODE_DEFAULT;
+                    (void)zk_mode_set(m);
+                }
+                memcpy(q, "mode=", 5); q += 5;
+                memcpy(q, (m == ZK_MODE_ALWAYS_ON) ? "always" : "save", 6);
+                q += 6;
+                zk_notify(nb, (uint16_t)(q - nb));
+
+                if (m == ZK_MODE_ALWAYS_ON)
+                {
+                    gui_request_redraw();
+                }
+            }
+            break;
+
         case 0x75:
             if (len >= 2u)
             {
@@ -1626,11 +1661,8 @@ void zk_epd_svc_poll(uint32_t now_ms)
         {
             /* 时钟模式：每分钟一张。⚠ 省电方案里**不这么做** ——
                用户要求"只在 0 点全刷"，所以时钟页也按"换天"来（一天一次）。 */
-#if ZK_PSAVE_DAILY_ONLY
-            redraw = (cur / 86400u != s_drawn_day);
-#else
-            redraw = (cur / 60u != s_drawn_min);
-#endif
+            redraw = zk_mode_is_psave() ? (cur / 86400u != s_drawn_day)
+                                        : (cur / 60u != s_drawn_min);
             why    = 3;
         }
 
