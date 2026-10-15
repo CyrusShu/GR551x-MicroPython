@@ -303,6 +303,12 @@ static int zk_draw_allowed(void)
     {
         return 1;                    /* 还没对过表：先显示出来，别让屏空着 */
     }
+    /* 开机那 5 分钟窗口里也放行 —— 这段本来就是"手机/基站能连上"的时段，
+       在手机上推图/改内容应该立刻看到，不该攒到 0 点（用户 2026-10-16 的用法）。 */
+    if (zk_tick_ms() < (uint32_t)ZK_ADV_BOOT_WINDOW_S * 1000u)
+    {
+        return 1;
+    }
     return zk_adv_win_in_day_window(zk_epd_now(), &s_draw_win_cfg);
 #else
     return 1;
