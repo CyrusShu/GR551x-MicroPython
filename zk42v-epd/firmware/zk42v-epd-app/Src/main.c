@@ -30,6 +30,7 @@
 #include "app_pwr_mgmt.h"    /* build 82：注册睡/醒回调 */
 #include "zk_pwr.h"          /* 省电旋钮（ZK_PWR_SAVE / ZK_TICK_MS / ZK_ADV_INTERVAL） */
 #include "gr55xx_hal_calendar.h"   /* build 95：AON 日历计数器探针（照 app_rtc.c 的姿势）*/
+#include "gr55xx_hal_pwr.h"        /* build 97：hal_pwr_sleep_timer_irq_handler()（我们顶了那个中断）*/
 
 #include <string.h>          /* memset */
 
@@ -423,6 +424,28 @@ static void zk_timebase_init(void)
     g_dbg.tb_bad       = 0u;
     g_dbg.tb_jumps     = 0u;
     g_dbg.test_step    = s_aon_hz;      /* build 58 那个字段：现在放"实际用的频率" */
+}
+
+/* build 97：**睡眠定时器到期中断**（顶掉 app_timer.c 里那个 __WEAK 版本）。
+ *
+ * 为什么要在中断里插一手：只有这里才知道"这次到期消耗掉了多少 tick"。
+ * 累加起来，主机就能算出**包含睡眠在内**的真实 tick 速率：
+ *     Δ累计装载值 ÷ Δ主机秒 ≈ 27235 ？ 还是明显更小（睡着变慢）？
+ * 这个数一次回答两个问题：
+ *   ① 计数器睡着时到底给不给够 tick（影不影响走时）；
+ *   ② 它把"被装成 0xFFFFFFFF 待命、等主循环来重装"那段也一并算进去了 ——
+ *      那段以前我们完全记不到，正是 79 分钟慢 6.7% 的嫌疑。
+ * ⚠ 一定要**在 SDK 之前**读：`hal_pwr_sleep_timer_irq_handler()` 里马上会把
+ *   TIMER_VALUE 改成 APP_TIMER_OVERFLOW_VALUE(0xFFFFFFFF) 待命。
+ * ⚠ 最后必须调原来的那一句，否则 app_timer 的到期处理就断了（BLE 定时也会坏）。 */
+void SLPTIMER_IRQHandler(void)
+{
+    if (0u != s_aon_hz)
+    {
+        g_dbg.slp_load_sum += tb_aon_load();    /* 这次到期消耗的 tick */
+        g_dbg.slp_irqs++;
+    }
+    hal_pwr_sleep_timer_irq_handler();
 }
 
 static uint32_t tb_core_per_ms(void)

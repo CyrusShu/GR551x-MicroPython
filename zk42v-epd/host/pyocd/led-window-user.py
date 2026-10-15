@@ -1341,8 +1341,8 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 142   # build 90：+2（广播窗口 136/137）；93：+2（复位现场 138/139）；
-                     # build 95：+2（日历探针 140/141：实测速率 / HAL 换算的秒）
+ZK_DBG_WORDS = 144   # build 90：+2（广播窗口 136/137）；93：+2（复位现场 138/139）；
+                     # 95：+2（日历探针 140/141）；97：+2（睡眠节拍实测 142/143）
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -5710,6 +5710,40 @@ def zkstatus():
                 % (dt_a, delta, round(delta / dt_a)))
             say("      （这就是 build 59 要标定的那个频率：本机实测一直在 28 kHz 上下，"
                 "不是教科书式的 32768）")
+
+    # ---- build 97：**睡眠节拍实测**（睡着时计数器到底给不给够 tick）----
+    #   上面那个"约 27233 Hz"是**调试器把 CPU 停住**时量的（= 醒着的状态）。
+    #   可价签大部分时间在睡，而"睡着时到底给了多少 tick"只能靠固件自己数：
+    #   它在睡眠定时器**每次到期**中断里把这次消耗的装载值累加（142/143 号字）。
+    #   于是「Δ累计装载值 ÷ Δ主机真实秒」= 这段时间实际拿到多少 tick/秒 ——
+    #   而这个窗口天然包含睡眠（主循环 2 秒才醒一次）。
+    _tb_build = rd(ZK_DBG_ADDR + 4 * 11)
+    if _tb_build is not None and _tb_build >= 97:
+        a0 = rd(ZK_DBG_ADDR + 4 * 143)
+        i0 = rd(ZK_DBG_ADDR + 4 * 142)
+        h0 = time.monotonic()
+        time.sleep(5.0)
+        a1 = rd(ZK_DBG_ADDR + 4 * 143)
+        i1 = rd(ZK_DBG_ADDR + 4 * 142)
+        h1 = time.monotonic()
+        if None not in (a0, a1, i0, i1):
+            dh = max(1e-9, h1 - h0)
+            dt = (a1 - a0) & 0xFFFFFFFF
+            di = (i1 - i0) & 0xFFFFFFFF
+            rate = dt / dh
+            say("")
+            say("  睡眠节拍实测（build 97：在到期中断里数装载值，%.1f 秒窗口）" % dh)
+            say("    %d 次到期、共消耗 %d tick ⇒ **实拿 %.0f tick/秒**"
+                % (di, dt, rate))
+            if 25000 <= rate <= 29500:
+                say("      → 睡着时**也照样给够**（跟醒着量到的 ~27233 一致）"
+                    "⇒ 那 6.7% 是**我们的记账**丢的，能在软件里修 ✅")
+            elif rate >= 1000:
+                say("      → 比醒着量到的小 %.1f%% ⇒ **睡着时 tick 本身就来得慢/有一段停着**"
+                    % ((1 - rate / 27233.0) * 100))
+                say("        那就得按这个实测值重新标定（或者把停着那段单独补上）。")
+            else:
+                say("      → 几乎不涨，这个读数不对劲，把这段发我。")
 
     # ---- 时基自检：SystemCoreClock 跟真实主频对不对得上 ----
     c1 = rd(ZK_DWT_CYCCNT)
