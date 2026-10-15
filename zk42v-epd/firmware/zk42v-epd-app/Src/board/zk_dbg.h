@@ -65,7 +65,13 @@
    这一版在 main_init() **最开头**（比 SDK 的 platform_init 早）把 AON->SLP_EVENT
    和 AON->PWR_RET01 抄进状态块 —— 前者有 BOD(掉电) / EXT(外部脚) / WDT 等位，
    下次它再重启，status.sh 就能直接说出是"掉电"还是"被按了 RST"。 */
-#define ZK_BUILD_ID   93u
+/* build 94（2026-10-15 晚）：**判别实验** —— `ZK_TICK_MS` 2000 → 200。
+   19:03 的 status（build 93、广播关着）发现 79 分钟里钟慢了 **6.7%**
+   （uptime 4749s vs 真实 5088s），而"广播开着"的测量一直准（0.996~1.003）。
+   两个嫌疑：① 主循环睡太久（2Hz）→ 重装前后的那一段没记全；
+             ② 低频 RC 睡着时比醒着慢 ~6%。
+   把节拍改回 200ms 就能分开：准了是①，还慢是②。做完按结论改回来。 */
+#define ZK_BUILD_ID   94u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
