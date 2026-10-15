@@ -223,6 +223,9 @@ static unsigned long lastFetchOkMs  = 0;   /* 上次成功取到时间/天气的
 static unsigned long lastEpochMs    = 0;   /* utcEpoch 是**哪一刻**的表（millis）——
                                               发之前用它把"这几秒/几分钟"补回来 */
 static unsigned long lastPushMs     = 0;   /* 上次"没变化也推一次"的时刻（PUSH_EVERY_MS 用） */
+/* 2026-10-16：上次推过的"本地日期序号"（跨天要主动推一次；-1 = 还没推过） */
+static int32_t       pushedDayIdx   = -1;
+static bool          newDayNow      = false;
 #define RESYNC_BEFORE_SEND_MS 300000UL     /* 发的时侯表比这个旧就先重新对一次（5 分钟） */
 
 /* build-24（B）：**手里没有有用数据时先别连** —— 用户："价签开机刷的次数太多了"。
@@ -1081,8 +1084,23 @@ static bool doSync(BLEAdvertisedDevice &dev)
     bool sendWx   = (WX_SEND_ENABLE != 0) && weatherChangedNow();
     bool pushDue  = (PUSH_EVERY_MS != 0UL) && (lastPushMs == 0UL ||
                                               (millis() - lastPushMs) > PUSH_EVERY_MS);
+    /* 2026-10-16：**跨天主动推一次**（跟 Mac 版 `pushed_day` 同一套思路）。
+       为什么现在必须加：省电方案的价签**只在 0 点那一窗里刷屏**、而且它自己的钟
+       一天会漂~1 分钟（虽然很准，但一个月也能漂掉大半小时）—— 窗口要是漂出
+       真实的 23:50–00:10，基站就再也接不上它了。所以每天替它对一次表：
+       本地日期一变（在它那一窗里被扫到时）就推一次「时间 + 现有内容」。 */
+    {
+        int32_t dayNow = (int32_t)((epochNow() + (int32_t)TZ_HOURS * 3600) / 86400);
+
+        if (pushedDayIdx >= 0 && dayNow != pushedDayIdx)
+        {
+            logf("跨到新的一天（本地第 %d 天，上次推的是第 %d 天）→ 主动推一次，把日期/变天补齐",
+                 (int)dayNow, (int)pushedDayIdx);
+            newDayNow = true;
+        }
+    }
     bool sentTime = false;
-    bool sendTime = (utcEpoch > 0) && (needTime || sendWx || pushDue);
+    bool sendTime = (utcEpoch > 0) && (needTime || sendWx || pushDue || newDayNow);
 
     if (sendTime)
     {
@@ -1118,6 +1136,8 @@ static bool doSync(BLEAdvertisedDevice &dev)
         sentTime   = true;
         lastTimeMs = millis();             /* 刚对过表 —— 之后 24 小时内不用专门校时了 */
         lastPushMs = millis();
+        pushedDayIdx = (int32_t)((epochNow() + (int32_t)TZ_HOURS * 3600) / 86400);
+        newDayNow    = false;
         if (WX_SEND_ENABLE && haveWeather)
         {
             wxSentCode = wxCode;

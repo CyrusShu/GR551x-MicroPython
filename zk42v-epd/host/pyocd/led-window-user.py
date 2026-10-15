@@ -1548,6 +1548,12 @@ def _zkstatus_v1_disabled():
         % ('☑' if flags & 0x0020 else '☐'))
     say("    %s **省电版在跑**（主循环睡眠 + 广播 1 秒；2026-10-03 起）"
         % ('☑' if flags & 0x0040 else '☐'))
+    # 2026-10-16：两套方案 —— 这一位是"常电方案"；不置就是"省电方案"（CR2450 那套）
+    if flags & 0x0080:
+        say("    ☑ **常电方案**（广播常开 + 天气温度照旧 + 有命令就刷）")
+    else:
+        say("    ☐ 常电方案 → 也就是**省电方案**（窗口广播 + 无天气温度 + 只在 0 点全刷）")
+        say("      （两套只差 zk_pwr.h 里 ZK_POWER_MODE 一个宏；省电版镜像 zk42v-battery-512k.bin）")
     say("  BUSY 线：见过低电平=%s 见过高电平=%s；轮询 %d 次；等超时 %d 次"
         % ('是' if busy_levels & 1 else '否',
            '是' if busy_levels & 2 else '否',

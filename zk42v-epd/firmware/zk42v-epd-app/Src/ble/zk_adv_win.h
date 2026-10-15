@@ -38,6 +38,20 @@ typedef struct
     uint32_t fb_len_s;       /* 兜底窗口多长（秒） */
 } zk_adv_win_cfg_t;
 
+/* 现在是不是落在"每天那一窗"里（本地墙上时间）？
+   广播窗口用它、省电方案的"只在 0 点刷"也用它 —— **同一个定义**，免得两边说不到一块去。 */
+static inline int zk_adv_win_in_day_window(uint32_t wall_s, const zk_adv_win_cfg_t *c)
+{
+    uint32_t off;
+
+    if (0u == c->day_len_s)
+    {
+        return 0;
+    }
+    off = ((wall_s % 86400u) + 86400u - (c->day_start_s % 86400u)) % 86400u;
+    return (off < c->day_len_s) ? 1 : 0;
+}
+
 /*
  * 现在该不该开广播？
  *   uptime_ms：开机以来多少毫秒（单调）

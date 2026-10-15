@@ -32,6 +32,8 @@
 #include "zk_bat.h"          /* 电池/温度：表头右上角要画 */
 #include "weather.h"         /* 天气码（手机下发）：表头画图标 */
 #include "zk_tick.h"         /* build 78：zk_tick_ms() / 临界区（读日历要跟时基共用一个寄存器） */
+#include "zk_pwr.h"          /* 2026-10-16：两套方案（省电 / 常电） */
+#include "zk_adv_win.h"      /* "每天那一窗"的定义（省电方案"只在 0 点刷"跟广播窗口共用） */
 
 #include "gr_includes.h"
 #include "ble.h"
@@ -256,6 +258,55 @@ static void gui_redraw_if_changed(int changed)
     {
         gui_request_redraw();
     }
+}
+
+/* ======================================================================
+ * 2026-10-16：**省电方案**的两个小闸门（常电方案里它们都是"放行"）
+ *
+ *   ① 天气/温度：省电方案里**收下就丢**（表头那格空着）—— 也不为它重画；
+ *   ② 重画时机：省电方案里**只在 0 点那一窗里刷**（外加开机/换电池后第一次），
+ *      其它时间收到命令只置"待画"标志，攒到 0 点那一次一起画。
+ * ====================================================================== */
+static uint8_t s_drawn_once;         /* 省电方案：开机后画过没有 */
+static const zk_adv_win_cfg_t s_draw_win_cfg =   /* 跟 zk_ble.c 那份用**同一组宏** */
+{
+    0u,                                            /* 开机窗口不参与"能不能画" */
+    (uint32_t)ZK_ADV_DAY_WIN_START_S,
+    (uint32_t)ZK_ADV_DAY_WIN_LEN_S,
+    0u, 0u
+};
+
+/* 省电方案：天气/温度一律置空（收下就丢，状态块里也能看出来） */
+static void zk_wx_gate(void)
+{
+#if ZK_PSAVE_NO_WEATHER
+    s_wx_code      = 0u;
+    s_env_temp_c10 = ZK_TEMP_NONE;
+    s_env_temp_c   = (int8_t)(-128);
+    g_dbg.wx_code    = 0u;
+    g_dbg.env_temp_c = (uint32_t)(int32_t)(-128);
+#else
+    g_dbg.wx_code    = s_wx_code;
+    g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
+#endif
+}
+
+/* 省电方案：现在这刻允不允许真去刷屏 */
+static int zk_draw_allowed(void)
+{
+#if ZK_PSAVE_DAILY_ONLY
+    if (!s_drawn_once)
+    {
+        return 1;                    /* 开机/换电池后第一次：总得让它显示一版 */
+    }
+    if (!zk_epd_synced())
+    {
+        return 1;                    /* 还没对过表：先显示出来，别让屏空着 */
+    }
+    return zk_adv_win_in_day_window(zk_epd_now(), &s_draw_win_cfg);
+#else
+    return 1;
+#endif
 }
 
 /* 往纪念日文案后面接一段（build 68）。为什么要"接"：BLE 的 ATT 一次只能发
@@ -726,9 +777,8 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                     s_env_temp_c = (int8_t)(-128);
                     s_env_temp_c10 = ZK_TEMP_NONE;
                 }
-                g_dbg.wx_code    = s_wx_code;
-                g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
                 g_dbg.wx_cmds++;
+                zk_wx_gate();              /* 省电方案：收下就丢（表头那格空着） */
 
                 if (ZKGUI_MODE_PICTURE != s_mode)
                 {
@@ -817,9 +867,8 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                         s_env_temp_c   = (len > 8u) ? (int8_t)d[8] : (int8_t)(-128);
                         s_env_temp_c10 = ZK_TEMP_NONE;
                     }
-                    g_dbg.wx_code    = s_wx_code;
-                    g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
                     g_dbg.wx_cmds++;
+                    zk_wx_gate();      /* 省电方案：0x20 里带的天气也收下就丢 */
                 }
                 /* 用 64 位单调时基：低 32 位每 49.7 天绕一次，绕的时候
                    "现在几点"会跳掉（build 29 就是这么每 4.5 分钟自刷一次的） */
@@ -1036,6 +1085,12 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 s_alert_level = 0;
             }
             g_dbg.alert_cmds++;
+            /* 省电方案里"天气"整条都不要 —— 预警也是天气来的，一并丢（表头那格空着）。 */
+#if ZK_PSAVE_NO_WEATHER
+            s_alert_level   = 0;
+            s_alert_type[0] = 0;
+            s_alert_code    = 0;
+#endif
             if (ZKGUI_MODE_PICTURE != s_mode)
             {
                 gui_request_redraw();
@@ -1563,12 +1618,25 @@ void zk_epd_svc_poll(uint32_t now_ms)
         }
         else
         {
-            redraw = (cur / 60u != s_drawn_min);       /* 时钟模式：每分钟一张 */
+            /* 时钟模式：每分钟一张。⚠ 省电方案里**不这么做** ——
+               用户要求"只在 0 点全刷"，所以时钟页也按"换天"来（一天一次）。 */
+#if ZK_PSAVE_DAILY_ONLY
+            redraw = (cur / 86400u != s_drawn_day);
+#else
+            redraw = (cur / 60u != s_drawn_min);
+#endif
             why    = 3;
+        }
+
+        /* 省电方案：不在 0 点那一窗里就**只攒着不刷**（s_need_gui 留着，到点一起画）。 */
+        if (redraw && !zk_draw_allowed())
+        {
+            redraw = 0;
         }
 
         if (redraw)
         {
+            s_drawn_once = 1;          /* 省电方案：记下"已经画过一版了" */
             zkgui_info_t info;
 
             s_need_gui   = 0;

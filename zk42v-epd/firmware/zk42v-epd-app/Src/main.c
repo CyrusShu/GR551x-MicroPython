@@ -1023,6 +1023,12 @@ int main(void)
     g_dbg.sleep_reg = 1;
 
     zk_dbg_stage(ZK_STAGE_IDLE);
+
+    /* 2026-10-16：把"跑的是哪套方案"记进 flags —— status.sh 一眼就能看出来。 */
+#if ZK_POWER_MODE == ZK_MODE_ALWAYS_ON
+    g_dbg.flags |= ZK_FLAG_MODE_ALWAYS_ON;
+#endif
+
     for (;;)
     {
         g_dbg.heart++;

@@ -137,4 +137,29 @@
 #define ZK_ADV_FB_EVERY_S       21600u  /* ③ 每 6 小时 */
 #define ZK_ADV_FB_LEN_S         30u     /*   开 30 秒 */
 
+/* ======================================================================
+ * 2026-10-16：**两套方案**（用户拍板："分两套方案，省电方案和常电方案"）
+ *
+ *   省电方案（ZK_MODE_BATTERY）—— 吃 CR2450 的那台：
+ *     · 广播只在窗口开（上面那套窗口逻辑）✓
+ *     · **去掉天气和温度**：0x71 / 0x20 里带的天气一律**收下但不画**（表头那格空着）
+ *     · **电池电量不自主更新**：不为"读数变了"重画 —— 电量图标只在 0 点那次全刷里顺带更新
+ *     · **只在 0 点全刷**：其它时间收到命令也不刷，攒到 0 点那一次一起画
+ *       （唯一例外：**开机/换电池后第一次**给它画一版，不然屏上一直是旧内容）
+ *   常电方案（ZK_MODE_ALWAYS_ON）—— 接着电/调试台上的那台：
+ *     · 广播常开（间隔 100ms）、天气温度照旧、收到命令就刷（＝这些天一直在跑的那套）
+ *
+ *   ⚠ 两套是**同一个固件结构**，切换只改下面这一个宏、重编重刷。
+ *   ⚠ 省电方案要配对**不推天气的基站**（ESP32 里 WX_SEND_ENABLE=0 / Mac 配置"天气源: off"），
+ *     否则天气还是会照样画上来（固件侧只是不主动画、也不为它重画）。
+ * ====================================================================== */
+#define ZK_MODE_BATTERY     0
+#define ZK_MODE_ALWAYS_ON   1
+#define ZK_POWER_MODE       ZK_MODE_BATTERY
+
+/* 由 ZK_POWER_MODE 派生的三个开关（要改只改上面那个宏） */
+#define ZK_PSAVE_WINDOW     (ZK_POWER_MODE == ZK_MODE_BATTERY)
+#define ZK_PSAVE_NO_WEATHER (ZK_POWER_MODE == ZK_MODE_BATTERY)
+#define ZK_PSAVE_DAILY_ONLY (ZK_POWER_MODE == ZK_MODE_BATTERY)
+
 #endif /* __ZK_PWR_H__ */
