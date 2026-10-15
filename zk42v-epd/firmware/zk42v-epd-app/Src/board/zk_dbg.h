@@ -59,7 +59,13 @@
       开机就是开着的 → 刷完机它是 RAM 垃圾，status 印出"窗口开过 38 亿次"）。
    ③ 每 30 秒重读一次 `sys_lpclk_get()` 存进 tb_hz_sdk（**只看不动**）——
       用来判断那 +0.27% 是不是"低频 RC 随温度漂、而我们只在开机标定一次"。 */
-#define ZK_BUILD_ID   92u
+/* build 93（2026-10-15）：**记录"这次为什么复位"**。
+   2026-10-14 晚连着四次 status，末尾 uptime 只有 11 / 19 / 42 / 79.7 秒，
+   而 `boot_count` 一直是 1（SRAM 被清过 ⇒ 掉电那类复位，软复位/按 RST 不清 SRAM）。
+   这一版在 main_init() **最开头**（比 SDK 的 platform_init 早）把 AON->SLP_EVENT
+   和 AON->PWR_RET01 抄进状态块 —— 前者有 BOD(掉电) / EXT(外部脚) / WDT 等位，
+   下次它再重启，status.sh 就能直接说出是"掉电"还是"被按了 RST"。 */
+#define ZK_BUILD_ID   93u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -143,7 +149,7 @@ typedef struct
 
 #define ZK_FLAG_PSAVE        0x0040u   /* 2026-10-03：省电版在跑（主循环睡眠 + 广播放宽） */
 
-#define ZK_DBG_WORDS 138
+#define ZK_DBG_WORDS 140
 
 typedef struct
 {
@@ -381,7 +387,20 @@ typedef struct
        adv_win_opens 一直涨才说明"窗口在按点开"。 */
     uint32_t adv_win_on;          /* 136: 现在窗口开着吗（1=开着 = 正在广播）*/
     uint32_t adv_win_opens;       /* 137: 窗口一共开过几次 */
-    uint32_t rsv[ZK_DBG_WORDS - 138];
+    /* ---- build 93：**这次到底为什么复位**（2026-10-15 加的）--------------------
+       背景：2026-10-14 晚上连着四次 status，末尾的 uptime 分别只有 11 / 19 / 42 / 79.7 秒
+       —— 价签**自己在重启**，而且每次 `boot_count = 1`（说明 SRAM 被清过，
+       软复位/按 RST 都不会清 SRAM，只有掉电那类才会）。这既污染时基实测，
+       又让它丢掉时间（每次重启都得重新对表）。
+       怎么查：AON 域的 **SLP_EVENT** 寄存器会记下"这次是被什么唤醒/触发的"，
+       里面有 BOD_FEDGE（**掉电！**）、EXT（外部脚，比如按 RST）、WDT、TIMER 等位。
+       这份值在 `soc_init() → platform_init()` 里会被 `ll_pwr_clear_wakeup_event(ALL)`
+       清掉，所以**只能在 main_init() 最开头读**（我们比 SDK 早）。
+       位含义：bit0 BLE / bit1 TIMER / bit2 EXT(外部脚) / bit3 **BOD(掉电)** /
+               bit4 MSIO_COMP / bit6 WDT / bit8 CALENDAR。 */
+    uint32_t aon_slp_event;       /* 138: 开机时读到的 AON->SLP_EVENT（复位现场）*/
+    uint32_t pwr_ret01_boot;      /* 139: 开机时读到的 AON->PWR_RET01（保留域状态）*/
+    uint32_t rsv[ZK_DBG_WORDS - 140];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

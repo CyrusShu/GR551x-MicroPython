@@ -427,6 +427,18 @@ void main_init(void)
     extern void __main(void);
     uint32_t sw1;
 
+    /* ---- 0) build 93：**先记下"这次为什么复位"** ---------------------------
+     * 必须在这里（SDK 之前）读：`soc_init() → platform_init()` 里有一句
+     * `ll_pwr_clear_wakeup_event(ALL)` 会把它们清掉，而 main_init 比 soc_init 早。
+     * 位（gr55xx_ll_pwr.h / gr551xx.h）：
+     *   bit0 BLE · bit1 TIMER · bit2 EXT(外部脚) · **bit3 PMU BOD_FEDGE(掉电)** ·
+     *   bit4 MSIO_COMP · bit6 AON WDT · bit8 CALENDAR 闹钟
+     * 为什么要它：2026-10-14 那四次 status 末尾 uptime 只有 11/19/42/79.7 秒，
+     * 而 boot_count 一直是 1 —— 说明**SRAM 被清过**（软复位/按 RST 不清 SRAM），
+     * 也就是"掉电那类"复位。这既污染时基实测、又让它每次都要重新对表。 */
+    g_dbg.aon_slp_event  = AON->SLP_EVENT;
+    g_dbg.pwr_ret01_boot = AON->PWR_RET01;
+
     /* ---- 1) 启动计数：这块 RAM 是 NOLOAD、软复位不清 ------------------
      * 上电时 RAM 是随机的，所以先用一个 boot_magic 认领这块 RAM；
      * 之后这个数一直涨 = 芯片在反复复位（status.sh 里的 boot_count）。 */

@@ -1341,7 +1341,7 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 138   # build 90：+2（广播窗口 136/137）
+ZK_DBG_WORDS = 140   # build 90：+2（广播窗口 136/137）；build 93：+2（复位现场 138/139）
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -5001,6 +5001,27 @@ def _zk_say_epd_service(words, regs=None):
             say("      ⚠ warm_hits 非 0 = 真的从深睡醒过来过")
         else:
             say("      → 没走过暖启动分支（现在 ZK_PWR_SAVE=0，不开睡眠，正常）")
+
+    # ---- build 93：**复位现场**（2026-10-15）--------------------------------
+    #   为什么要它：2026-10-14 晚连着四次 status，末尾 uptime 只有 11/19/42/79.7 秒，
+    #   而 boot_count 一直是 1 —— SRAM 被清过 ⇒ 掉电那类复位（软复位/按 RST 都不清 SRAM）。
+    #   固件在 main_init() 最开头（比 SDK 的 platform_init 早）抄下了 AON->SLP_EVENT。
+    if len(words) > 139 and build_now >= 93:
+        ev, pr = words[138], words[139]
+        bits = [(0x01, 'BLE'), (0x02, 'TIMER'), (0x04, 'EXT 外部脚（按过 RST）'),
+                (0x08, '**BOD 掉电！**'), (0x10, 'MSIO_COMP'), (0x40, 'AON WDT'),
+                (0x100, 'CALENDAR 闹钟')]
+        on = [n for m, n in bits if ev & m]
+        say("")
+        say("  ---- build 93：复位现场（开机时抄的 AON 寄存器）----")
+        say("    AON->SLP_EVENT = 0x%08X  →  %s"
+            % (ev, "、".join(on) if on else "一个位都没置（= 普通上电/软复位）"))
+        say("    AON->PWR_RET01 = 0x%08X（开机那一刻的保留域状态）" % pr)
+        if ev & 0x08:
+            say("      ⚠ **BOD（掉电）位置起来了** —— 电池供电抖了一下（内阻 + 刷屏/射频的脉冲电流？）。")
+            say("        这条能解释「自己在重启」：每次掉电都要重新对表、还会污染时基实测。")
+        elif ev & 0x04:
+            say("      → 是被外部脚（多半就是 RST 焊盘）弄醒的，不是掉电。")
 
     # ---- build 78：AON 日历「探路」（啃睡眠第一步）----
     # ⚠ build 91（2026-10-14）：固件里这段探路**关掉了**（ZK_RTC_PROBE=0）——
