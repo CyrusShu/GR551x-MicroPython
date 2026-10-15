@@ -4588,16 +4588,35 @@ def _zk_say_reset_scene(words):
     say("")
     say("  ---- build 93：复位现场（开机时抄的 AON 寄存器）----")
     say("    AON->SLP_EVENT = 0x%08X  →  %s"
-        % (ev, "、".join(on) if on else "一个位都没置（= 普通上电/软复位）"))
+        % (ev, "、".join(on) if on else "已知的\"事件\"位一个都没置"))
     say("    AON->PWR_RET01 = 0x%08X（开机那一刻的保留域状态）" % pr)
+    # ⚠ 这个寄存器不止那 7 个"事件"位（2026-10-15 第一次实跑就踩到）：
+    #   bit16~23 = EXT_WKUP_STATUS（AON 外部唤醒脚的**状态**位）、bit30~31 = SLP_TIMER_MODE。
+    #   它们跟"掉电"没关系；上电那一刻还可能带着 AON 域的随机值。
+    ext = (ev >> 16) & 0xFF
+    tmode = (ev >> 30) & 0x3
+    known = 0
+    for _m, _n in bits:
+        known |= _m
+    unknown = ev & ~(known | (0xFF << 16) | (0x3 << 30))
+    if ext or unknown or tmode:
+        say("      另外：EXT_WKUP_STATUS = 0x%02X（外部唤醒脚状态位，**跟掉电无关**，"
+            "上电时可能是随机值）；SLP_TIMER_MODE = %d；未识别位 = 0x%08X"
+            % (ext, tmode, unknown))
+    if not on and not unknown:
+        say("      → 没有任何\"异常\"位（BOD/WDT/EXT 都没置）—— 普通上电/软复位，"
+            "或者就是上一次开机里的正常活动（TIMER/BLE 那两个位平时也会自己置）。")
     if ev & 0x08:
         say("      ⚠ **BOD（掉电）位起来了** —— 电池供电抖了一下"
             "（内阻 + 刷屏/射频的脉冲电流？）。")
         say("        这条能解释「价签自己在重启」：每次掉电都要重新对表、还污染时基实测。")
     elif ev & 0x04:
         say("      → 是外部脚（多半是 RST 焊盘）触发的，不是掉电。")
+    elif ev & 0x40:
+        say("      → AON 看门狗触发的复位（WDT 位）—— 说明固件卡住过，把这行发我。")
     elif on:
-        say("      → 不是掉电；上面列的那些位解释不了复位，把这行发我。")
+        say("      → 没有掉电/外部脚/看门狗那种\"异常\"位，上面列的多半只是上一次开机"
+            "里的正常活动（TIMER/BLE 平时也会自己置）；这条读数不能定性。")
 
 
 def _zk_say_timebase(words, regs=None):
@@ -4822,6 +4841,9 @@ def _zk_say_ble_experiment(words):
         say("    现在 %s   窗口一共开过 %d 次" %
             ("**开着**（在广播，基站/手机找得到它）" if win_on else
              "关着（不广播 —— 省射频那笔 ≈2.4 mAh/天）", win_opens))
+        if not win_on and win_opens == 0:
+            say("      ℹ 开机那一次广播不算\"重开\"，所以这里是 0 —— 它是**到点自己关上**的"
+                "（开机满 5 分钟、而且时间已同步、又不在窗口时段）。")
         if win_opens == 0 and len(words) > 1 and words[1] > 2000:
             say("      ⚠ 一次都没开过，但主循环跑了 %d 圈 —— 这段发我。" % words[1])
         else:
