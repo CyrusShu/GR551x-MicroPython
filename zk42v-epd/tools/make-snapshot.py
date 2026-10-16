@@ -71,6 +71,13 @@ FILES = [
     # 2026-10-02：和风官方图标 vs 现在这套（20×20 同一条渲染路径）
     ("outputs/firmware/docs/preview/preview-wx-icons-qweather.png", "firmware/docs/preview/preview-wx-icons-qweather.png"),
     ("outputs/firmware/docs/preview/preview-wx-alert-icons.png",    "firmware/docs/preview/preview-wx-alert-icons.png"),
+    # build 102：当天天气（晴转多云 25~31℃）的版式候选 / 整页 / 最坏情况
+    ("outputs/firmware/docs/preview/preview-daily-wx-header.png",
+                                                    "firmware/docs/preview/preview-daily-wx-header.png"),
+    ("outputs/firmware/docs/preview/preview-daily-wx-calendar.png",
+                                                    "firmware/docs/preview/preview-daily-wx-calendar.png"),
+    ("outputs/firmware/docs/preview/preview-daily-wx-worstcase.png",
+                                                    "firmware/docs/preview/preview-daily-wx-worstcase.png"),
     ("outputs/firmware/tools/wx_icon_compare.py",                   "firmware/tools/wx_icon_compare.py"),
     # build 74：预警图标（生成器 + 生成物 + 自测 + 预览）
     ("outputs/firmware/tools/gen_alert_icons.py",                   "firmware/tools/gen_alert_icons.py"),
@@ -247,6 +254,8 @@ FILES = [
     # 2026-10-14 纯日历：基站"什么时候才连上价签写东西"的离线自测
     #   （A 组验"一天最多推一次"，B 组是对照组 —— 抓"每 6 小时白刷一屏"那种退化）
     ("outputs/ble-base/tests/test_push_plan.py",        "base/tests/test_push_plan.py"),
+    # 2026-10-16：当天天气（固件 0x74）这条路的离线自测
+    ("outputs/ble-base/tests/test_daily_wx.py",         "base/tests/test_daily_wx.py"),
     ("outputs/ble-base/wx-compare.py",                  "base/wx-compare.py"),
     ("outputs/ble-base/wx-relay.py",                    "base/wx-relay.py"),
     ("outputs/ble-base/deploy/README.md",               "base/deploy/README.md"),

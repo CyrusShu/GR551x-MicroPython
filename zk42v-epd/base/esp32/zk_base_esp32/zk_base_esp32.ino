@@ -114,6 +114,12 @@ static void civilLocal(int32_t ep, int tz, int *py, int *pm, int *pd)
 
 #define CMD_SET_HOLIDAY 0x7E     // 2026-10-10：日历上的「休/班」表（跟 Python 基站同一套）
 #define CMD_SET_FEST    0x7F     // 节日名（日历第二行优先画它）
+/* 2026-10-16（固件 build 102 配套）：**当天**天气 —— 屏上写"晴转多云 25~31℃"。
+     74 <白天码> <夜间码> <tmin> <tmax>（tmin/tmax 是有符号整度）
+   两个码一样就发 0（固件那边不画「转」）。为什么另开一条而不是挤进 0x71：
+   0x71 是**实况**（某一刻），一天会变好几次，一变就整屏刷 16 秒；当天这条
+   一天只变一次，正好跟"跨天那次推送"合在一起（见 feature-backlog 第 23 节）。 */
+#define CMD_SET_DAILY_WX 0x74
 
 // ③ 价签：按广播名找（各平台看到的 MAC 不一样，名字最稳）
 #define TAG_NAME        "ZK42V-EPD"
@@ -143,6 +149,15 @@ static void civilLocal(int32_t ep, int tz, int *py, int *pm, int *pd)
      也就没法判断"跨天了没有"。所以关的是**发送**，不是这次取数。
      想连这次取数也省掉，得换时间源（NTP/RTC）——那是另一件事，先不做。 */
 #define WX_SEND_ENABLE      0
+/* ⑪ 2026-10-16（用户："如果天气是一整天的比如晴转多云，温度是当天的区间 24-31 度，
+   这样就只需要 0 点刷新"）—— **当天**天气（0x74）：白天/夜间码 + 当天温度区间。
+   它跟上面那个 WX_SEND_ENABLE（实况）是**两条路**：
+     · 实况一天会变好几次 ⇒ 留着关（那正是要砍的开销）；
+     · 当天一天只变一次 ⇒ 这一条**开着**，跟着跨天那次推送走。
+   数据从哪来：中继（NAS 上的 wx-relay.py）多返回的 day/night/tmin/tmax 四个字段；
+   中继没答上来时用 Open-Meteo 的同一次请求（daily=…，代价是它一天只有一个码、没有"转"）。
+   取不到（老中继没这四个字段）就自动不发 —— 屏上退回"只有时间/城市名"的老样子。 */
+#define WX_DAILY_ENABLE     1
 /* 温度要变这么多（十分之一度，10 = 1.0℃）才值得推一次 */
 #define WX_TEMP_DELTA_T10   10
 #define TIME_INTERVAL_MS    (24UL * 3600UL * 1000UL)   // 时间多久重校一次（1 天）
@@ -261,6 +276,19 @@ static int   wxTemp = -128;       // 十分之一度（346 = 34.6℃）
 static bool  wxTempHasTenths = true;
 static int   wxSentCode = -1;     // 上次真发出去的（"值没变就不发"）
 static int   wxSentTemp = -999;
+
+/* 2026-10-16：**当天（全天）天气**（固件 build 102 的 0x74）。
+   白天一个码、夜间一个码（不一样 ⇒ 屏上写「晴转多云」），外加当天温度区间。
+   数据来源见 WX_DAILY_ENABLE 那段注释；取不到时 haveDaily 保持 false，一个字节都不发。 */
+static bool  haveDaily    = false;
+static int   wxDayCode    = 0;     // 白天天气码（1晴 2多云 … 9风）
+static int   wxNightCode  = 0;     // 夜间天气码；跟白天一样时这里就是 0（不画「转」）
+static int   wxTMin       = 0;     // 当天最低（整度，可能有负号）
+static int   wxTMax       = 0;     // 当天最高
+static char  wxDailyDate[16] = ""; // 那一条的日期（"2026-10-16"，跨天判定用）
+/* 上次**真发出去**的那一版的指纹（日期|白天|夜间|tmin|tmax）——
+   跟 Mac 版 daily_key() 一个意思：一样就不发，跨天必发。 */
+static char  wxDailySent[32] = "";
 
 /* build-23：**天气预警**（用户："手机上是局地雷暴雨而且有暴雨警报，中继获取的是小雨"）。
    和风的老预警接口 /v7/warning/now 已经下架（403 Deprecated），新的是
@@ -452,6 +480,107 @@ static bool findJsonString(const String &body, const char *key, char *out, size_
 }
 
 // 现在该不该校时 / 该不该发天气（连之前先算，没事就不连）
+/* 数组的**第一个元素**（Open-Meteo 的 daily 段是数组：`"temperature_2m_max":[31.0]`）。
+   findJsonNumber 只认冒号后面紧跟的数字，遇到 '[' 会继续往下找 —— 在 daily 段里
+   那就会串到别的数字上（比如 "temperature_2m_max_unit":"°C" 后面那个）。所以另写一个：
+   跳空格 → 吃 '[' → 再跳空格 → 读数字。 */
+static bool findJsonArrayNumber(const String &s, const char *key, float *out)
+{
+    String pat = String("\"") + key + "\":";
+    int i = s.indexOf(pat);
+    while (i >= 0)
+    {
+        int p = i + (int)pat.length();
+        while (p < (int)s.length() && (s[p] == ' ' || s[p] == '\t')) p++;
+        if (p < (int)s.length() && s[p] == '[')
+        {
+            p++;
+            while (p < (int)s.length() && (s[p] == ' ' || s[p] == '\t')) p++;
+            char c = (p < (int)s.length()) ? s[p] : 0;
+            if (c == '-' || c == '+' || (c >= '0' && c <= '9'))
+            {
+                *out = s.substring(p).toFloat();
+                return true;
+            }
+        }
+        i = s.indexOf(pat, i + 1);
+    }
+    return false;
+}
+
+/* 和风的**天气文字** → 固件那 9 个码（中继给的是文字："多云"/"雷阵雨"…）。
+   跟 wx-compare.py 的 qweather_code() 同一套判断（那边是唯一真相，这里是 C 的翻版 ——
+   中继将来直接给 daycode/nightcode 的话，这里就不再被用到）。 */
+static int wxCodeFromText(const char *t)
+{
+    String s(t);
+
+    if (s.length() == 0)         return 0;          /* 空 = 没有，不能兜成 2 */
+    if (s.indexOf("雷") >= 0)    return 6;
+    if (s.indexOf("雪") >= 0 || s.indexOf("冰") >= 0) return 7;
+    if (s.indexOf("雾") >= 0 || s.indexOf("霾") >= 0 ||
+        s.indexOf("沙") >= 0 || s.indexOf("尘") >= 0) return 8;
+    if (s.indexOf("雨") >= 0)
+    {
+        return (s.indexOf("中雨") >= 0 || s.indexOf("大雨") >= 0 ||
+                s.indexOf("暴雨") >= 0 || s.indexOf("强") >= 0) ? 5 : 4;
+    }
+    if (s.indexOf("阴") >= 0)    return 3;
+    if (s.indexOf("多云") >= 0 || s.indexOf("少云") >= 0 ||
+        s.indexOf("晴间") >= 0)  return 2;
+    if (s.indexOf("晴") >= 0)    return 1;
+    if (s.indexOf("风") >= 0 || s.indexOf("台风") >= 0 ||
+        s.indexOf("飑") >= 0)    return 9;
+    return 2;
+}
+
+/* 当天天气的"指纹"（Mac 版 daily_key() 的 C 版）：一样就不发，跨天必发。 */
+static void dailyKeyNow(char *out, size_t n)
+{
+    snprintf(out, n, "%s|%d|%d|%d|%d", wxDailyDate, wxDayCode, wxNightCode, wxTMin, wxTMax);
+}
+
+static bool dailyChangedNow()
+{
+    char k[32];
+
+    if (!haveDaily) return false;
+    if (wxDailySent[0] == 0) return true;            /* 从来没发过（价签刚重启）→ 发 */
+    dailyKeyNow(k, sizeof(k));
+    return strcmp(k, wxDailySent) != 0;
+}
+
+/* 从中继的 JSON 里取**当天**天气（那四个平铺字段）。取不到就保持原样、返回 false ——
+   老中继（没这四个字段）照样能用，只是屏上没有当天天气。 */
+static bool parseDailyFromRelay(const String &body)
+{
+    char day[24] = "", night[24] = "", ddate[16] = "";
+    float lo = 0, hi = 0;
+
+    if (!findJsonString(body, "day", day, sizeof(day)))   return false;
+    if (!findJsonNumber(body, "tmin", &lo))               return false;
+    if (!findJsonNumber(body, "tmax", &hi))               return false;
+    findJsonString(body, "night", night, sizeof(night));  /* 夜间可以缺（= 不画「转」） */
+    findJsonString(body, "ddate", ddate, sizeof(ddate));
+
+    /* 中继要是哪天直接给码（daycode/nightcode）就用它，没有就拿文字折算。
+       ⚠ nightcode 给 0 时**不能**当成"文字兜底"，0 就是"跟白天一样、不画转"。 */
+    {
+        float dc = 0, nc = 0;
+
+        wxDayCode   = findJsonNumber(body, "daycode", &dc)   ? (int)dc : wxCodeFromText(day);
+        wxNightCode = findJsonNumber(body, "nightcode", &nc) ? (int)nc : wxCodeFromText(night);
+    }
+    wxTMin = (int)lroundf(lo);
+    wxTMax = (int)lroundf(hi);
+    if (wxTMin > wxTMax) { int t = wxTMin; wxTMin = wxTMax; wxTMax = t; }
+    if (wxNightCode == wxDayCode) wxNightCode = 0;       /* 两个一样 = 屏上不画「转」 */
+    strncpy(wxDailyDate, (ddate[0] ? ddate : "?"), sizeof(wxDailyDate) - 1);
+    wxDailyDate[sizeof(wxDailyDate) - 1] = 0;
+    haveDaily = true;
+    return true;
+}
+
 static bool needTimeSyncNow()
 {
     /* ⚠ lastTimeMs == 0 表示**从来没成功发过时间**（不是"刚发过"）——
@@ -770,6 +899,22 @@ static bool fetchFromRelay(String *dateOut)
         haveWeather = true;
         logf("天气源 = **局域网中继** %.1f℃ %s（%s）",
              wxTemp / 10.0, wxName(wxCode), WX_RELAY_URL);
+        /* 2026-10-16：中继多返回的那几个字段 = **当天**天气（固件 build 102 的 0x74）。
+           取不到就静默不管（NAS 上还是老版中继），屏上退回"只有时间/城市名"的老样子。 */
+        if (parseDailyFromRelay(body))
+        {
+            char zh[48];
+
+            if (wxNightCode > 0)
+            {
+                snprintf(zh, sizeof(zh), "%s转%s", wxName(wxDayCode), wxName(wxNightCode));
+            }
+            else
+            {
+                snprintf(zh, sizeof(zh), "%s", wxName(wxDayCode));
+            }
+            logf("当天天气（中继）：%s %d~%d℃（%s）", zh, wxTMin, wxTMax, wxDailyDate);
+        }
         if (wxAlertLevel > 0)
             logf("  ⚠ 预警 %s%s 到 %s（中继一并带上来的）图标=%d",
                  wxAlertType, alertLevelName(wxAlertLevel), wxAlertEnd, wxAlertIcon);
@@ -812,7 +957,11 @@ static bool fetchWeatherAndTimeInner()
     String url = String(WX_USE_TLS ? "https://" : "http://") + WX_HOST
                + String("/v1/forecast?latitude=")
                + String(LAT, 4) + "&longitude=" + String(LON, 4)
-               + "&current=temperature_2m,weather_code,wind_speed_10m&timezone=auto";
+               + "&current=temperature_2m,weather_code,wind_speed_10m&timezone=auto"
+               /* 2026-10-16：**同一次请求**顺手要当天的预报（daily 段）——
+                  多要这一小段不额外花一次 HTTP，却省下"当天天气"再问一遍。 */
+               + "&daily=weather_code,temperature_2m_max,temperature_2m_min"
+               + "&forecast_days=1";
     if (strlen(WX_MODEL) > 0)
     {
         url += "&models=" + String(WX_MODEL);      /* ⑧ 换模型（默认空 = best_match） */
@@ -886,6 +1035,30 @@ static bool fetchWeatherAndTimeInner()
     wxCode = c;
     wxTemp = t10;               /* 现在存的是"十分之一度" */
     wxTempHasTenths = true;     /* Open-Meteo 的模型值有小数 */
+    /* 2026-10-16：同一次响应里的 daily 段 = **当天**天气（0x74 要的）。
+       ⚠ 它一天只有一个天气码、也没有"夜间" ⇒ 屏上写"多云"这种单词，不会出现「转」。 */
+    {
+        float dw = 0, dlo = 0, dhi = 0;
+
+        if (findJsonArrayNumber(body, "weather_code", &dw) &&
+            findJsonArrayNumber(body, "temperature_2m_min", &dlo) &&
+            findJsonArrayNumber(body, "temperature_2m_max", &dhi))
+        {
+            int ly = 0, lm = 0, ld = 0;
+
+            wxDayCode   = wmoToCode((int)dw);
+            wxNightCode = 0;
+            wxTMin      = (int)lroundf(dlo);
+            wxTMax      = (int)lroundf(dhi);
+            if (wxTMin > wxTMax) { int q = wxTMin; wxTMin = wxTMax; wxTMax = q; }
+            haveDaily = true;
+            /* 日期用**本地今天**（date 头那套已经算好了）—— 它只用来判"跨天必发" */
+            civilLocal(epochNow(), (int)TZ_HOURS, &ly, &lm, &ld);
+            snprintf(wxDailyDate, sizeof(wxDailyDate), "%04d-%02d-%02d", ly, lm, ld);
+            logf("当天天气（Open-Meteo daily）：%s %d~%d℃（免费版一天只有一个码、"
+                 "没有「转」）", wxName(wxDayCode), wxTMin, wxTMax);
+        }
+    }
     lastFetchOkMs = millis();
     logf("（用的是 Open-Meteo 的 %s 模型；换源看 WX_MODEL 那段注释）",
          (strlen(WX_MODEL) > 0) ? WX_MODEL : "best_match");
@@ -1165,6 +1338,7 @@ static bool doSync(BLEAdvertisedDevice &dev)
     // ② 天气：**没能跟时间合并时**才单独发（例如手里还没有效时间）
     bool sentWx = sendWx && !sentTime;
     bool wroteCity = false;                 /* 这一轮到底写没写东西（日志别乱说"没写"） */
+    bool wroteDaily = false;                /* build 102：这一轮发没发「当天天气」 */
     bool wroteMemo = false;
     bool wroteAlert = false;                /* build 71：这一轮发没发天气预警 */
     if (WX_SEND_ENABLE && haveWeather)
@@ -1197,6 +1371,43 @@ static bool doSync(BLEAdvertisedDevice &dev)
             wxSentTemp = wxTemp;
             logf("→ 天气 %s %d℃（单独发）  载荷=%02X %02X %02X",
                  wxName(wxCode), wxTemp, p[0], p[1], p[2]);
+        }
+    }
+
+    // ②b **当天**天气（0x74，固件 build 102）：屏上"晴转多云 25~31℃"。
+    //     一天只变一次 —— 值没变就不发；跨天一定会让指纹变（key 里有日期），
+    //     所以 0 点那轮（newDayNow）必发，跟"哑终端由基站过天"那套是同一拍。
+    //     数据从哪来：中继（首选）或 Open-Meteo 的同一次请求，见 WX_DAILY_ENABLE 那段。
+    if (WX_DAILY_ENABLE && haveDaily)
+    {
+        if (!dailyChangedNow())
+        {
+            logf("= 当天天气没变（%s %d~%d℃），不重发 —— 省一次全刷",
+                 wxName(wxDayCode), wxTMin, wxTMax);
+        }
+        else
+        {
+            uint8_t p[5];
+            char    zh[48];
+
+            p[0] = CMD_SET_DAILY_WX;
+            p[1] = (uint8_t)wxDayCode;
+            p[2] = (uint8_t)((wxNightCode == wxDayCode) ? 0 : wxNightCode);
+            p[3] = (uint8_t)(int8_t)wxTMin;
+            p[4] = (uint8_t)(int8_t)wxTMax;
+            wr->writeValue(p, 5, true);
+            dailyKeyNow(wxDailySent, sizeof(wxDailySent));
+            wroteDaily = true;
+            if (p[2] > 0)
+            {
+                snprintf(zh, sizeof(zh), "%s转%s", wxName(wxDayCode), wxName(wxNightCode));
+            }
+            else
+            {
+                snprintf(zh, sizeof(zh), "%s", wxName(wxDayCode));
+            }
+            logf("→ 当天天气 %s %d~%d℃（%s）  载荷=%02X %02X %02X %02X %02X",
+                 zh, wxTMin, wxTMax, wxDailyDate, p[0], p[1], p[2], p[3], p[4]);
         }
     }
 
@@ -1387,7 +1598,7 @@ static bool doSync(BLEAdvertisedDevice &dev)
 
     forceTimeSync = false;
     logf("已断开（本次连接总耗时 %lu 毫秒）。%s", millis() - tConn0,
-         (sentTime || sentWx || wroteCity || wroteMemo || wroteAlert)
+         (sentTime || sentWx || wroteDaily || wroteCity || wroteMemo || wroteAlert)
              ? "价签这时在刷屏，约 16 秒"
              : "本轮没写任何命令，价签不会重画");
     return true;
@@ -1609,11 +1820,12 @@ void loop()
     if (millis() - lastBeatMs > 30000)
     {
         lastBeatMs = millis();
-        logf("心跳  heap=%u  wifi=%s  rssi=%d  天气=%s  价签=%s",
+        logf("心跳  heap=%u  wifi=%s  rssi=%d  实况=%s  当天=%s  %d~%d℃  价签=%s",
              (unsigned)ESP.getFreeHeap(),
              WiFi.status() == WL_CONNECTED ? "OK" : "--",
              WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0,
              haveWeather ? wxName(wxCode) : "无",
+             haveDaily ? wxName(wxDayCode) : "无", wxTMin, wxTMax,
              tagPresent ? "在" : "不在");
     }
 

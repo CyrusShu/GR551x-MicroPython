@@ -299,6 +299,10 @@ static int f5_idx(char c)
     {
         return ZK_F5_DOT;
     }
+    if ('~' == c)             /* build 102：温度区间的波浪号（"25~31℃"） */
+    {
+        return ZK_F5_TILDE;
+    }
     if ('\xB0' == c)          /* '°'：build 61 起温度写 26.4℃ */
     {
         return ZK_F5_DEG;
@@ -1054,6 +1058,68 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
     return x + text5_width(s, CAL_HDR_TEMP_SCALE);
 }
 
+/* ---------------------------------------------------------- build 102：当天温度区间
+ *
+ * 2026-10-16 用户："如果天气是一整天的，比如晴转多云，温度是当天的区间 24-31 度，
+ * 这样就只需要 0 点刷新" —— 于是屏上从"某一刻的 26℃"改成"当天的 25~31℃"。
+ *
+ * 版式（表头 400px 就那么多地方，左边到"深圳"只剩 ~140px）：
+ *   ZK_HDR_RANGE_STYLE = 0 → "25~31"      （最省地方，能同时保住图标和城市名）
+ *                        1 → "25~31°"
+ *                        2 → "25~31°C"    （最完整，代价是那格要塞得下）
+ *   ZK_HDR_WX_ICON = 0    → 不画天气图标（把 23px 让给文字，预警图标照画）
+ * 这两种是**预览期**的档位（tools/gui_preview.py 用 ZK_CC_FLAGS 传 -D 覆盖，
+ * 见 backlog 第 23 节的候选图），用户挑完就把宏删掉、只留选中那一种。
+ */
+#ifndef ZK_HDR_RANGE_STYLE
+#define ZK_HDR_RANGE_STYLE 0
+#endif
+#ifndef ZK_HDR_WX_ICON
+#define ZK_HDR_WX_ICON 1
+#endif
+
+/* 整度 -> "25" / "-3"（够表头用；两位数的负温在深圳也不会出现） */
+static int fmt_deg(char *s, int t)
+{
+    int av = (t < 0) ? -t : t;
+    int k  = 0;
+
+    if (t < 0)
+    {
+        s[k++] = '-';
+    }
+    if (av >= 10)
+    {
+        s[k++] = (char)('0' + (av / 10) % 10);
+    }
+    s[k++] = (char)('0' + av % 10);
+    s[k]   = 0;
+    return k;
+}
+
+/* 画"当天的温度区间"（"25~31" / "25~31°C"，看上面那个档位宏）。 */
+static int draw_header_temp_range(uint8_t *buf, int x, const zkgui_info_t *info)
+{
+    char s[16];
+    int  k = 0;
+    int  color = ((int)info->temp_max_c > 30) ? C_RED : C_BLACK;   /* 跟单值同一规矩 */
+
+    k += fmt_deg(s + k, (int)info->temp_min_c);
+    s[k++] = '~';
+    k += fmt_deg(s + k, (int)info->temp_max_c);
+#if ZK_HDR_RANGE_STYLE == 1
+    s[k++] = '\xB0';
+#elif ZK_HDR_RANGE_STYLE == 2
+    s[k++] = '\xB0';
+    s[k++] = 'C';
+#endif
+    s[k] = 0;
+
+    x += 3;                                  /* 跟天气文字拉开 3px */
+    draw_text5(buf, x, CAL_HDR_TEMP_Y, s, CAL_HDR_TEMP_SCALE, color);
+    return x + text5_width(s, CAL_HDR_TEMP_SCALE);
+}
+
 /* build 61：温度后面跟着写"经纬度所在地的城市名"（用户提的）。
    城市名由基站下发（BLE 命令 0x73），固件只认字模表里有的字
    （见 tools/gen_font.py 的 CITY_CHARS —— MCU 上没法现栅格化汉字）。
@@ -1218,6 +1284,12 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
             ic       = zk_alert_icon((int)info->alert_code);
             ic_color = ((int)info->alert_level >= 3) ? C_RED : C_BLACK;
         }
+#if !ZK_HDR_WX_ICON
+        else
+        {
+            ic = 0;              /* 预览档位：只砍**天气**图标，预警图标照画 */
+        }
+#endif
 
         if (ic != 0)
         {
@@ -1256,15 +1328,47 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
             }
             else
             {
-                x = draw_text_small(buf, x, 7, zk_weather_name(info->wx_code), C_BLACK);
+                /* build 102：**当天**天气 —— 白天一个码、夜间一个码，
+                   两个不一样就在中间插一个「转」（"晴转多云"）；一样（或者没有
+                   夜间码）时跟以前一字不差，只写一个名字。 */
+                uint8_t wd = info->wx_code;
+                uint8_t wn = info->wx_code2;
+
+                if (wd == 0u)
+                {
+                    wd = wn;             /* 老基站只给了夜间码的那种：别空着 */
+                    wn = 0u;
+                }
+                if (wn > ZK_WX_MAX)
+                {
+                    wn = 0u;
+                }
+                if (wd != 0u)            /* 两个码都没有：这一格就空着 */
+                {
+                    x = draw_text_small(buf, x, 7, zk_weather_name(wd), C_BLACK);
+                    if (wn != 0u && wn != wd)
+                    {
+                        x = draw_text_small(buf, x, 7, "转", C_BLACK);
+                        x = draw_text_small(buf, x, 7, zk_weather_name(wn), C_BLACK);
+                    }
+                }
             }
         }
     }
 
     /* 再右：温度（build 61 起写"26.4℃"）+ **城市名**（基站下发的经纬度所在地）——
        手机给的天气温度优先，没有才退回片内温度。
-       build 43 起从右上角挪到这里，紧跟天气（"多云 26.4℃ 深圳"是一句话） */
-    x = draw_header_temp(buf, x, info);
+       build 43 起从右上角挪到这里，紧跟天气（"多云 26.4℃ 深圳"是一句话）。
+       build 102：当日温度区间（0x74 来的）优先，没有才退回单值。 */
+    if (info->temp_min_c != ZK_TEMP_RANGE_NONE &&
+        info->temp_max_c != ZK_TEMP_RANGE_NONE)
+    {
+        x = draw_header_temp_range(buf, x, info);
+    }
+    else
+    {
+        x = draw_header_temp(buf, x, info);
+    }
     (void)draw_header_city(buf, x + 3, info);
 
     /* 右上：**只画电池图标**（build 43：不写"3.97V"那几个字了，格子不够好看；

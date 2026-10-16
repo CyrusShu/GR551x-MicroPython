@@ -134,9 +134,11 @@ def main():
         exe = G.build(td)
 
         def render(mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp=-128,
-                   city='', memo_spec='', memo_text=''):
+                   city='', memo_spec='', memo_text='', alert_lv=0, alert_type='',
+                   alert_code=0, wx2=0, tmin=-128, tmax=-128):
             body = G.render(exe, mode, ts, opt, bat_mv, temp_c10,
-                            wx_code, env_temp, city, memo_spec, memo_text)
+                            wx_code, env_temp, city, memo_spec, memo_text,
+                            alert_lv, alert_type, alert_code, wx2, tmin, tmax)
             return G.to_rgb(body), body      # G.render 里面会断言哨兵完好
 
         # 1) 哨兵：G.render 里断言，能走到这儿就算过
@@ -356,6 +358,35 @@ def main():
             svc = f.read()
         check('5f: 表头温度不再退回片内温度（zk_epd_svc.c 里没有那句回退）',
               'info.temp_c10   = (int16_t)zk_bat_temp_c10();' not in svc)
+
+        # 5g) build 102（2026-10-16 用户："天气是一整天的，比如晴转多云，温度是当天的
+        #     区间 24-31 度"）：**当天**天气（协议 0x74）—— 白天码 + 夜间码 + 温度区间。
+        #     判据三条：① 两码不同 → 画出「晴转多云」（比同名天多出「转」+一个字）；
+        #              ② 两码相同 → **不画「转」**（多云的日子不该多那两个字）；
+        #              ③ 给了区间就按区间画（画出来的东西跟单值那版不一样）。
+        def new_px(a, b):                    # a 比 b 多出来的墨（黑/红都算）
+            return sum(1 for y in range(0, 26) for x in range(0, 400)
+                       if a[y][x * 3:x * 3 + 3] != bytes(WHITE)
+                       and b[y][x * 3:x * 3 + 3] == bytes(WHITE))
+
+        rows_same, _ = render(1, TS, 0, 3970, 264, 2, 26, '深圳', '', '', 0, '', 0,
+                              2, 25, 31)                     # 白天多云 / 夜间多云
+        rows_zhuan, _ = render(1, TS, 0, 3970, 264, 1, 26, '深圳', '', '', 0, '', 0,
+                               2, 25, 31)                    # 白天晴 / 夜间多云
+        ink_zhuan = new_px(rows_zhuan, rows_same)
+        check('5g: 白天晴+夜间多云画成「晴转多云」（比同名天多 %d 个墨点）' % ink_zhuan,
+              ink_zhuan > 60)
+        rows_one, _ = render(1, TS, 0, 3970, 264, 1, 26, '深圳')     # 只有单值 26℃
+        check('5g: 给了当天温度区间就按区间画（跟单值那版差 %d 个墨点）'
+              % abs(new_px(rows_zhuan, rows_one) - new_px(rows_one, rows_zhuan)),
+              new_px(rows_zhuan, rows_one) > 30 and new_px(rows_one, rows_zhuan) > 30)
+        rows_neg, _ = render(1, TS, 0, 3970, 264, 1, 26, '深圳', '', '', 0, '', 0,
+                             2, -3, 5)                       # 零下也要能画（不能崩）
+        check('5g: 区间是零下（-3~5）也照画',
+              count(rows_neg, BLACK, 200, 0, 376, CAL_HDR_H) > 0)
+        check('5g: 固件里 0x74 真的把区间存进 info（源码级判据）',
+              'case 0x74:' in svc and 'info.temp_min_c = s_temp_min_c;' in svc and
+              'info.wx_code2 = s_wx_code2;' in svc)
 
         # 6) 换一天，图不一样
         check('6: 换一天画出来的图不一样',

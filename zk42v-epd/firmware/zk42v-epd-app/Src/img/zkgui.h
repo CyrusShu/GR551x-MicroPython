@@ -35,6 +35,15 @@ typedef struct
     int16_t  temp_c10;    /* **片内**温度 ×10（手机没给天气温度时用它） */
     uint8_t  wx_code;     /* 天气码（0 = 不显示；1 晴 2 多云 …，见 weather.h） */
     int8_t   env_temp_c;  /* 手机下发的**天气温度**（℃）；-128 = 没收到过 */
+    /* build 102（2026-10-16 用户）：天气改成**按天**给 —— 屏上写"晴转多云 25~31℃"，
+       一天只变一次，正好跟着 0 点那轮推送（见 docs/feature-backlog.md 第 22/23 节）。
+       基站经 BLE 0x74 下发这四个值（白天码 / 夜间码 / 当天最低 / 当天最高）。
+       · wx_code2 == 0 或跟 wx_code 一样 ⇒ 不画「转」，行为跟以前一模一样；
+       · temp_min_c / temp_max_c == -128 ⇒ 没有"当天区间"，退回原来的**单值**温度
+         （env_temp_c 那套），老基站/网页不受影响。 */
+    uint8_t  wx_code2;    /* 夜间天气码；0 = 没有 */
+    int8_t   temp_min_c;  /* 当天温度区间下限（℃）；ZK_TEMP_RANGE_NONE = 没有 */
+    int8_t   temp_max_c;  /* 当天温度区间上限（℃）；ZK_TEMP_RANGE_NONE = 没有 */
     const char *city;     /* build 61：经纬度所在地的城市名（UTF-8，基站经 0x73 下发）；
                              0 或空串 = 不画。字模只认 gen_font.py 里 CITY_CHARS 那批字 */
     /* build 67：**纪念日提醒**（基站经 0x7A 下发）。memo_day = 0 表示没有。
@@ -59,6 +68,7 @@ typedef struct
 } zkgui_info_t;
 
 #define ZK_TEMP_NONE  ((int16_t)(-32768))   /* "温度没读到" */
+#define ZK_TEMP_RANGE_NONE  ((int8_t)(-128)) /* "没有当天的温度区间" */
 
 /* 把这一页画进 30000 字节的三色缓冲（前 15000 黑白面、后 15000 红面） */
 void zkgui_draw(uint8_t *buf, const zkgui_info_t *info);

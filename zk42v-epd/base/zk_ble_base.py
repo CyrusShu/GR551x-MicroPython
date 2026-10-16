@@ -85,6 +85,9 @@ DEV_NAME = "ZK42V-EPD"          # 广播里的完整名字（zk_ble.c: ZK_BLE_NA
 
 CMD_SET_TIME = 0x20             # [0x20, utc_be32, tz_s8, mode]
 CMD_SET_WX = 0x71               # [0x71, code, temp_s8]
+CMD_SET_DAILY_WX = 0x74         # [0x74, day, night, tmin, tmax]（build 102：**当天**天气
+                                #  —— 白天/夜间码 + 当天温度区间 ⇒ 屏上"晴转多云 25~31℃"。
+                                #  一天只变一次，跟 0 点那轮推送走；见 feature-backlog 第 23 节）
 CMD_READ_BAT = 0x72             # 立刻重读电池 + 重画一页
 CMD_SET_CITY = 0x79             # [0x79, utf8 城市名]（build 61：表头温度后面那个）
 CMD_SET_MEMO = 0x7A             # [0x7A, mon, day, utf8 祝福语]（build 67：纪念日高亮）
@@ -275,6 +278,24 @@ def fetch_weather_any(args, lat: float, lon: float):
     return c, t, w, wind, "Open-Meteo(模型)", True          # 模型值带一位小数
 
 
+# 2026-10-16：把 wx-compare.py 当模块装进来 —— **"文字→码"那张表和 0x74 的载荷
+# 只有一份**（在那边的 daily_to_protocol / daily_payload）。中继、Mac 基站、离线自测
+# 三处共用同一套折算，免得各写一份、改一处忘两处（跟 test_bat 那条"别再抄第二份"一个道理）。
+_WXMOD = None
+
+
+def _wxmod():
+    global _WXMOD
+    if _WXMOD is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wx-compare.py")
+        spec = importlib.util.spec_from_file_location("zk_wx_compare", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _WXMOD = mod
+    return _WXMOD
+
+
 # ---- 局域网中继（NAS 上的 wx-relay.py，2026-10-02 起是**首选**）---------------
 #  ESP32 那版基站直连和风连不上（TLS 发不出去），所以在 NAS 上放了个中继替它跑
 #  HTTPS+JWT；Mac 这版也能用同一个中继（好处：不用在 Mac 上放和风凭据，
@@ -282,8 +303,12 @@ def fetch_weather_any(args, lat: float, lon: float):
 #  中继的返回形如：
 #     {"code":4,"temp":28,"text":"小雨","src":"qweather","obs":"…",
 #      "alert":3,"alevel":4,"atype":"暴雨","aend":"2026-10-03T18:13+08:00"}
-def fetch_from_relay(args, url: str):
-    """跟 ESP32 基站读的是同一份 JSON。返回跟 fetch_weather_any 一样的六元组。"""
+def fetch_relay_json(args, url: str) -> dict:
+    """中继那份 JSON —— **一轮只问一次**（实况、当天天气、预警都在同一份里）。
+    缓存挂在 args 上，sync_once 每轮开头会清掉。"""
+    cached = getattr(args, "_relay_json", None)
+    if cached is not None:
+        return cached
     req = urllib.request.Request(url, headers={"User-Agent": "zk42v-base/1"})
     with urllib.request.urlopen(req, timeout=10.0) as r:
         raw = r.read()
@@ -291,6 +316,13 @@ def fetch_from_relay(args, url: str):
             import gzip as _gz
             raw = _gz.decompress(raw)
     j = json.loads(raw.decode("utf-8", "replace"))
+    setattr(args, "_relay_json", j)
+    return j
+
+
+def fetch_from_relay(args, url: str):
+    """跟 ESP32 基站读的是同一份 JSON。返回跟 fetch_weather_any 一样的六元组。"""
+    j = fetch_relay_json(args, url)
     code = int(j["code"])
     temp = float(j["temp"])
     # 中继发的温度"整数就是整数度、带小数就是模型值"——跟固件的两条载荷格式对齐
@@ -298,6 +330,64 @@ def fetch_from_relay(args, url: str):
     setattr(args, "_relay_alert", (int(j.get("alert") or 0), int(j.get("alevel") or 0),
                                    str(j.get("atype") or ""), int(j.get("aicon") or 0)))
     return code, temp, None, 0.0, "局域网中继(" + url + ")", has_tenths
+
+
+# ---- 2026-10-16 晚：**当天（全天）天气**（build 102 的 0x74）-------------------
+#  用户："如果天气是一整天的比如晴转多云，温度是当天的区间 24-31 度，这样就只需要
+#  0 点刷新。" ⇒ 屏上写"晴转多云 25~31℃"，一天只变一次、跟着 0 点那轮推送走。
+#  三条路都能拿到它（跟实况同源，所以顺手就取到了）：
+#    · 中继：JSON 里多返回的 day/night/tmin/tmax（wx-relay.py build-25 起）；
+#    · 和风直连（有 key）：/v7/weather/3d 的第 0 条；
+#    · Open-Meteo：daily=weather_code,temperature_2m_max,temperature_2m_min
+#      （免费，但**一天只有一个天气码、没有"转"**）。
+#  ⚠ 折算（文字→码、两码相同就发 0、上下限排序）只有一份：wx-compare.py 的
+#    daily_to_protocol / daily_payload。
+def fetch_om_daily(lat: float, lon: float, timeout: float = 10.0):
+    """Open-Meteo 的**当天**预报（免费兜底）。返回 (WMO 码, 最低, 最高, 日期)。"""
+    url = ("https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+           "&daily=weather_code,temperature_2m_max,temperature_2m_min"
+           "&timezone=Asia%%2FShanghai&forecast_days=1" % (lat, lon))
+    req = urllib.request.Request(url, headers={"User-Agent": "zk42v-base/1"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        j = json.loads(r.read().decode("utf-8", "replace"))
+    d = j["daily"]
+    return (int(d["weather_code"][0]), float(d["temperature_2m_min"][0]),
+            float(d["temperature_2m_max"][0]), str(d["time"][0]))
+
+
+def fetch_daily_any(args, lat: float, lon: float):
+    """取**当天**天气。返回 ({"day","night","tmin","tmax","date"}, 源名)。
+    取不到就抛 —— 调用方兜（当天这条拿不到**不该**影响时间/预警/城市名）。"""
+    W = _wxmod()
+    relay = (getattr(args, "relay", "") or "").strip()
+    if relay:
+        j = fetch_relay_json(args, relay)
+        if "day" not in j:
+            raise RuntimeError("中继没带当天天气（要 day/night/tmin/tmax 四个字段）"
+                               " —— NAS 上的 wx-relay.py 还是老版本，得更新那一个文件")
+        rec = W.daily_to_protocol(j.get("day"), j.get("night"), j.get("tmin"),
+                                  j.get("tmax"), str(j.get("ddate") or ""))
+        return rec, "局域网中继(当天)"
+
+    src = (getattr(args, "wx_source", "auto") or "auto").lower()
+    key = (getattr(args, "qweather_key", "") or os.environ.get("QWEATHER_KEY", "")).strip()
+    host = getattr(args, "qweather_host", "devapi.qweather.com")
+    if src in ("auto", "qweather") and key:
+        d = W.qweather_daily(key, lat, lon, host)
+        return W.daily_to_protocol(d["day"], d["night"], d["tmin"], d["tmax"],
+                                   d["date"]), "和风天气(3 天预报)"
+    if src == "qweather":
+        raise RuntimeError("选了和风但没给 key，取不到当天天气")
+    wmo, lo, hi, dstr = fetch_om_daily(lat, lon)
+    return W.daily_to_protocol(W.WMO_TO_TAG.get(wmo, ""), "", lo, hi,
+                               dstr), "Open-Meteo(当天)"
+
+
+def daily_key(rec: dict):
+    """当天天气的"值"（拿来跟上一轮比：一样就不发）—— 抽出来是为了能离线自测。
+    日期也进 key：**跨天必须发一次**，哪怕白天/夜间和温度一字不差
+    （0 点那次推送就是靠它把新的一天带过去的）。"""
+    return (rec.get("date", ""), rec["day"], rec["night"], rec["tmin"], rec["tmax"])
 
 
 # ---- 和风「实时天气预警」（2026-10-02 补）------------------------------------
@@ -515,7 +605,7 @@ async def _client_with_rescan(dev, args, log_fn):
 
 
 async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
-                    last_alert=None, may_skip_if_alive=False) -> bool:
+                    last_alert=None, may_skip_if_alive=False, last_daily=None) -> bool:
     """连上去把时间和/或天气写进价签。
 
     ⚠ 固件的脾气（Src/ble/zk_epd_svc.c:930 起）：日历模式只在**换天**时自己重画，
@@ -540,8 +630,12 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
     # 为什么在意这个：固件对每条命令都置 s_need_gui → 各刷一屏（`画过 2 次` 就是这么来的）。
     # 挨着发至少有机会被合并；先取天气则少 2 秒的中间等待。
     wx_payload = None
+    daily_payload = None            # build 102：当天天气（0x74）
     alert_payload = None
     alert_icon_payload = None       # build 74：预警图标编号单独一条命令
+    # 中继那份 JSON 一轮只问一次（实况 + 当天天气 + 预警都在里面）——
+    # 每轮开头清缓存，别把上一轮的数据当这一轮的用。
+    setattr(args, "_relay_json", None)
     if do_weather and not args.no_weather:
         try:
             code, temp, wmo, wind, wsrc, has_tenths = fetch_weather_any(args, args.lat,
@@ -579,6 +673,36 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
         except Exception as e:
             log("  ! 取天气失败：" + explain(e), args.log)
 
+        # ---- build 102（2026-10-16 用户："天气按天给就够了"）：**当天**天气 0x74 -----
+        #   屏上写"晴转多云 25~31℃"。它一天只变一次，所以**值没变就不发** ——
+        #   0 点那轮（new_day）本来就会推一次，顺手把新的一天带过去。
+        #   ⚠ 实况（0x71 / 0x20 里带的）从这一版起**默认不发**了：实况一天会变好几次，
+        #     一变就整屏刷 16 秒，那正是这一轮要砍掉的（要调试就加 --wx-live）。
+        try:
+            rec, dsrc = fetch_daily_any(args, args.lat, args.lon)
+            dkey = daily_key(rec)
+            prev_d = (last_daily or {}).get("v")
+            if prev_d == dkey:
+                log("  = 当天天气没变（%s %d~%d℃），不重发 —— 省一次全刷。"
+                    % (WX_NAME.get(rec["day"], str(rec["day"])), rec["tmin"], rec["tmax"]),
+                    args.log)
+            else:
+                daily_payload = bytes([CMD_SET_DAILY_WX]) + _wxmod().daily_payload(rec)[1:]
+                log("  · 当天天气取好了[%s]：白天 %s / 夜间 %s → 屏上「%s」，%d~%d℃"
+                    % (dsrc, WX_NAME.get(rec["day"], str(rec["day"])),
+                       ("—" if rec["night"] == 0 else WX_NAME.get(rec["night"], str(rec["night"]))),
+                       (WX_NAME.get(rec["day"], str(rec["day"])) if rec["night"] == 0 else
+                        WX_NAME.get(rec["day"], "?") + "转" + WX_NAME.get(rec["night"], "?")),
+                       rec["tmin"], rec["tmax"]), args.log)
+                if last_daily is not None:
+                    last_daily["v"] = dkey
+                STATUS["weather"] = {"code": rec["day"], "temp": rec["tmax"],
+                                     "text": WX_NAME.get(rec["day"], ""), "src": dsrc,
+                                     "date": rec["date"], "tmin": rec["tmin"],
+                                     "tmax": rec["tmax"], "night": rec["night"]}
+        except Exception as e:
+            log("  ! 取当天天气失败（不影响时间/预警/城市名）：" + explain(e), args.log)
+
         # 顺带取**天气预警**（和风）：有预警时表头那格"天气文字"改画它。
         # 预警和天气是**两条独立的路** —— 预警取不到（没 key / 接口抽风）不影响天气。
         # 只在"有 / 没有"或"类型名或级别变了"时才发，不然每轮都白刷一屏。
@@ -606,7 +730,12 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
 
     # 2026-10-01（用户要求）：**只要这次要推天气，就把时间也一起带上** ——
     # 每次推天气都顺便对一次表，价签的钟一直是校准的；反正那条命令本来就要重画一页。
-    put_time = bool(do_time or (wx_payload is not None))
+    # 2026-10-16（build 102）：实况默认不发了（见上面那段），**当天那条 0x74** 才算"要推天气"。
+    if wx_payload is not None and not getattr(args, "wx_live", False):
+        log("  （实况天气不发 —— build 102 起屏上写的是**当天**那条 0x74；"
+            "要发实况（调试）就加 --wx-live）", args.log)
+        wx_payload = None
+    put_time = bool(do_time or (wx_payload is not None) or (daily_payload is not None))
 
     tag_report = {"t": None}     # 价签连上来之后会上报 t=<它的时间>，见下面 on_notify
 
@@ -726,6 +855,13 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
                 log("  → 天气  载荷=" + wx_payload.hex(" "), args.log)
             elif merged:
                 log("  （天气已经并进上一条命令了，不用单独发）", args.log)
+
+            # 2b) **当天**天气（build 102 的 0x74）—— 紧接着上一条发，两条会被固件的
+            #     合并窗口并成**一次**整屏刷新（build 72 那个窗口就是干这个的）。
+            #     74 <白天码> <夜间码> <tmin> <tmax>：两个码一样就发 0（不画「转」）。
+            if daily_payload is not None:
+                await cli.write_gatt_char(WR_UUID, daily_payload, response=True)
+                log("  → 当天天气  载荷=" + daily_payload.hex(" "), args.log)
 
             # 3) 城市名（build 61）—— 表头温度后面写它。基站知道自己的经纬度，
             #    所以由基站发；固件只认常见城市名的字模（北京的"京"有、生僻字没有）。
@@ -895,6 +1031,8 @@ async def cmd_watch(args) -> int:
     last_time = {}      # addr -> 上次成功同步时间的 monotonic 时间
     last_wx_t = {}      # addr -> 上次查天气的 monotonic 时间
     last_wx = {}        # addr -> {"v": (code, temp)} 上次真发出去的天气值
+    last_daily = {}     # addr -> {"v": (日期, 白天码, 夜间码, tmin, tmax)} 上次真发出去的
+                        #         **当天**天气（build 102 的 0x74）—— 一天一变，值变了才发
     last_alert = {}     # addr -> {"a": (level, 类型名)} 上次真发出去的预警
     present = set()     # 上一轮在广播的设备
     pushed_day = {}     # addr -> 上次已经为"这一天"推过的本地日期（2026-10-05）
@@ -942,6 +1080,7 @@ async def cmd_watch(args) -> int:
             #   真没重启的话，下面的 t= 核实会让我们一条命令都不写，什么都不会发生；
             #   代价最多是下一次 6 小时例行检查时多发一次没变的天气（多刷一屏）。
             last_wx.get(addr, {}).pop("v", None)
+            last_daily.get(addr, {}).pop("v", None)
             last_alert.get(addr, {}).pop("a", None)
 
         # 跨天：本地日期跟上次推过的不一样了 -> 主动推一次（时间+日期，顺带天气）。
@@ -959,7 +1098,8 @@ async def cmd_watch(args) -> int:
             do_time = reappeared or due_time or do_wx or new_day
             if await sync_once(dev, adv, args, do_time, do_wx, last_wx.setdefault(addr, {}),
                                last_alert.setdefault(addr, {}),
-                               may_skip_if_alive=(reappeared and not (due_time or due_wx))):
+                               may_skip_if_alive=(reappeared and not (due_time or due_wx)),
+                               last_daily=last_daily.setdefault(addr, {})):
                 STATUS["last_push"] = time.time()
                 if do_time:
                     last_time[addr] = time.monotonic()
@@ -1089,6 +1229,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "给了它就走中继：Mac 上不用放和风凭据，而且**天气预警**也"
                         "在同一份 JSON 里 —— 跟 ESP32 基站完全对称。")
     p.add_argument("--no-weather", action="store_true", help="不发天气，只对时间")
+    p.add_argument("--wx-live", action="store_true",
+                   help="2026-10-16（build 102）起**默认不发实况天气**（实况一天变好几次、"
+                        "一变就整屏刷 16 秒）。屏上写的是**当天**那条（0x74：晴转多云 "
+                        "25~31℃）。这个开关只是给调试/对比留的后门：打开就恢复老行为。")
     p.add_argument("--battery", action="store_true", help="顺带发 0x72 读一次电池")
     p.add_argument("--scan", type=float, default=6.0, help="单轮扫描秒数（默认 6）")
     p.add_argument("--poll", type=float, default=3.0, help="watch 模式每轮之间歇（秒）")

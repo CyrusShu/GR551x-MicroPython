@@ -53,18 +53,23 @@ def build(tmpdir):
 
 def render(exe, mode, ts, opt=0, bat_mv=0, temp_c10=0, wx_code=0, env_temp_c=-128,
            city='', memo_spec='', memo_text='', alert_lv=0, alert_type='',
-           alert_code=0):
+           alert_code=0, wx_code2=0, tmin=-128, tmax=-128):
     """opt：选项位，跟固件 zk_opt.h 的 ZK_OPT_xxx 对齐（这里只用到 0x04 = 不画农历）
        bat_mv / temp_c10：电池毫伏、温度×10（0 = 按"没读到"画，右上角就不显示）
        city：build 61 起表头温度后面那个城市名（基站 0x79 下发；空 = 不画）
        memo_spec / memo_text：build 67 的纪念日提醒，例 "10-05" + "付婧文生日快乐！"
                               （那天套黑框 + 1 号左边空白处框出这句话）
        alert_lv / alert_type：build 71 的天气预警（基站 0x7C 下发），
-                              例 4 + "暴雨" —— 有预警时表头那格改画它"""
+                              例 4 + "暴雨" —— 有预警时表头那格改画它
+       wx_code2 / tmin / tmax：build 102 的**当天**天气（基站 0x74 下发），
+                              例 wx_code=1, wx_code2=2, tmin=24, tmax=31
+                              → 屏上"晴转多云 24~31℃"。tmin/tmax = -128 = 没有区间
+                              （那就按老样子画单值温度）。"""
     out = subprocess.run([exe, str(mode), str(ts), str(opt),
                           str(bat_mv), str(temp_c10), str(wx_code),
                           str(env_temp_c), city, memo_spec, memo_text,
-                          str(alert_lv), alert_type, str(alert_code)], check=True,
+                          str(alert_lv), alert_type, str(alert_code),
+                          str(wx_code2), str(tmin), str(tmax)], check=True,
                          stdout=subprocess.PIPE).stdout
     assert len(out) == BYTES + 2 * GUARD, len(out)
     head, body, tail = out[:GUARD], out[GUARD:GUARD + BYTES], out[GUARD + BYTES:]
@@ -122,12 +127,16 @@ def main(argv):
     alert_lv = int(argv[13]) if len(argv) > 13 else 0     # 预警级别（build 71；0 = 没有）
     alert_t  = argv[14] if len(argv) > 14 else ''         # 预警类型名（"暴雨"…）
     alert_ic = int(argv[15]) if len(argv) > 15 else 0     # 预警图标编号（build 74；0 = 不画）
+    wx2      = int(argv[16]) if len(argv) > 16 else 0     # 夜间天气码（build 102；0 = 不画「转」）
+    tmin     = int(argv[17]) if len(argv) > 17 else -128  # 当天最低温（build 102；-128 = 没有）
+    tmax     = int(argv[18]) if len(argv) > 18 else -128  # 当天最高温
     ts += tz * 3600
 
     with tempfile.TemporaryDirectory(prefix='zkgui-') as td:
         exe = build(td)
         body = render(exe, mode, ts, opt, bat_mv, temp_c10, wx_code, env_temp, city,
-                      memo_s, memo_t, alert_lv, alert_t, alert_ic)
+                      memo_s, memo_t, alert_lv, alert_t, alert_ic,
+                      wx2, tmin, tmax)
     rows = to_rgb(body)
     write_png(out, rows)
 

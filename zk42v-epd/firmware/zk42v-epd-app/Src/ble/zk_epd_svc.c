@@ -187,6 +187,17 @@ static int8_t   s_env_temp_c = (int8_t)(-128);   /* -128 = 还没收到过 */
    为什么要有它：0x71 原来只能带**整度**（int8），"不要四舍五入"就得走这条。
    ZK_TEMP_NONE = 没有；有值时表头按"一位小数"画（复用片内温度那条画法）。 */
 static int16_t  s_env_temp_c10 = ZK_TEMP_NONE;
+/* build 102（2026-10-16 用户）：**当天**天气 —— 白天码/夜间码/当天温度区间。
+   为什么另开一条命令而不是挤进 0x71：0x71 那条是"实况"（某一刻），一天会变好几次，
+   一变就整屏刷 16 秒；当天这条**一天只变一次**，正好跟着 0 点那轮推送走。
+     74 <白天码> <夜间码> <tmin> <tmax>
+     白天码 1晴 2多云 3阴 4小雨 5大雨 6雷阵雨 7雪 8雾 9风（0 = 不显示）
+     夜间码：跟白天不同就画成"晴转多云"；0 或跟白天相同 = 不画「转」
+     tmin/tmax：当天温度区间的整度（有符号 int8）→ 屏上"25~31℃"
+   老基站只发 0x71 那套单值也照旧能用（temp_min/max 保持"没有"）。 */
+static uint8_t  s_wx_code2;
+static int8_t   s_temp_min_c = ZK_TEMP_RANGE_NONE;
+static int8_t   s_temp_max_c = ZK_TEMP_RANGE_NONE;
 /* build 61：表头温度后面那个**城市名**（"多云 26.4℃ 深圳"）。
    基站知道自己的经纬度，所以由基站发（命令 0x79 SET_CITY <utf8>）——
    固件不联网。字模只有 tools/gen_font.py 的 CITY_CHARS 那批字，
@@ -1086,9 +1097,39 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
          *   这条则走**能工作的那条路径**（build 48 的写图+刷新整轮重试），
          *   于是可以干净地 A/B 对比 C7 / D7 到底闪多久、忙多久。
          *   发完立刻重画一页（build 72 起走合并窗口），不需要额外的刷新命令。 */
-        /* 0x74：**留空**（build 99/100 曾经拿它当"省电/常电"切换，2026-10-16 晚
-           用户改主意"不区分方案了" ⇒ 那个开关撤掉。这个号留着给下一步的
-           「当天天气」命令用，见 backlog 第 22 节。） */
+        /* 0x74 SET_DAILY_WX：**当天**天气（build 102，2026-10-16 用户拍的）
+         *   74 <白天码> <夜间码> <tmin> <tmax>
+         *   例：74 01 02 19 1F = 白天晴、夜间多云、当天 25~31℃ → 屏上"晴转多云 25~31℃"
+         *   · 夜间码 0（或跟白天一样）= 不画「转」，只写白天那个（跟以前一字不差）；
+         *   · tmin/tmax 是**有符号整度**；两者都给 0x80（-128）= 清掉区间、退回单值温度；
+         *   · 这条只存值 + 请求重画，**不做任何"值变了才画"的优化** —— 合并窗口
+         *     （build 72）本来就把同一连接里的几条命令并成一次全刷。
+         * 为什么单独一条：0x71 是实况（一天变好几次 ⇒ 一天刷好几次），
+         *   当天这条一天只变一次，正好跟 0 点那轮推送合在一起（见 backlog 第 22/23 节）。 */
+        case 0x74:
+            if (len >= 5u)                  /* 命令 1 字节 + 载荷 4 字节 */
+            {
+                uint8_t wn = (d[2] <= ZK_WX_MAX) ? d[2] : 0u;
+
+                s_wx_code   = (d[1] <= ZK_WX_MAX) ? d[1] : 0u;
+                s_wx_code2  = (wn == s_wx_code) ? 0u : wn;   /* 一样就不画「转」 */
+                s_temp_min_c = (int8_t)d[3];
+                s_temp_max_c = (int8_t)d[4];
+                if (s_temp_min_c == (int8_t)(-128) || s_temp_max_c == (int8_t)(-128))
+                {
+                    s_temp_min_c = ZK_TEMP_RANGE_NONE;
+                    s_temp_max_c = ZK_TEMP_RANGE_NONE;
+                }
+                g_dbg.wx_cmds++;
+                g_dbg.wx_code    = s_wx_code;
+                g_dbg.env_temp_c = (uint32_t)(int32_t)s_env_temp_c;
+
+                if (ZKGUI_MODE_PICTURE != s_mode)
+                {
+                    gui_request_redraw();
+                }
+            }
+            break;
 
         case 0x75:
             if (len >= 2u)
@@ -1625,6 +1666,11 @@ void zk_epd_svc_poll(uint32_t now_ms)
                 info.env_temp_c = s_env_temp_c;      /* 收到过整度天气温度就用它 */
             }
             info.wx_code  = s_wx_code;
+            info.wx_code2 = s_wx_code2;              /* build 102：当天天气"转"的那半边 */
+            /* build 102：当天温度区间**优先** —— 它是"一整天"的数、一天只变一次；
+               没有区间（老基站/网页只发了单值）才退回下面那套单值画法。 */
+            info.temp_min_c = s_temp_min_c;
+            info.temp_max_c = s_temp_max_c;
             info.city     = s_city;          /* build 61：温度后面那个城市名（基站 0x79 下发） */
             info.memo_mon = s_memo_mon;      /* build 67：纪念日高亮（基站 0x7A 下发） */
             info.memo_day = s_memo_day;

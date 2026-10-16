@@ -55,6 +55,16 @@ int main(int argc, char **argv)
     }
     /* build 74：argv[13] = 和风的预警图标编号（1003 暴雨 / 1014 雷电…），0 = 不画 */
     info.alert_code = (argc > 13) ? (int16_t)atoi(argv[13]) : 0;
+    /* build 102：**当天**天气（晴转多云 25~31℃）—— argv[14] = 夜间天气码（0/同上
+       = 不画「转」）、argv[15]/argv[16] = 当天最低/最高（℃，-128 = 没有区间）。 */
+    info.wx_code2   = (argc > 14) ? (uint8_t)atoi(argv[14]) : 0;
+    info.temp_min_c = ZK_TEMP_RANGE_NONE;
+    info.temp_max_c = ZK_TEMP_RANGE_NONE;
+    if (argc > 16)
+    {
+        info.temp_min_c = (int8_t)atoi(argv[15]);
+        info.temp_max_c = (int8_t)atoi(argv[16]);
+    }
     if (argc > 10)
     {
         int mm = 0, dd = 0;

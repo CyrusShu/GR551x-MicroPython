@@ -191,6 +191,41 @@ def qweather_daily_jwt(pem_path: str, kid: str, sub: str, lat: float, lon: float
     return parse_qweather_daily(qweather_json(qweather_daily_url(host, lat, lon), bearer=tok))
 
 
+# ---------------------------------------------------------------------------
+# 2026-10-16 晚：把"当天天气"折算成**固件协议 0x74** 要的四个数
+#     74 <白天码> <夜间码> <tmin> <tmax>     （见 docs/feature-backlog.md 第 22/23 节）
+# 为什么要做成函数：中继（wx-relay.py）、Mac 基站（zk_ble_base.py）和离线自测
+# 三处都要**同一套**折算 —— 各写一份"文字→码"的表，改一处忘两处是迟早的事。
+#   · 白天码/夜间码都走上面那张 qweather_code()（"多云"→2、"雷阵雨"→6 …）；
+#   · 两个码**一样就发 0**（= 屏上不画「转」）：这个判定放这儿，
+#     固件、基站、中继对一个"多云转多云"的理解就永远一致；
+#   · 温度是**整数度**（屏上写"25~31℃"）；上下限反了就换过来，别让屏上出现 "31~25"；
+#     夹到 -99..99（int8 够用），超了说明数据坏了。
+# ---------------------------------------------------------------------------
+def daily_to_protocol(day_text: str, night_text: str, tmin, tmax, date: str = "") -> dict:
+    """(白天文字, 夜间文字, 最低, 最高) -> 0x74 要的四个数（+ 日期，用来判"换天了"）。"""
+    # ⚠ 空文字要判成 **0**（没有），不能让 qweather_code("") 的兜底值 2 混进来 ——
+    #   否则 Open-Meteo 那种"只有白天一个码、夜间留空"会变成"小雨转多云"（试过，真错）。
+    d = qweather_code(day_text) if (day_text or "").strip() else 0
+    n = qweather_code(night_text) if (night_text or "").strip() else 0
+    if d == 0:                      # 只给了夜间码：那就当白天那个用（屏上别空着）
+        d, n = n, 0
+    lo = int(round(float(tmin)))
+    hi = int(round(float(tmax)))
+    if lo > hi:
+        lo, hi = hi, lo
+    lo = max(-99, min(99, lo))
+    hi = max(-99, min(99, hi))
+    return {"day": d, "night": (0 if n == d else n), "tmin": lo, "tmax": hi, "date": date}
+
+
+def daily_payload(rec: dict) -> bytes:
+    """折算结果 -> 真正发出去的 5 字节：74 <白天码> <夜间码> <tmin> <tmax>。
+    温度按**有符号 int8** 补码发（固件那边 (int8_t)d[3] 收）。"""
+    return bytes([0x74, rec["day"] & 0xFF, rec["night"] & 0xFF,
+                  rec["tmin"] & 0xFF, rec["tmax"] & 0xFF])
+
+
 def _http_error_body(e) -> str:
     """把 urllib 抛的 HTTPError 里的**响应体**抠出来（和风把原因写在里面）。"""
     try:
@@ -501,18 +536,19 @@ def main() -> int:
                                            token=_bearer, quiet=True)
                 else:
                     d = qweather_daily(_key, args.lat, args.lon, args.qweather_host)
+                rec = daily_to_protocol(d["day"], d["night"], d["tmin"], d["tmax"], d["date"])
                 txt = d["day"] if d["day"] == d["night"] else (d["day"] + "转" + d["night"])
-                c1 = qweather_code(d["day"])
-                c2 = qweather_code(d["night"])
                 print("★ 和风【当天】天气（/v7/weather/3d 第 0 条，%s）：" % d["date"])
                 print("    白天 %s / 夜间 %s   → 屏上写「%s」" % (d["day"], d["night"], txt))
                 print("    温度区间 %d~%d℃     → 屏上写「%d~%d℃」"
                       % (d["tmin"], d["tmax"], d["tmin"], d["tmax"]))
-                print("    ↦ 固件协议 0x74 的载荷： 74 %02X %02X %02X %02X"
-                      "   （白天码 %d / 夜间码 %d，相同就不画「转」）"
-                      % (c1, 0 if c1 == c2 else c2,
-                         d["tmin"] & 0xFF, d["tmax"] & 0xFF, c1, c2))
-                print("    ✅ 这条接口能用 —— 下一步就能把「晴转多云 24~31℃」做进固件")
+                print("    ↦ 固件协议 0x74 的载荷（基站真发出去的就是这 5 字节）： %s"
+                      % daily_payload(rec).hex(" ").upper())
+                print("       白天码 %d / 夜间码 %d（%s）"
+                      % (rec["day"], rec["night"],
+                         "两个码一样 ⇒ 不画「转」" if rec["night"] == 0
+                         else "两个码不同 ⇒ 屏上写「%s」" % txt))
+                print("    ✅ 这条接口能用 —— 固件 build 102 起就按这四个数画表头")
             except Exception as e:
                 print("★ 和风【当天】天气取不到：%s" % e)
                 print("    → 403/404 就是订阅里没开通「3 天预报」。那就退 Open-Meteo 的 "
