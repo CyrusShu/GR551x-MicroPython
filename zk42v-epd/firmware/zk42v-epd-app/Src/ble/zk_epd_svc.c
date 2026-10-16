@@ -728,6 +728,12 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             if (len >= 2u)
             {
                 s_wx_code = (d[1] <= ZK_WX_MAX) ? d[1] : 0u;
+                /* build 102：这条是**实况单值**（老基站/网页/手打 raw 还会用）——
+                   既然来了单值，就把"当天区间"和"夜间码"一起清掉：谁最后说话谁算数。
+                   不然屏上会出现"小雨转多云 25~31℃"这种昨天夜间码 + 今天实况的混合体。 */
+                s_wx_code2    = 0u;
+                s_temp_min_c  = ZK_TEMP_RANGE_NONE;
+                s_temp_max_c  = ZK_TEMP_RANGE_NONE;
                 /* build 54：**优先**认 4 字节版（带一位小数）：71 <code> <t_hi> <t_lo>
                    t 是 int16 的**十分之一度**（34.6℃ → 346 = 0x01 0x5A）。
                    3 字节的老格式照旧（整度），网页不受影响。 */
@@ -829,6 +835,10 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
                 if (len > 7u)
                 {
                     s_wx_code     = (d[7] <= ZK_WX_MAX) ? d[7] : 0u;
+                    /* build 102：同 0x71 那条 —— 单值实况来了就把"当天区间/夜间码"清掉 */
+                    s_wx_code2    = 0u;
+                    s_temp_min_c  = ZK_TEMP_RANGE_NONE;
+                    s_temp_max_c  = ZK_TEMP_RANGE_NONE;
                     if (len > 9u)            /* build 54：带一位小数（int16 十分之一度） */
                     {
                         int16_t t10 = (int16_t)(((uint16_t)d[8] << 8) | (uint16_t)d[9]);
