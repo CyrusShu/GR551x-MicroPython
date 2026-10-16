@@ -642,18 +642,12 @@ void zk_ble_poll(uint32_t now_ms)
 
     /* build 90：广播窗口（每圈都看一眼 —— 主循环在 IDLE 下由 500ms 的 app_timer
        叫醒，所以窗口最多晚 0.5 秒开/关，对"0 点那轮推送"完全够）。 */
-    /* 方案是**运行时**的：省电方案走窗口；常电方案干脆不做窗口 ——
-       广播一直开着（间隔 100ms），随时能被手机/基站找到。 */
+    /* 广播窗口（2026-10-16 晚起是**唯一一套行为**：不再分省电/常电）。 */
 #if ZK_ADV_WINDOW
-    if (zk_mode_is_psave())
     {
         int want = zk_adv_win_open(now_ms, zk_epd_now(), zk_epd_synced(), &s_adv_win_cfg);
 
         zk_ble_adv_apply((uint8_t)(want ? 1u : 0u));
-    }
-    else if (!s_adv_open)          /* 从省电切到常电：把广播开回来 */
-    {
-        zk_ble_adv_apply(1u);
     }
 #endif
 

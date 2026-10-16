@@ -37,37 +37,6 @@
 /* 状态块本体：链接脚本把它钉在 0x3001F000（RAM_DBG，NOLOAD，不清零） */
 volatile zk_dbg_t g_dbg __attribute__((section(".dbg_status"), used));
 
-/* ======================================================================
- * 2026-10-16：**两套方案的运行时开关**（用户："保持价签版本的纯净单一，
- * 方案区分放在 web 上加按钮" ⇒ 只有一套固件，方案在运行时切）
- *   默认 = 省电方案；网页那条 `74 00 / 74 01`（见 zk_epd_svc.c 的 case 0x74）
- *   能切；**重启回默认**（不写 flash —— 免得为这点小事弄出一个"半持久"状态）。
- * ====================================================================== */
-uint8_t g_zk_mode = ZK_MODE_DEFAULT;
-
-void zk_mode_apply_to_flags(void)
-{
-    if (ZK_MODE_ALWAYS_ON == g_zk_mode)
-    {
-        g_dbg.flags |= ZK_FLAG_MODE_ALWAYS_ON;
-    }
-    else
-    {
-        g_dbg.flags &= ~ZK_FLAG_MODE_ALWAYS_ON;
-    }
-}
-
-int zk_mode_set(uint8_t mode)
-{
-    if (mode != ZK_MODE_BATTERY && mode != ZK_MODE_ALWAYS_ON)
-    {
-        return -1;
-    }
-    g_zk_mode = mode;
-    zk_mode_apply_to_flags();
-    return 0;
-}
-
 /* 共享内存信箱（上位机用 SWD 直接写这块 RAM） */
 static volatile zk_mailbox_t *const s_mb = (volatile zk_mailbox_t *)ZK_MB_ADDR;
 
@@ -1055,9 +1024,8 @@ int main(void)
 
     zk_dbg_stage(ZK_STAGE_IDLE);
 
-    /* 2026-10-16：把"跑的是哪套方案"记进 flags —— status.sh 一眼就能看出来。
-       （方案是运行时的：默认省电，网页命令 0x74 切；重启回默认。） */
-    zk_mode_apply_to_flags();
+    /* 2026-10-16 晚：**不做方案区分了** —— 一套行为（窗口广播 + 天气按天给 +
+       只在 0 点更新），所以这里不用再记"跑的是哪套方案"。 */
 
     for (;;)
     {
