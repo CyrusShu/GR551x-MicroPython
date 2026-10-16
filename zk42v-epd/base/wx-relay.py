@@ -31,9 +31,22 @@
 自测（在 Mac 上）：  curl -s http://192.168.100.50:8788/wx
         {"code":3,"temp":29,"text":"阴","src":"qweather","obs":"2026-10-02T12:15+08:00"}
 
-接口约定（固件只认这两个字段，别改名字）：
+   接口约定（固件只认这两个字段，别改名字）：
     code  固件那 9 个天气码（1晴 2多云 3阴 4小雨 5大雨 6雷阵雨 7雪 8雾 9风）
     temp  ℃，**整数**表示没小数（和风就是整数度），带小数点表示有小数（模型值）
+
+2026-10-16 补：**当天（全天）天气**（用户："天气是一整天的比如晴转多云，温度是当天的
+    区间 24-31 度，这样就只需要 0 点刷新"）—— 走和风的 **3 天预报**（/v7/weather/3d）
+    第 0 条，多返回五个**平铺**字段（基站的"按天天气"就用它们；取不到时这几个字段
+    直接不出现，基站照旧只发实况）：
+        day     白天天气（"晴"）
+        night   夜间天气（"多云"）        两个不同 → 屏上写「晴转多云」
+        tmin    当天最低温（整数 ℃）
+        tmax    当天最高温（整数 ℃）      → 屏上写「24~31℃」
+        ddate   那一条的日期（"2026-10-16"，核对用）
+    ⚠ 这条要订阅里开通了「3 天预报」；没开通（403/404）只是少这几个字段，不影响实况。
+    验法：curl 一次看有没有 day/night/tmin/tmax；或者本地跑
+        .venv/bin/python wx-compare.py --qweather-key <key> --qweather-host <host> --qweather-daily
 
 2026-10-02 补：**天气预警**（用户："手机上有暴雨警报、价签只有小雨"）
     和风的老接口 /v7/warning/now 已经**下架**（403 Deprecated），新的是
@@ -98,6 +111,21 @@ def fetch_once(a) -> dict:
                "text": text, "src": "qweather", "obs": now.get("obsTime", ""),
                "icon": int(now.get("icon") or 0),          # 原始编号，留着以后细分图标用
                "by": by}                                   # "icon" / "text"（排查时一眼看出判据）
+        # 2026-10-16：**当天（全天）天气** —— 屏上要写「晴转多云 24~31℃」（一天一变，
+        # 所以只跟 0 点那轮推送走）。⚠ 这条要订阅里有"3 天预报"；**取不到就干脆不塞
+        # 这四个字段**（基站照旧只发实况，屏上就是老样子）—— 绝不能让天气整个拿不到。
+        try:
+            if a.jwt_key and a.kid and a.sub and a.dev_id:
+                dly = W.qweather_daily_jwt(a.jwt_key, a.kid, a.sub, a.lat, a.lon,
+                                           a.host, a.dev_id, token=tok, quiet=True)
+            else:
+                dly = W.qweather_daily(a.qweather_key, a.lat, a.lon, a.host)
+            out.update({"day": dly["day"], "night": dly["night"],
+                        "tmin": dly["tmin"], "tmax": dly["tmax"],
+                        "ddate": dly["date"]})
+        except Exception as e:
+            print("[relay] 当天天气（/v7/weather/3d）取不到，照旧只发实况：%s"
+                  % str(e)[:120])
         out.update(alert_fields(alerts))
         return out
     except Exception as e:

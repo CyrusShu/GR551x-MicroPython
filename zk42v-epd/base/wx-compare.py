@@ -132,6 +132,65 @@ def qweather(key: str, lat: float, lon: float, host: str = "devapi.qweather.com"
                         % (host, lon, lat, key))
 
 
+# ---------------------------------------------------------------------------
+# 2026-10-16：**当天（全天）天气** —— 用户："如果天气是一整天的比如晴转多云，
+# 温度是当天的区间 24-31 度，这样就只需要 0 点刷新。"
+#
+# 和风的实况（/v7/weather/now）只有"某一刻"；**全天那条在 3 天预报里**
+#     GET /v7/weather/3d?location=<经度>,<纬度>&lang=zh&unit=m
+# 每天一条，我们只要第 0 条（今天）：
+#     textDay    白天天气（"晴"）
+#     textNight  夜间天气（"多云"）   两个不一样 → 屏上写「晴转多云」
+#     tempMax    当天最高（"31"）
+#     tempMin    当天最低（"24"）     → 屏上写「24~31℃」
+# ⚠ 这条接口**要订阅里有"3 天预报"**才通：返回 code=200 才有数据；403/404 就是
+#    这个 key 没开（那时候退 Open-Meteo 的 daily=...，但那边一天只有一个天气码、
+#    没有"转"）。所以先跑一次 `python3 wx-compare.py --qweather-daily` 验一验。
+# ---------------------------------------------------------------------------
+def qweather_daily_url(host: str, lat: float, lon: float, key: str = "",
+                       bearer: str = "") -> str:
+    u = ("https://%s/v7/weather/3d?location=%.4f,%.4f&lang=zh&unit=m"
+         % (host, lon, lat))
+    if key:
+        u += "&key=" + key
+    return u
+
+
+def parse_qweather_daily(d) -> dict:
+    """把 /v7/weather/3d 的原始 JSON 解成我们要的四个值（取**今天**那一条）。
+
+    返回 {"day": "晴", "night": "多云", "tmin": 24, "tmax": 31,
+          "date": "2026-10-16", "raw": <第 0 条原文>}
+    ⚠ 温度是字符串（和风给整数度），这里转成 int；解析不出来就抛，别静默给 0。
+    """
+    if str((d or {}).get("code")) != "200":
+        raise RuntimeError("和风 3d 返回 code=%s（403/404 = 这个 key 没开通「3 天预报」，"
+                           "得换订阅或者退 Open-Meteo 的 daily）" % (d or {}).get("code"))
+    arr = d.get("daily") or []
+    if not arr:
+        raise RuntimeError("和风 3d 里没有 daily 数组（返回体：%s）" % str(d)[:200])
+    day0 = arr[0]
+    return {
+        "date":     str(day0.get("fxDate", "")),
+        "day":      str(day0.get("textDay", "") or ""),
+        "night":    str(day0.get("textNight", "") or ""),
+        "tmin":     int(day0.get("tempMin")),
+        "tmax":     int(day0.get("tempMax")),
+        "raw":      day0,
+    }
+
+
+def qweather_daily(key: str, lat: float, lon: float, host: str = "devapi.qweather.com"):
+    return parse_qweather_daily(qweather_json(qweather_daily_url(host, lat, lon, key=key)))
+
+
+def qweather_daily_jwt(pem_path: str, kid: str, sub: str, lat: float, lon: float,
+                       host: str = "devapi.qweather.com", iss: str = "",
+                       token: str = "", quiet: bool = False):
+    tok = token or make_jwt(pem_path, kid, sub, iss, quiet=quiet)
+    return parse_qweather_daily(qweather_json(qweather_daily_url(host, lat, lon), bearer=tok))
+
+
 def _http_error_body(e) -> str:
     """把 urllib 抛的 HTTPError 里的**响应体**抠出来（和风把原因写在里面）。"""
     try:
@@ -354,6 +413,10 @@ def main() -> int:
     ap.add_argument("--qweather-dev-id", default=os.environ.get("QWEATHER_DEV_ID", ""),
                     help="**开发者 ID（iss）**：控制台-设置 里那个 Q 开头的 10 位。"
                          "⚠ JWT 的 payload 必须有它，少了就和风一句 Authentication failed")
+    ap.add_argument("--qweather-daily", action="store_true",
+                    help="顺带验一下**当天（全天）天气**：/v7/weather/3d 的第 0 条 —— "
+                         "白天/夜间天气 + 当天温度区间（屏上要写「晴转多云 24~31℃」用的）。"
+                         "⚠ 这条要订阅里开通了「3 天预报」")
     args = ap.parse_args()
 
     print("坐标 %.4f, %.4f（跟基站 WX 请求完全一致）" % (args.lat, args.lon))
@@ -425,6 +488,38 @@ def main() -> int:
         _key = args.qweather_key
 
     if _bearer or _key:
+        # ---- 2026-10-16：**当天（全天）天气** 先验一下（--qweather-daily）----------
+        #   用户："天气是一整天的比如晴转多云，温度是当天的区间 24-31 度，这样就只需要
+        #   0 点刷新。" ⇒ 屏上要写的就是这里拿到的四个值。**这条要订阅里有「3 天预报」**，
+        #   所以专门给个开关，先验通再改固件/基站。
+        if args.qweather_daily:
+            try:
+                if _bearer:
+                    d = qweather_daily_jwt(args.qweather_jwt_key, args.qweather_kid,
+                                           args.qweather_sub, args.lat, args.lon,
+                                           args.qweather_host, args.qweather_dev_id,
+                                           token=_bearer, quiet=True)
+                else:
+                    d = qweather_daily(_key, args.lat, args.lon, args.qweather_host)
+                txt = d["day"] if d["day"] == d["night"] else (d["day"] + "转" + d["night"])
+                c1 = qweather_code(d["day"])
+                c2 = qweather_code(d["night"])
+                print("★ 和风【当天】天气（/v7/weather/3d 第 0 条，%s）：" % d["date"])
+                print("    白天 %s / 夜间 %s   → 屏上写「%s」" % (d["day"], d["night"], txt))
+                print("    温度区间 %d~%d℃     → 屏上写「%d~%d℃」"
+                      % (d["tmin"], d["tmax"], d["tmin"], d["tmax"]))
+                print("    ↦ 固件协议 0x74 的载荷： 74 %02X %02X %02X %02X"
+                      "   （白天码 %d / 夜间码 %d，相同就不画「转」）"
+                      % (c1, 0 if c1 == c2 else c2,
+                         d["tmin"] & 0xFF, d["tmax"] & 0xFF, c1, c2))
+                print("    ✅ 这条接口能用 —— 下一步就能把「晴转多云 24~31℃」做进固件")
+            except Exception as e:
+                print("★ 和风【当天】天气取不到：%s" % e)
+                print("    → 403/404 就是订阅里没开通「3 天预报」。那就退 Open-Meteo 的 "
+                      "daily=weather_code,temperature_2m_max,temperature_2m_min（免费），"
+                      "代价是它**一天只有一个天气码、没有「转」**，屏上只能写「多云」这种单词。")
+            print("")
+
         try:
             alerts = qweather_alert(args.qweather_host, args.lat, args.lon,
                                     bearer=_bearer, key=_key)
