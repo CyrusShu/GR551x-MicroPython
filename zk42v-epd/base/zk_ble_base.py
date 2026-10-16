@@ -679,7 +679,18 @@ async def sync_once(dev, adv, args, do_time=True, do_weather=True, last_wx=None,
         #   ⚠ 实况（0x71 / 0x20 里带的）从这一版起**默认不发**了：实况一天会变好几次，
         #     一变就整屏刷 16 秒，那正是这一轮要砍掉的（要调试就加 --wx-live）。
         try:
-            rec, dsrc = fetch_daily_any(args, args.lat, args.lon)
+            try:
+                rec, dsrc = fetch_daily_any(args, args.lat, args.lon)
+            except Exception as e1:
+                # ⚠ 2026-10-16：中继答上来了、但它是**老版本**（没有 day/night/tmin/tmax）
+                #   时，上面那条路会抛 —— 这时候退 Open-Meteo 的 daily 兜底，
+                #   屏上照样有当天天气（代价：免费版一天只有一个码、没有「转」）。
+                log("  ! 当天天气没取到（" + explain(e1) + "）→ 退 Open-Meteo 的 daily 兜底",
+                    args.log)
+                _Wm = _wxmod()
+                _wmo, _lo, _hi, _ds = fetch_om_daily(args.lat, args.lon)
+                rec = _Wm.daily_to_protocol(_Wm.WMO_TO_TAG.get(_wmo, ""), "", _lo, _hi, _ds)
+                dsrc = "Open-Meteo(当天,兜底)"
             dkey = daily_key(rec)
             prev_d = (last_daily or {}).get("v")
             if prev_d == dkey:

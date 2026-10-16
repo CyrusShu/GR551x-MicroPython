@@ -42,9 +42,16 @@
   发 5 字节 `0x74`。已用 Arduino IDE 自带的 arduino-cli 编过（huge_app，56% 占用）。
 * 离线自测：`ble-base/tests/test_daily_wx.py`（8 组）。
 
-**下一步（都还没做）**：① NAS 上的 `wx-relay.py` 要更新到有 day/night/tmin/tmax 那一版；
+**下一步（都还没做）**：① NAS 上的 `wx-relay.py` 要更新到有 day/night/tmin/tmax 那一版
+（**实测**：2026-10-16 晚 curl `http://192.168.100.221:8788/wx` 返回的还是老样子
+`{"code":2,"temp":28,"text":"多云",...,"alert":0}`，没有那四个字段）；
 ② ESP32 要重刷（现在跑的还是老固件，还在推 10 字节含实况的载荷）；③ 三个电流（待机/
 窗口里/一次整屏）仍然没量。
+
+⚠ 这两个坑是**实测才发现**、必须一起改的：①「中继答上来就 return」—— 老中继会让
+"当天天气"永远取不到，所以 ESP32 补了 `fetchOmDailyOnly()`、Mac 也在 sync_once 里兜
+（退 Open-Meteo 的 `daily=`，代价是没有「转」）；② 单值实况（0x71/0x20 带天气）一来
+就清掉"当天区间 + 夜间码"，不然屏上会出现"小雨转多云 25~31℃"这种混合体。
 
 细节见 `firmware/docs/feature-backlog.md` **第 23 节**。
 

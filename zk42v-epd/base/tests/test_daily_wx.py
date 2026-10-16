@@ -79,6 +79,7 @@ def main():
     a = Args()
     a.relay = "http://example.invalid/wx"
     saved = B.fetch_relay_json
+    saved_om = B.fetch_om_daily
     B.fetch_relay_json = lambda args, url: j          # 打桩：不打网络
     try:
         rec5, src5 = B.fetch_daily_any(a, 22.78, 113.89)
@@ -109,6 +110,32 @@ def main():
     rec8 = W.daily_to_protocol(W.WMO_TO_TAG.get(61, ""), "", 20, 26, "2026-10-16")
     check("8: Open-Meteo 兜底（61=小雨）→ 白天码 4、夜间码 0",
           (rec8["day"], rec8["night"]) == (4, 0), rec8)
+
+    # 9) **实测遇到的那个情形**（2026-10-16 晚）：NAS 上还是老版本中继
+    #    （返回里没有 day/night/tmin/tmax）—— 中继那条路要抛出清楚的话，
+    #    然后由 Open-Meteo 的 daily 顶上，屏上照样有当天天气。
+    #    ⚠ 这一步必须走通：ESP32 那边有一模一样的坑（中继答上来就 return 了）。
+    a2 = Args()
+    a2.relay = "http://example.invalid/wx"
+    a2.wx_source = "auto"
+    B.fetch_relay_json = lambda args, url: {"code": 2, "temp": 28, "text": "多云",
+                                            "src": "qweather"}      # 老中继
+    B.fetch_om_daily = lambda lat, lon: (61, 20.4, 26.2, "2026-10-16")  # 打桩
+    try:
+        raised = False
+        try:
+            B.fetch_daily_any(a2, 22.78, 113.89)
+        except RuntimeError as e:
+            raised = "wx-relay" in str(e)
+        check("9: 老版本中继 → 中继那条路抛出提示更新的话", raised)
+        wmo, lo, hi, dstamp = B.fetch_om_daily(22.78, 113.89)
+        rec9 = W.daily_to_protocol(W.WMO_TO_TAG.get(wmo, ""), "", lo, hi, dstamp)
+        check("9: 兜底顶上后照样有当天天气（小雨 20~26 → 74 04 00 14 1A）",
+              W.daily_payload(rec9).hex(" ").upper() == "74 04 00 14 1A",
+              W.daily_payload(rec9).hex(" "))
+    finally:
+        B.fetch_relay_json = saved
+        B.fetch_om_daily = saved_om
 
     bad = 0
     for label, ok, detail in CHECKS:

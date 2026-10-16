@@ -923,6 +923,58 @@ static bool fetchFromRelay(String *dateOut)
 }
 
 
+/* 只取**当天**天气（Open-Meteo 的 daily 段）—— 中继没带那几个字段时的兜底。
+   为什么要单独一条：中继一旦答上来，fetchWeatherAndTimeInner 就直接 return 了，
+   而 NAS 上要是还挂着**老版本中继**（返回里没有 day/night/tmin/tmax），"当天天气"
+   就永远取不到。这一趟只在"中继没给"时发生，几毫秒的纯 HTTP，一天也就几轮。 */
+static bool fetchOmDailyOnly()
+{
+    String url = String(WX_USE_TLS ? "https://" : "http://") + WX_HOST
+               + "/v1/forecast?latitude=" + String(LAT, 4) + "&longitude=" + String(LON, 4)
+               + "&daily=weather_code,temperature_2m_max,temperature_2m_min"
+               + "&timezone=auto&forecast_days=1";
+    HTTPClient http;
+    String     body;
+    float      dw = 0, dlo = 0, dhi = 0;
+    int        ly = 0, lm = 0, ld = 0;
+
+    http.setTimeout(8000);
+    if (!http.begin(url))
+    {
+        logf("  当天天气兜底：begin 失败（%s）", url.c_str());
+        return false;
+    }
+    int code = http.GET();
+    if (code != 200)
+    {
+        logf("  当天天气兜底：HTTP %d", code);
+        http.end();
+        return false;
+    }
+    body = http.getString();
+    http.end();
+
+    if (!findJsonArrayNumber(body, "weather_code", &dw) ||
+        !findJsonArrayNumber(body, "temperature_2m_min", &dlo) ||
+        !findJsonArrayNumber(body, "temperature_2m_max", &dhi))
+    {
+        logf("  当天天气兜底：JSON 里没有 daily 段（前 120 字节：%s）",
+             body.substring(0, 120).c_str());
+        return false;
+    }
+    wxDayCode   = wmoToCode((int)dw);
+    wxNightCode = 0;                       /* 免费版一天只有一个码 ⇒ 没有「转」 */
+    wxTMin      = (int)lroundf(dlo);
+    wxTMax      = (int)lroundf(dhi);
+    if (wxTMin > wxTMax) { int q = wxTMin; wxTMin = wxTMax; wxTMax = q; }
+    haveDaily = true;
+    civilLocal(epochNow(), (int)TZ_HOURS, &ly, &lm, &ld);
+    snprintf(wxDailyDate, sizeof(wxDailyDate), "%04d-%02d-%02d", ly, lm, ld);
+    logf("  当天天气兜底（Open-Meteo daily）：%s %d~%d℃（没有「转」）",
+         wxName(wxDayCode), wxTMin, wxTMax);
+    return true;
+}
+
 static bool fetchWeatherAndTimeInner()
 {
     String dateHdr;
@@ -937,6 +989,16 @@ static bool fetchWeatherAndTimeInner()
             if (relayDate.length() > 0)
             {
                 applyDateHeader(relayDate);
+            }
+            /* ⚠ 2026-10-16 实测补的坑：中继一旦答上来，下面 Open-Meteo 那条路就直接
+               return 了 —— 要是 NAS 上那个中继还是**老版本**（返回里没有
+               day/night/tmin/tmax），"当天天气"就**永远取不到**（屏上反而连实况都没有了）。
+               所以这里单独补一次 Open-Meteo 的 daily 兜底（几毫秒的 HTTP，一天没几轮）。
+               代价：免费版一天只有一个天气码、**没有「转」**。 */
+            if (WX_DAILY_ENABLE && !haveDaily)
+            {
+                logf("中继里没有当天天气（day/night/tmin/tmax）→ 单独问一次 Open-Meteo 的 daily");
+                fetchOmDailyOnly();
             }
             lastFetchOkMs = millis();
             return true;
