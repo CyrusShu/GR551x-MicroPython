@@ -1061,22 +1061,14 @@ static int draw_header_temp(uint8_t *buf, int x, const zkgui_info_t *info)
 /* ---------------------------------------------------------- build 102：当天温度区间
  *
  * 2026-10-16 用户："如果天气是一整天的，比如晴转多云，温度是当天的区间 24-31 度，
- * 这样就只需要 0 点刷新" —— 于是屏上从"某一刻的 26℃"改成"当天的 25~31℃"。
+ * 这样就只需要 0 点刷新" —— 于是屏上从"某一刻的 26℃"改成"当天的 25~31"。
  *
- * 版式（表头 400px 就那么多地方，左边到"深圳"只剩 ~140px）：
- *   ZK_HDR_RANGE_STYLE = 0 → "25~31"      （最省地方，能同时保住图标和城市名）
- *                        1 → "25~31°"
- *                        2 → "25~31°C"    （最完整，代价是那格要塞得下）
- *   ZK_HDR_WX_ICON = 0    → 不画天气图标（把 23px 让给文字，预警图标照画）
- * 这两种是**预览期**的档位（tools/gui_preview.py 用 ZK_CC_FLAGS 传 -D 覆盖，
- * 见 backlog 第 23 节的候选图），用户挑完就把宏删掉、只留选中那一种。
+ * 版式（表头 400px 就那么多地方，农历月之后到"深圳"只剩 ~140px）：**定稿的就是这一种**。
+ * 当时出过 5 张候选图（见 backlog 第 23 节），用户 2026-10-16 拍了这个：
+ *   「图标 + 晴转多云 + 25~31 + 深圳」= **不写单位**（写 ℃ 就得在"图标/城市名/单位"
+ *   里三选二：写 ℃ 时城市名要么被挤掉、要么整块让位）。所以预览期那两个档位宏
+ *   （ZK_HDR_RANGE_STYLE / ZK_HDR_WX_ICON）已经删掉，固件只有这一种行为。
  */
-#ifndef ZK_HDR_RANGE_STYLE
-#define ZK_HDR_RANGE_STYLE 0
-#endif
-#ifndef ZK_HDR_WX_ICON
-#define ZK_HDR_WX_ICON 1
-#endif
 
 /* 整度 -> "25" / "-3"（够表头用；两位数的负温在深圳也不会出现） */
 static int fmt_deg(char *s, int t)
@@ -1097,27 +1089,27 @@ static int fmt_deg(char *s, int t)
     return k;
 }
 
-/* 画"当天的温度区间"（"25~31" / "25~31°C"，看上面那个档位宏）。 */
+/* 画"当天的温度区间"（"25~31"）。
+
+   2026-10-16 用户："只红超过 30 的数" —— 所以**不能整串一个颜色**，得逐段画：
+        【最低】超过 30 才红 + 波浪号（黑）+ 【最高】超过 30 才红
+   于是 25~31 读起来是「25~」黑、「31」红；31~35 那种两个都红；-3~5 全黑。
+   （单值那条（draw_header_temp）本来就是"整个数 > 30 才红"，跟这条同一个规矩。） */
 static int draw_header_temp_range(uint8_t *buf, int x, const zkgui_info_t *info)
 {
-    char s[16];
-    int  k = 0;
-    int  color = ((int)info->temp_max_c > 30) ? C_RED : C_BLACK;   /* 跟单值同一规矩 */
+    char lo[8];
+    char hi[8];
 
-    k += fmt_deg(s + k, (int)info->temp_min_c);
-    s[k++] = '~';
-    k += fmt_deg(s + k, (int)info->temp_max_c);
-#if ZK_HDR_RANGE_STYLE == 1
-    s[k++] = '\xB0';
-#elif ZK_HDR_RANGE_STYLE == 2
-    s[k++] = '\xB0';
-    s[k++] = 'C';
-#endif
-    s[k] = 0;
+    fmt_deg(lo, (int)info->temp_min_c);
+    fmt_deg(hi, (int)info->temp_max_c);
 
     x += 3;                                  /* 跟天气文字拉开 3px */
-    draw_text5(buf, x, CAL_HDR_TEMP_Y, s, CAL_HDR_TEMP_SCALE, color);
-    return x + text5_width(s, CAL_HDR_TEMP_SCALE);
+    x = draw_text5(buf, x, CAL_HDR_TEMP_Y, lo, CAL_HDR_TEMP_SCALE,
+                   ((int)info->temp_min_c > 30) ? C_RED : C_BLACK);
+    x = draw_text5(buf, x, CAL_HDR_TEMP_Y, "~", CAL_HDR_TEMP_SCALE, C_BLACK);
+    x = draw_text5(buf, x, CAL_HDR_TEMP_Y, hi, CAL_HDR_TEMP_SCALE,
+                   ((int)info->temp_max_c > 30) ? C_RED : C_BLACK);
+    return x - CAL_HDR_TEMP_SCALE;           /* 末字的 1px 间隔不算进去（跟以前同一口径） */
 }
 
 /* build 61：温度后面跟着写"经纬度所在地的城市名"（用户提的）。
@@ -1286,12 +1278,6 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
             ic       = zk_alert_icon((int)info->alert_code);
             ic_color = ((int)info->alert_level >= 3) ? C_RED : C_BLACK;
         }
-#if !ZK_HDR_WX_ICON
-        else
-        {
-            ic = 0;              /* 预览档位：只砍**天气**图标，预警图标照画 */
-        }
-#endif
 
         if (ic != 0)
         {
