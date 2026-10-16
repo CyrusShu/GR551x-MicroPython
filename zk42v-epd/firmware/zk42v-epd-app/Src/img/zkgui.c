@@ -1267,7 +1267,9 @@ static void draw_header(uint8_t *buf, int year, int mon, int day,
        图标 20x20（表头 26px 高，上下各留 3px），文字是 16x16 的 1px 点阵，
        跟旁边农历那行同一个字源，所以不会"一个粗一个细"。 */
     {
-        const uint8_t *ic = zk_weather_icon(info->wx_code);
+        /* build 102：图标跟"白天码"走；只给了夜间码（老基站）时就退回用夜间那个，
+           免得文字有、图标却空着。 */
+        const uint8_t *ic = zk_weather_icon(info->wx_code ? info->wx_code : info->wx_code2);
         const uint32_t *tx = zk_weather_text(info->wx_code);
         int            ic_color = C_BLACK;
 
