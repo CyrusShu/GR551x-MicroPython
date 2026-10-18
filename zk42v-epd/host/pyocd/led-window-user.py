@@ -1341,8 +1341,9 @@ ZK_DBG_MAGIC = 0x5A4B3401
 # build 67 加到 116 —— 多一个「纪念日收到几次」（命令 0x7A：生日高亮）。
 # build 71 加到 117 —— 多一个「天气预警收到几次」（命令 0x7C：和风的实时预警，
 #                    由 NAS 中继取回、基站顺手发下来）。
-ZK_DBG_WORDS = 144   # build 90：+2（广播窗口 136/137）；93：+2（复位现场 138/139）；
-                     # 95：+2（日历探针 140/141）；97：+2（睡眠节拍实测 142/143）
+ZK_DBG_WORDS = 152   # build 90：+2（广播窗口 136/137）；93：+2（复位现场 138/139）；
+                     # 95：+2（日历探针 140/141）；97：+2（睡眠节拍实测 142/143）；
+                     # 103：+8（PMU 档位现场 144~150 + 对齐 151）
 
 ZK_STAGE_TEXT = {
     64: 'Reset_Handler 已经跑到我们的代码了（SDK 初始化还没走完，'
@@ -5771,6 +5772,36 @@ def zkstatus():
                 say("        那就得按这个实测值重新标定（或者把停着那段单独补上）。")
             else:
                 say("      → 几乎不涨，这个读数不对劲，把这段发我。")
+
+    # ---- build 103：**省电现场**（2026-10-18 用户量到 1.7~2.1mA 之后加的）----
+    #   这一组回答"为什么这么费电"：PMU 现在什么档、**它到底能不能进深睡**、
+    #   BLE 核什么状态、面板有没有被叫去睡。命令 0x9C 可以在运行时切档：
+    #     9C 00 ACTIVE / 9C 01 IDLE（默认）/ 9C 02 SLEEP / 9C 03 IDLE+断射频
+    if _tb_build is not None and _tb_build >= 103:
+        p_mode = rd(ZK_DBG_ADDR + 4 * 144)
+        p_slp  = rd(ZK_DBG_ADDR + 4 * 145)
+        p_bb   = rd(ZK_DBG_ADDR + 4 * 146)
+        p_ext  = rd(ZK_DBG_ADDR + 4 * 147)
+        p_cmds = rd(ZK_DBG_ADDR + 4 * 148)
+        p_epd  = rd(ZK_DBG_ADDR + 4 * 149)
+        p_flag = rd(ZK_DBG_ADDR + 4 * 150)
+        if None not in (p_mode, p_slp, p_bb, p_ext):
+            _PM = {0: 'ACTIVE（CPU 全速）', 1: 'IDLE（CPU 停 WFE，模拟/时钟还在跑）',
+                   2: 'SLEEP（深睡，RAM 保持）', 3: 'IDLE + 广播强制关（测量档）'}
+            say("")
+            say("  省电现场（build 103）:")
+            say("    我们要求的档 = %s" % _PM.get(p_mode, '?%d' % p_mode))
+            say("    PMU 现在**能到达**的档 = %s   ← 只有这里是 2 才说明真能深睡"
+                % _PM.get(p_slp, '?%d' % p_slp))
+            say("    BLE 核状态 = %s    外部定时器挡着 = %s"
+                % (_PM.get(p_bb, '?%d' % p_bb), _PM.get(p_ext, '?%d' % p_ext)))
+            say("    0x9C 收到 %s 次    面板深睡命令发了 %s 次    广播被强制关 = %s"
+                % (p_cmds if p_cmds is not None else '-',
+                   p_epd if p_epd is not None else '-',
+                   '是' if (p_flag or 0) & 1 else '否'))
+            if p_slp == 1:
+                say("      → PMU 只肯到 IDLE：这就是 1~2mA 那笔账的主体（IDLE 档本身）")
+                say("        下一步得查是谁把深睡挡住的（BLE 定时器 / app_timer / 外部定时器）")
 
     # ---- 时基自检：SystemCoreClock 跟真实主频对不对得上 ----
     c1 = rd(ZK_DWT_CYCCNT)

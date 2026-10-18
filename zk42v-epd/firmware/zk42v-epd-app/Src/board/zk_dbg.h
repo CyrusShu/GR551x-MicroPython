@@ -111,8 +111,11 @@
   **只改 RAM、重启回省电**。基站那边（ESP32 `WX_SEND_ENABLE` / Mac `天气源`）仍是宏/配置。 */
 /* build 102（2026-10-16 晚）：**当天天气**（0x74）—— 屏上从"某一刻的 26℃"改成
    "晴转多云 25~31℃"，一天只变一次、跟着 0 点那轮推送走（见 backlog 第 23 节）。
-   ⚠ build 101 那次忘了改这个 ID（还是 100），所以从这一版起按 102 记。 */
-#define ZK_BUILD_ID   102u
+   ⚠ build 101 那次忘了改这个 ID（还是 100），所以从 102 起规范记。
+   build 103（2026-10-18）：用户量到 **1.7~2.1mA** —— 刷完让面板进深睡（0x10 0x01）
+   + BLE 0x9C 运行时切 PMU 档（ACTIVE/IDLE/SLEEP/IDLE+断射频）+ 状态块加"省电现场"
+   八个字（144~150）。见 backlog 第 24 节。 */
+#define ZK_BUILD_ID   103u
 
 /* B2-A：BLE 状态（写进状态块，status.sh 能读） */
 #define ZK_BLE_ST_OFF        0u
@@ -199,7 +202,7 @@ typedef struct
    不置这一位 = 省电方案（CR2450：窗口广播 + 无天气温度 + 只在 0 点全刷）。 */
 #define ZK_FLAG_MODE_ALWAYS_ON 0x0080u
 
-#define ZK_DBG_WORDS 144
+#define ZK_DBG_WORDS 152
 
 typedef struct
 {
@@ -471,7 +474,27 @@ typedef struct
        这个数同时把"停在 0xFFFFFFFF 待命那段"也算进去了 —— 那正是我们要量的。 */
     uint32_t slp_irqs;            /* 142: 睡眠定时器到期次数（开机以来）*/
     uint32_t slp_load_sum;        /* 143: 这些到期消耗掉的装载值累加（tick）*/
-    uint32_t rsv[ZK_DBG_WORDS - 144];
+    /* ---- build 103：**省电实测的现场**（2026-10-18 用户量到 1.7~2.1mA）---------
+       这一组回答"为什么这么费电"：PMU 现在是什么档、它**愿不愿意**进深睡、
+       BLE 核在什么状态、以及面板有没有被叫去睡。
+         pwr_mode      我们**要求**的档：0 ACTIVE / 1 IDLE（默认）/ 2 SLEEP /
+                       3 = IDLE + 广播强制关（只用来做对照测量）
+         pwr_sleep_mode `pwr_mgmt_get_sleep_mode()` = 系统**此刻能到达**的档
+                       （2 才说明真能深睡；一直是 1 = 被什么东西挡在 IDLE）
+         pwr_bb_state   BLE 核（baseband）的电源状态（同上这套枚举）
+         pwr_ext_timer  `pwr_mgmt_check_ext_timer()` —— 外部定时器挡着没有
+         pwr_mode_cmds  收到过几次 0x9C（运行时切档）命令
+         epd_sleep_cnt  给面板发过几次深睡（0x10 0x01）—— 以前一次都不发（只松 GPIO）
+         pwr_flags      bit0 = 广播被 0x9C 强制关着（对照测量用） */
+    uint32_t pwr_mode;            /* 144 */
+    uint32_t pwr_sleep_mode;      /* 145 */
+    uint32_t pwr_bb_state;        /* 146 */
+    uint32_t pwr_ext_timer;       /* 147 */
+    uint32_t pwr_mode_cmds;       /* 148 */
+    uint32_t epd_sleep_cnt;       /* 149 */
+    uint32_t pwr_flags;           /* 150 */
+    uint32_t rsv2;                /* 151：先把字数占住，跟 ZK_DBG_WORDS 对齐 */
+    uint32_t rsv[ZK_DBG_WORDS - 152];
 } zk_dbg_t;
 
 /* 固定落在 0x3001F000（链接脚本 .dbg_status / RAM_DBG） */

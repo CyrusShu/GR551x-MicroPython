@@ -779,6 +779,69 @@ static void zk_wake_up_ind(void)
 
 static const app_sleep_callbacks_t s_zk_sleep_cb = { zk_prepare_for_sleep, zk_wake_up_ind };
 
+/* ------------------------------------------------------------------ build 103：PMU 档位
+ *
+ * 2026-10-18 用户量了电流："开机2.1mA，然后一直是1.7到2.1跳变"。
+ * 600mAh ÷ 1.9mA ≈ **12 天** —— 这个量级广播窗口解释不了：GR551x 的 **IDLE 档**
+ * 本身就只是把 CPU 停在 WFE（时钟/模拟都还在跑），要 µA 只能进 **SLEEP 档**。
+ * 但 SLEEP 在这颗板子上挂过两次（build 75 / 84），所以这一版把它做成**运行时**的：
+ *
+ *     0 ACTIVE   1 IDLE（默认，= 现在这套）   2 SLEEP   3 IDLE + 广播强制关
+ *
+ * 用 BLE 命令 0x9C 切（见 zk_epd_svc.c），一次刷机就能量出一条阶梯；
+ * **只改 RAM，重启/按 RST 就回到默认 IDLE** —— 万一 9C 02 把链路睡坏，拔电即回。
+ */
+static uint8_t s_pwr_mode         = ZK_PWR_DEFAULT_MODE;
+static uint8_t s_pwr_mode_applied = 0xFFu;      /* 0xFF = 还没下发给 SDK */
+
+void zk_pwr_set_mode(uint8_t mode)
+{
+    if (mode <= ZK_PWR_MODE_IDLE_NORADIO)
+    {
+        if (mode != s_pwr_mode)
+        {
+            g_dbg.pwr_mode_cmds++;
+        }
+        s_pwr_mode = mode;
+    }
+    g_dbg.pwr_mode = s_pwr_mode;
+}
+
+uint8_t zk_pwr_get_mode(void)
+{
+    return s_pwr_mode;
+}
+
+uint8_t zk_pwr_adv_forced_off(void)
+{
+    return (s_pwr_mode == ZK_PWR_MODE_IDLE_NORADIO) ? 1u : 0u;
+}
+
+/* 主循环每圈调一次：档变了就下发给 SDK；状态块里那"现场四件套"每秒刷一次
+   （PMU 现在什么档 / 它能到哪一档 / BLE 核状态 / 有没有外部定时器挡着）。 */
+static void zk_pwr_poll(uint32_t now_ms)
+{
+    static uint32_t last_ms;
+    uint8_t want = (s_pwr_mode == ZK_PWR_MODE_IDLE_NORADIO) ? ZK_PWR_MODE_IDLE : s_pwr_mode;
+
+    if (want != s_pwr_mode_applied)
+    {
+        pwr_mgmt_mode_set((PMR_MGMT_ACTIVE_MODE == want) ? PMR_MGMT_ACTIVE_MODE :
+                          (PMR_MGMT_SLEEP_MODE == want)  ? PMR_MGMT_SLEEP_MODE  :
+                                                           PMR_MGMT_IDLE_MODE);
+        s_pwr_mode_applied = want;
+    }
+    g_dbg.pwr_mode  = s_pwr_mode;
+    g_dbg.pwr_flags = zk_pwr_adv_forced_off();
+    if (last_ms == 0u || (uint32_t)(now_ms - last_ms) >= 1000u)
+    {
+        last_ms = now_ms;
+        g_dbg.pwr_sleep_mode = (uint32_t)pwr_mgmt_get_sleep_mode();
+        g_dbg.pwr_bb_state   = (uint32_t)pwr_mgmt_baseband_state_get();
+        g_dbg.pwr_ext_timer  = (uint32_t)pwr_mgmt_check_ext_timer();
+    }
+}
+
 int main(void)
 {
     uint32_t t_prev;
@@ -1012,7 +1075,10 @@ int main(void)
        build 85 改试 IDLE 档：它不是 SDK 那套深睡（不动 PMR/睡眠定时器），
        只是让 CPU 在没事时进 WFE —— 目的是想把"200Hz 忙等"这笔账削掉，
        而**不碰**已经失败两次的深睡路径。 */
-    pwr_mgmt_mode_set(PMR_MGMT_IDLE_MODE);
+    /* build 103：默认档（IDLE）由 zk_pwr_poll() 下发 —— 它同时把
+       pwr_mgmt_get_sleep_mode() 等"现场四件套"写进状态块，
+       以后可以用 BLE 0x9C 在 ACTIVE/IDLE/SLEEP/IDLE+断射频 之间切。 */
+    zk_pwr_poll(0);
 #endif
 
     /* 停在这儿，心跳一直涨 —— 调试器随时进来都能看到「活着」的证据。
@@ -1052,6 +1118,9 @@ int main(void)
         /* B2-A.2：扫描/广播实验的状态机节拍 + 兜底超时。
            传进去的是 DWT 算的毫秒数（拿不到时基就是 0，函数里会退回数圈数）。 */
         zk_ble_poll(tick_ms());
+
+        /* build 103：PMU 档位（默认 IDLE；0x9C 可以在运行时切）+ 状态块里的"现场四件套" */
+        zk_pwr_poll(tick_ms());
 
 #if ZK_CAL_PROBE
         /* build 95：日历计数器探针（内部限速 1 秒一次） */

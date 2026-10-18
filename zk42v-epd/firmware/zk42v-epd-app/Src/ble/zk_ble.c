@@ -647,6 +647,12 @@ void zk_ble_poll(uint32_t now_ms)
     {
         int want = zk_adv_win_open(now_ms, zk_epd_now(), zk_epd_synced(), &s_adv_win_cfg);
 
+        /* build 103：测量档 3（IDLE + 断射频）—— 把"广播/射频"这一项从电流账里剔掉，
+           好判断 1.7~2.1mA 里到底有多少是 MCU、多少是无线。 */
+        if (zk_pwr_adv_forced_off())
+        {
+            want = 0;
+        }
         zk_ble_adv_apply((uint8_t)(want ? 1u : 0u));
     }
 #endif

@@ -156,4 +156,33 @@
    所以先等这么多秒、把机会让给基站；到点还没人来，价签再自己翻（不依赖基站）。 */
 #define ZK_FLIP_GRACE_S     120u
 
+/* ======================================================================
+ * build 103（2026-10-18 用户量了电流："开机2.1mA，然后一直是1.7到2.1跳变"）
+ *
+ * 这个量级（≈1.9mA）不是广播窗口能解释的：600mAh ÷ 1.9mA ≈ **12 天**。
+ * GR551x 的 **IDLE 档本身**就是 mA 级（只把 CPU 停在 WFE，模拟/时钟都在跑）；
+ * 要 µA 必须进 **SLEEP 档**（深睡，RAM 保持）。这一版先做两件事，都是**可测**的：
+ *
+ *   ① **刷完让面板自己深睡**（0x10 0x01）—— 以前只 `epd_pins_release()` 松 GPIO，
+ *      面板内部的升压不会因此关掉（墨水屏的经典坑：PON 状态空转 0.5~2mA）。
+ *      flush 开头本来就有硬复位，所以下一轮照样能唤醒。
+ *   ② **运行时切 PMU 档**（BLE 命令 0x9C）—— 一次刷机就能量一条阶梯：
+ *        9C 00 ACTIVE（地板对照）· 9C 01 IDLE（默认）·
+ *        9C 02 SLEEP（真深睡，⚠ 历史上挂过两次）· 9C 03 IDLE+广播强制关（剔掉射频）。
+ *      档只改 RAM，**重启就回到默认 IDLE**；万一 9C 02 把链路睡坏，拔电池/按 RST 即回。
+ * ====================================================================== */
+#define ZK_PWR_DEFAULT_MODE      1u
+#define ZK_PWR_MODE_ACTIVE       0u
+#define ZK_PWR_MODE_IDLE         1u
+#define ZK_PWR_MODE_SLEEP        2u   /* ⚠ 历史上挂过两次；这一版拿来实测"到底行不行" */
+#define ZK_PWR_MODE_IDLE_NORADIO 3u   /* IDLE + 广播强制关（把射频这一项从账里剔掉） */
+
+/* 刷完要不要让面板进深睡（1 = 要）。改成 0 重编 = 回到"只松 GPIO"的老行为。 */
+#define ZK_EPD_DEEP_SLEEP_AFTER_REFRESH 1
+
+/* 由 main.c 实现；BLE 服务（0x9C）和广播窗口都要问它 */
+void    zk_pwr_set_mode(uint8_t mode);      /* 0..3，只改 RAM */
+uint8_t zk_pwr_get_mode(void);
+uint8_t zk_pwr_adv_forced_off(void);        /* 1 = 广播被强制关（档 3） */
+
 #endif /* __ZK_PWR_H__ */

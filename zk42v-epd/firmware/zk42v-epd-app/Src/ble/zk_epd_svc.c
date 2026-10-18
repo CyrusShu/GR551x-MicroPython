@@ -1208,6 +1208,21 @@ static void zk_cmd_handle(const uint8_t *d, uint16_t len)
             NVIC_SystemReset();
             break;
 
+        /* 0x9C SET_PWR_MODE（build 103，2026-10-18 用户量到 1.7~2.1mA 后加的测量开关）
+         *   9C <mode>   0 = ACTIVE   1 = IDLE（默认，就是现在这套）
+         *               2 = SLEEP（真深睡，RAM 保持）  3 = IDLE + **广播强制关**
+         * 为什么做成运行时：一次刷机就能量出一条阶梯（差别只有 PMU 档），不用来回刷。
+         * ⚠ 只改 RAM —— 重启/按 RST 就回到默认 IDLE。9C 02 万一又睡坏（build 75/84
+         *   那两次的症状是"能广播、连不上"），拔电/复位即回，不会变砖。
+         * 状态块：144 pwr_mode / 145 pwr_sleep_mode（**它能不能到 2**）/ 146 BLE 核状态 /
+         *        147 外部定时器 / 148 收到几次本命令 / 150 bit0 = 广播是否被强制关。 */
+        case 0x9C:
+            if (len >= 2u)
+            {
+                zk_pwr_set_mode(d[1]);
+            }
+            break;
+
         case 0x92:      /* SYS_SLEEP：我们是不睡的基站，收下就完事 */
         case 0x99:      /* CFG_ERASE：配置文件对我们没意义 */
             break;
@@ -1786,6 +1801,17 @@ void zk_epd_svc_poll(uint32_t now_ms)
 
         /* 三轮都没真刷的话，panel_state 会是 3、busy_delta 会很小 —— 这两个字段
            已经够定位（新加字段要动状态块布局 + status 工具的偏移表，不值得）。 */
+        /* build 103（2026-10-18 用户量到 1.7~2.1mA）：**让面板自己进深睡**再松脚。
+           以前这里只 `epd_pins_release()` —— 松开 GPIO 不会关掉面板内部控制器的
+           升压/驱动，墨水屏在 PON 状态空转就是 0.5~2mA 量级（经典坑）。
+           0x10 0x01 = Deep Sleep（RAM 保持，画面还在屏上）；下一轮 flush 开头
+           本来就有硬复位 + 完整初始化，所以叫醒没问题。
+           ⚠ 原厂固件只 pins_release、没发这条；所以 status 里加了 epd_sleep_cnt 计数，
+           量完如果电流没变，说明这一项不是主因（改 zk_pwr.h 的宏回 0 即可回退）。 */
+#if ZK_EPD_DEEP_SLEEP_AFTER_REFRESH
+        epd_deep_sleep();
+        g_dbg.epd_sleep_cnt++;
+#endif
         epd_pins_release();
         s_gpio_ready = 0;
         s_panel_inited = 0;                              /* 脚放开了 = 初始化状态作废 */
